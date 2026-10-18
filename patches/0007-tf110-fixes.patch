@@ -1,0 +1,778 @@
+From 5248267870dc6dd815706937779d9b85aeccc5ae Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:52:00 -0700
+Subject: [PATCH 1/6] tf-1.1.0: accepted HTTP connections turn off Nagle
+ (TCP_NODELAY) (cherry-pick of upstream c611adeb28c8, 7b94b5e6d2; merge
+ 01ead204, PR #929)
+
+Streamed replies leave as written instead of waiting behind Nagle.
+Applied clean onto engine/zig (file identical to upstream v1.0.2); includes
+the acceptance test that getsockopt() confirms TCP_NODELAY on the accepted fd.
+
+Agent: Depths
+---
+ engine/zig/zig/src/server/listener.zig | 58 +++++++++++++++++++++++++-
+ 1 file changed, 57 insertions(+), 1 deletion(-)
+
+diff --git a/engine/zig/zig/src/server/listener.zig b/engine/zig/zig/src/server/listener.zig
+index 8eb7a27..b508c71 100644
+--- a/engine/zig/zig/src/server/listener.zig
++++ b/engine/zig/zig/src/server/listener.zig
+@@ -53,8 +53,15 @@ pub const Listener = struct {
+             const e = posix.errno(rc);
+             switch (e) {
+                 .SUCCESS => {
++                    const fd: posix.socket_t = @intCast(rc);
++                    const one: c_int = 1;
++                    posix.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.NODELAY, std.mem.asBytes(&one)) catch |err| {
++                        _ = posix.system.close(fd);
++                        log.line("could not configure accepted TCP connection: {s}", .{@errorName(err)});
++                        continue;
++                    };
+                     nofile_logged.store(false, .release);
+-                    return .{ .fd = @intCast(rc), .peer = Threaded.addressFromPosix(&storage) };
++                    return .{ .fd = fd, .peer = Threaded.addressFromPosix(&storage) };
+                 },
+                 .INTR, .AGAIN, .CONNABORTED, .MFILE, .NFILE, .NOBUFS, .NOMEM => {
+                     if (e != .INTR) {
+@@ -132,3 +139,52 @@ test "peer text" {
+     try std.testing.expectEqualStrings("127.0.0.1", peerText(&buf, .{ .ip4 = .loopback(0) }));
+     try std.testing.expectEqualStrings("::1", peerText(&buf, .{ .ip6 = .loopback(0) }));
+ }
++
++test "accepted IPv4 and IPv6 TCP streams disable Nagle for incremental responses" {
++    for ([_]net.IpAddress{ .{ .ip4 = .loopback(0) }, .{ .ip6 = .loopback(0) } }) |address| {
++        const listener = try Listener.open(address);
++        defer listener.close();
++        const rc = posix.system.socket(if (address == .ip4) posix.AF.INET else posix.AF.INET6, posix.SOCK.STREAM, 0);
++        if (posix.errno(rc) != .SUCCESS) return error.SocketFailed;
++        const client: posix.socket_t = @intCast(rc);
++        defer _ = posix.system.close(client);
++        const peer: net.IpAddress = if (address == .ip4) .{ .ip4 = .loopback(listener.port()) } else .{ .ip6 = .loopback(listener.port()) };
++        var storage: Threaded.PosixAddress = undefined;
++        const len = Threaded.addressToPosix(&peer, &storage);
++        if (posix.errno(posix.system.connect(client, &storage.any, len)) != .SUCCESS) return error.ConnectFailed;
++        const accepted = acceptWithin(listener, 2000) orelse return error.AcceptFailed;
++        defer _ = posix.system.close(accepted.fd);
++        var value: c_int = 0;
++        var size: posix.socklen_t = @sizeOf(c_int);
++        try std.testing.expect(std.c.getsockopt(accepted.fd, posix.IPPROTO.TCP, posix.TCP.NODELAY, &value, &size) == 0);
++        try std.testing.expect(value != 0);
++    }
++}
++
++fn acceptWithin(listener: Listener, timeout_ms: u32) ?Listener.Accepted {
++    const Watchdog = struct {
++        stop: std.atomic.Value(bool) = .init(false),
++        done: std.atomic.Value(bool) = .init(false),
++
++        fn run(w: *@This(), milliseconds: u32) void {
++            var elapsed: u32 = 0;
++            while (elapsed < milliseconds and !w.done.load(.acquire)) : (elapsed += 10) {
++                std.Io.sleep(log.io(), .fromMilliseconds(10), .awake) catch break;
++            }
++            if (!w.done.load(.acquire)) w.stop.store(true, .release);
++        }
++    };
++    var watchdog: Watchdog = .{};
++    const thread = std.Thread.spawn(.{}, Watchdog.run, .{ &watchdog, timeout_ms }) catch return null;
++    defer {
++        watchdog.done.store(true, .release);
++        thread.join();
++    }
++    return listener.accept(&watchdog.stop);
++}
++
++test "the accepted-stream test stops when no usable connection arrives" {
++    const listener = try Listener.open(.{ .ip4 = .loopback(0) });
++    defer listener.close();
++    try std.testing.expect(acceptWithin(listener, 20) == null);
++}
+-- 
+2.55.0
+
+
+From e05d08089f57c8f7a8942435193564617e8c9088 Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:52:10 -0700
+Subject: [PATCH 2/6] tf-1.1.0: a direct read the file system refuses goes
+ through the page cache (cherry-pick of upstream 6bb9daaca2, merge c5085e1e,
+ PR #916)
+
+An O_DIRECT read failed with EINVAL clears O_DIRECT on the descriptor and
+retries through the page cache instead of failing the checkpoint load.
+File had drifted from the fix's parent (a test rewritten to open its page-cache
+reference directly); the fix's hunks did not overlap the drift and applied
+clean with git apply --check.
+
+Agent: Depths
+---
+ engine/zig/zig/src/core/direct_io.zig | 59 +++++++++++++++++++++++++--
+ 1 file changed, 56 insertions(+), 3 deletions(-)
+
+diff --git a/engine/zig/zig/src/core/direct_io.zig b/engine/zig/zig/src/core/direct_io.zig
+index 18fb3dd..d546ced 100644
+--- a/engine/zig/zig/src/core/direct_io.zig
++++ b/engine/zig/zig/src/core/direct_io.zig
+@@ -55,15 +55,23 @@ fn readAt(f: File, buf: Buffer, offset: u64, len: usize, ctx: *anyopaque, pread:
+     const want: usize = @intCast(offset + len - lo);
+     const whole = span(offset, len);
+     if (whole > buf.len) return error.BufferTooSmall;
++    var aligned = f.direct;
+     var got: usize = 0;
+     while (got < want) {
+         // A short O_DIRECT read is retried from the last 4 KiB boundary so the next pread stays aligned.
+-        const at: usize = if (f.direct) std.mem.alignBackward(usize, got, alignment) else got;
++        const at: usize = if (aligned) std.mem.alignBackward(usize, got, alignment) else got;
+         const ask = whole - at;
+         const n = pread(ctx, f.fd, buf.ptr + at, ask, lo + @as(u64, @intCast(at)));
+         if (n < 0) {
+-            if (std.c.errno(n) == .INTR) continue;
+-            std.log.err("read of {d} bytes at {d} failed: {t}", .{ ask, lo + at, std.c.errno(n) });
++            const e = std.c.errno(n);
++            if (e == .INTR) continue;
++            // a file system that took the O_DIRECT open can still refuse its reads: the file goes through the cache
++            if (e == .INVAL and aligned) {
++                try buffered(f.fd);
++                aligned = false;
++                continue;
++            }
++            std.log.err("read of {d} bytes at {d} failed: {t}", .{ ask, lo + at, e });
+             return error.ReadFailed;
+         }
+         if (n == 0) return error.EndOfFile;
+@@ -75,6 +83,13 @@ fn readAt(f: File, buf: Buffer, offset: u64, len: usize, ctx: *anyopaque, pread:
+     return buf[@intCast(offset - lo)..][0..len];
+ }
+ 
++/// Clears O_DIRECT on `fd`, so this read and every later one through it use the page cache.
++fn buffered(fd: std.c.fd_t) !void {
++    const direct_flag: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .DIRECT = true })));
++    const flags = std.c.fcntl(fd, std.c.F.GETFL);
++    if (flags < 0 or std.c.fcntl(fd, std.c.F.SETFL, flags & ~direct_flag) < 0) return error.ReadFailed;
++}
++
+ test "span and fits" {
+     try std.testing.expectEqual(@as(usize, 4096), span(0, 1));
+     try std.testing.expectEqual(@as(usize, 8192), span(4095, 2));
+@@ -103,6 +118,44 @@ test "direct reads return the same bytes as buffered reads" {
+     try std.testing.expectError(error.BufferTooSmall, f.read(buf, 1, 1 << 20));
+ }
+ 
++/// Refuses its first read with EINVAL, as a file system that accepts an O_DIRECT open but not the read does.
++const Refuse = struct {
++    refused: bool = false,
++
++    fn pread(ctx: *anyopaque, fd: std.c.fd_t, buf: [*]u8, len: usize, offset: u64) isize {
++        const r: *Refuse = @ptrCast(@alignCast(ctx));
++        if (!r.refused) {
++            r.refused = true;
++            std.c._errno().* = @backingInt(std.c.E.INVAL);
++            return -1;
++        }
++        return std.c.pread(fd, buf, len, @intCast(offset));
++    }
++};
++
++test "a direct read the file system refuses is read again through the page cache" {
++    if (builtin.os.tag != .linux) return error.SkipZigTest;
++    const gpa = std.testing.allocator;
++    var f = try File.open("/proc/self/exe");
++    defer f.close();
++    if (!f.direct) return error.SkipZigTest;
++    var plain: File = .{ .fd = std.c.open("/proc/self/exe", .{ .ACCMODE = .RDONLY, .CLOEXEC = true }), .direct = false };
++    try std.testing.expect(plain.fd >= 0);
++    defer plain.close();
++    const buf = try gpa.alignedAlloc(u8, .fromByteUnits(alignment), 1 << 20);
++    defer gpa.free(buf);
++    const want = try gpa.alloc(u8, 100000);
++    defer gpa.free(want);
++    try std.testing.expectEqual(@as(isize, @intCast(want.len)), std.c.pread(plain.fd, want.ptr, want.len, 12345));
++    var refuse: Refuse = .{};
++    try std.testing.expectEqualSlices(u8, want, try readAt(f, buf, 12345, want.len, &refuse, Refuse.pread));
++    try std.testing.expect(refuse.refused);
++    const direct_flag: c_int = @bitCast(@as(u32, @bitCast(std.c.O{ .DIRECT = true })));
++    try std.testing.expectEqual(@as(c_int, 0), std.c.fcntl(f.fd, std.c.F.GETFL) & direct_flag);
++    // later reads through the descriptor, now buffered, still return the file's bytes
++    try std.testing.expectEqualSlices(u8, want[1..][0..4095], try f.read(buf, 12346, 4095));
++}
++
+ const Script = struct {
+     plan: []const usize,
+     offs: [8]u64 = undefined,
+-- 
+2.55.0
+
+
+From 4abe0131ff8a8d891f1f625b51d15bce3a18acc7 Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:52:28 -0700
+Subject: [PATCH 3/6] tf-1.1.0: a namespace string a template keeps appending
+ to grows in one buffer (cherry-pick of upstream 8c725d2f21, 7cea0043c9; merge
+ 266dc436, PR #973)
+
+Long chat histories no longer copy the accumulated namespace string at every
+append; rendering stays linear in memory. eval.zig applied clean (hunks at
+offset -11 from drifted context). The tests.zig end-of-file hunk was rejected
+(our snapshot's tail differs from the fix's parent); the new test was appended
+verbatim and byte-compared against upstream 266dc436.
+
+Agent: Depths
+---
+ engine/zig/zig/src/core/template/eval.zig  | 31 ++++++++++++++++++++--
+ engine/zig/zig/src/core/template/tests.zig | 28 +++++++++++++++++++
+ 2 files changed, 57 insertions(+), 2 deletions(-)
+
+diff --git a/engine/zig/zig/src/core/template/eval.zig b/engine/zig/zig/src/core/template/eval.zig
+index 5186d0d..6b5df03 100644
+--- a/engine/zig/zig/src/core/template/eval.zig
++++ b/engine/zig/zig/src/core/template/eval.zig
+@@ -24,6 +24,7 @@ pub const Ctx = struct {
+     vars: *const v.Map,
+     out: *std.ArrayList(u8),
+     depth: usize = 0,
++    acc: std.ArrayList(u8) = .empty,
+ 
+     fn resolve(c: *Ctx, name: []const u8) Error!Value {
+         if (c.vars.get(name)) |x| return x;
+@@ -32,6 +33,25 @@ pub const Ctx = struct {
+     }
+ };
+ 
++const acc_min = 4096;
++
++fn isAcc(c: *const Ctx, s: []const u8) bool {
++    return s.len > 0 and s.ptr == c.acc.items.ptr and s.len == c.acc.items.len;
++}
++
++fn join(c: *Ctx, l: []const u8, r: []const u8) Error![]const u8 {
++    const a = c.rt.a;
++    if (l.len < acc_min and !isAcc(c, l)) return std.mem.concat(a, u8, &.{ l, r });
++    const fresh = !isAcc(c, l);
++    if (fresh or c.acc.items.len + r.len > c.acc.capacity) {
++        var grown: std.ArrayList(u8) = try .initCapacity(a, if (fresh) l.len + r.len else (l.len + r.len) * 2);
++        grown.appendSliceAssumeCapacity(l);
++        c.acc = grown;
++    }
++    c.acc.appendSliceAssumeCapacity(r);
++    return c.acc.items;
++}
++
+ const Flow = enum { normal, brk, cont };
+ 
+ /// The slot of the nearest activation of `frame`; scope.zig binds names only to frames on the lexical chain.
+@@ -329,7 +349,7 @@ fn binop(c: *Ctx, op: ast.BinOp, l: Value, r: Value) Error!Value {
+         const safe = l.str.safe or r.str.safe;
+         const ls = if (safe and !l.str.safe) try htmlEscape(c, l.str.s) else l.str.s;
+         const rs = if (safe and !r.str.safe) try htmlEscape(c, r.str.s) else r.str.s;
+-        return .{ .str = .{ .s = try std.mem.concat(rt.a, u8, &.{ ls, rs }), .safe = safe } };
++        return .{ .str = .{ .s = try join(c, ls, rs), .safe = safe } };
+     }
+     if (op == .add and l == .list and r == .list and l.list.seq == r.list.seq and (l.list.seq == .list or l.list.seq == .tuple))
+         return rt.list(try std.mem.concat(rt.a, Value, &.{ l.list.items, r.list.items }), l.list.seq);
+@@ -442,8 +462,15 @@ pub fn eval(c: *Ctx, act: *Activation, e: *const ast.Expr) Error!Value {
+         },
+         .binop => |b| binop(c, b.op, try eval(c, act, b.l), try eval(c, act, b.r)),
+         .concat => |items| blk: {
++            const first = try v.toStr(rt, try eval(c, act, items[0]));
++            if (isAcc(c, first) or first.len >= acc_min) {
++                var out = first;
++                for (items[1..]) |x| out = try join(c, out, try v.toStr(rt, try eval(c, act, x)));
++                break :blk Value.string(out);
++            }
+             var out: std.ArrayList(u8) = .empty;
+-            for (items) |x| try out.appendSlice(rt.a, try v.toStr(rt, try eval(c, act, x)));
++            try out.appendSlice(rt.a, first);
++            for (items[1..]) |x| try out.appendSlice(rt.a, try v.toStr(rt, try eval(c, act, x)));
+             break :blk Value.string(out.items);
+         },
+         .list, .tuple => |items| blk: {
+diff --git a/engine/zig/zig/src/core/template/tests.zig b/engine/zig/zig/src/core/template/tests.zig
+index 6d4d0ae..d4d334a 100644
+--- a/engine/zig/zig/src/core/template/tests.zig
++++ b/engine/zig/zig/src/core/template/tests.zig
+@@ -119,3 +119,31 @@ test "syntax and unknown filters fail at compile time" {
+     try expect("{% if %}", shared, .{ .text = null, .raised = null });
+     try expect("{% for x in y %}", shared, .{ .text = null, .raised = null });
+ }
++
++test "appending to a long string in a namespace stays linear in memory" {
++    const a = std.testing.allocator;
++    const filler: [1000]u8 = @splat('x');
++    var json: std.ArrayList(u8) = .empty;
++    defer json.deinit(a);
++    try json.appendSlice(a, "{\"messages\":[");
++    for (0..600) |i| {
++        if (i > 0) try json.append(a, ',');
++        try json.print(a, "{{\"role\":\"user\",\"content\":\"{s}\"}}", .{&filler});
++    }
++    try json.appendSlice(a, "]}");
++    const parsed = try std.json.parseFromSlice(std.json.Value, a, json.items, .{});
++    defer parsed.deinit();
++    const budget = try a.alloc(u8, 24 << 20);
++    defer a.free(budget);
++    var fba = std.heap.FixedBufferAllocator.init(budget);
++    const source = "{% set ns = namespace(out='') %}{% for m in messages %}{% set ns.out = ns.out + m.content %}{% set ns.out = ns.out ~ '|' %}{% endfor %}{{ ns.out }}";
++    const tilde = "{% set ns = namespace(out='') %}{% for m in messages %}{% set ns.out = ns.out ~ m.content ~ '|' %}{% endfor %}{{ ns.out }}";
++    const out = try template.renderChat(fba.allocator(), source, parsed.value.object.get("messages").?, .null, parsed.value, false, null);
++    try std.testing.expectEqual(@as(usize, 600 * 1001), out.len);
++    try std.testing.expectEqualStrings(filler ++ "|" ++ filler ++ "|", out[0 .. 2 * 1001]);
++    const first = try a.dupe(u8, out);
++    defer a.free(first);
++    fba.reset();
++    const out2 = try template.renderChat(fba.allocator(), tilde, parsed.value.object.get("messages").?, .null, parsed.value, false, null);
++    try std.testing.expectEqualStrings(first, out2);
++}
+-- 
+2.55.0
+
+
+From 0ab720145b4f243954a39fa015e335b027c3d8cc Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:53:20 -0700
+Subject: [PATCH 4/6] tf-1.1.0: unclosed namespaced tool-call openers no longer
+ rescan the reply (cherry-pick of upstream e6cd4d94ca, PR #913; landed
+ upstream in rollup merge b1af9eee)
+
+New tool_closers.zig finds every </NAME:tool_call> in one pass, keyed by
+lowered name; envelopes() consults it instead of concatenating and rescanning
+per opener. tool_parse.zig applied clean (hunk offset -6). In
+tool_parse_test.zig both hunks were rejected (our 1.0.2 snapshot lacks the
+parent's nested_calls block and repairGlmKeys import): the import line and the
+two new tests were ported verbatim into our file; the linear-time test's clock
+and ascii APIs match what our tree already uses (std.Io.Clock, ns_per_ms,
+findIgnoreCasePos).
+
+Agent: Depths
+---
+ engine/zig/zig/src/server/tool_closers.zig    | 40 ++++++++++++++++
+ engine/zig/zig/src/server/tool_parse.zig      | 12 +++--
+ engine/zig/zig/src/server/tool_parse_test.zig | 47 +++++++++++++++++++
+ 3 files changed, 94 insertions(+), 5 deletions(-)
+ create mode 100644 engine/zig/zig/src/server/tool_closers.zig
+
+diff --git a/engine/zig/zig/src/server/tool_closers.zig b/engine/zig/zig/src/server/tool_closers.zig
+new file mode 100644
+index 0000000..dee299c
+--- /dev/null
++++ b/engine/zig/zig/src/server/tool_closers.zig
+@@ -0,0 +1,40 @@
++//! Where a reply's namespaced tool-call closers ``</NAME:tool_call>`` are, found in one pass and kept by NAME.
++const std = @import("std");
++const Allocator = std.mem.Allocator;
++
++/// A byte a namespaced opener's name may hold after its first.
++pub fn nameByte(ch: u8) bool {
++    return std.ascii.isAlphanumeric(ch) or ch == '_' or ch >= 0x80 or ch == '.' or ch == '-';
++}
++
++/// One name's closers in order, and how many of them the searches have passed.
++const Seen = struct { at: std.ArrayList(usize) = .empty, passed: usize = 0 };
++
++pub const Closers = struct {
++    text: []const u8,
++    by_name: ?std.StringHashMapUnmanaged(Seen) = null, // read at the first lookup: none without a namespaced opener
++
++    /// Every ``</NAME:tool_call>`` in `text`, NAME lowered (ASCII only, as ``findIgnoreCasePos`` compares).
++    fn read(a: Allocator, text: []const u8) Allocator.Error!std.StringHashMapUnmanaged(Seen) {
++        var by_name: std.StringHashMapUnmanaged(Seen) = .empty;
++        var pos: usize = 0;
++        while (std.mem.indexOfPos(u8, text, pos, "</")) |s| {
++            pos = s + 1;
++            var j = s + 2;
++            while (j < text.len and nameByte(text[j])) j += 1;
++            if (!std.ascii.startsWithIgnoreCase(text[j..], ":tool_call>")) continue;
++            const got = try by_name.getOrPut(a, try std.ascii.allocLowerString(a, text[s + 2 .. j]));
++            if (!got.found_existing) got.value_ptr.* = .{};
++            try got.value_ptr.at.append(a, s);
++        }
++        return by_name;
++    }
++
++    /// Where ``</name:tool_call>`` (any case) first starts at or after `from`; `from` must not go down between calls.
++    pub fn next(c: *Closers, a: Allocator, name: []const u8, from: usize) Allocator.Error!?usize {
++        if (c.by_name == null) c.by_name = try read(a, c.text);
++        const seen = c.by_name.?.getPtr(try std.ascii.allocLowerString(a, name)) orelse return null;
++        while (seen.passed < seen.at.items.len and seen.at.items[seen.passed] < from) seen.passed += 1;
++        return if (seen.passed < seen.at.items.len) seen.at.items[seen.passed] else null;
++    }
++};
+diff --git a/engine/zig/zig/src/server/tool_parse.zig b/engine/zig/zig/src/server/tool_parse.zig
+index 46869c8..3de222f 100644
+--- a/engine/zig/zig/src/server/tool_parse.zig
++++ b/engine/zig/zig/src/server/tool_parse.zig
+@@ -3,6 +3,7 @@ const std = @import("std");
+ const json = @import("json");
+ const ids = @import("ids.zig");
+ const reply_text = @import("reply_text.zig");
++const tool_closers = @import("tool_closers.zig");
+ const tool_params = @import("tool_params.zig");
+ const tool_specs = @import("tool_specs.zig");
+ const tool_streaming = @import("tool_streaming.zig");
+@@ -58,17 +59,18 @@ fn envelopes(a: Allocator, text: []const u8) Allocator.Error![]Envelope {
+         pos = e + 12;
+     }
+     pos = 0;
++    var closers: tool_closers.Closers = .{ .text = text };
+     while (std.mem.indexOfScalarPos(u8, text, pos, '<')) |s| {
+         pos = s + 1;
+         var j = s + 1;
+         if (j >= text.len or !(std.ascii.isAlphabetic(text[j]) or text[j] == '_')) continue;
+         j += 1;
+-        while (j < text.len and (word(text[j]) or text[j] == '.' or text[j] == '-')) j += 1;
++        while (j < text.len and tool_closers.nameByte(text[j])) j += 1;
+         if (!std.ascii.startsWithIgnoreCase(text[j..], ":tool_call>")) continue;
+-        const closer = try std.mem.concat(a, u8, &.{ "</", text[s + 1 .. j], ":tool_call>" });
+-        const e = findCI(text, closer, j + 11) orelse continue;
+-        try found.append(a, .{ .start = s, .end = e + closer.len, .payload = strip(text[j + 11 .. e]) });
+-        pos = e + closer.len;
++        const e = (try closers.next(a, text[s + 1 .. j], j + 11)) orelse continue;
++        const end = e + j - s + 12; // ``</NAME:tool_call>``
++        try found.append(a, .{ .start = s, .end = end, .payload = strip(text[j + 11 .. e]) });
++        pos = end;
+     }
+     pos = 0;
+     while (find(text, "<|tool_call>", pos)) |s| {
+diff --git a/engine/zig/zig/src/server/tool_parse_test.zig b/engine/zig/zig/src/server/tool_parse_test.zig
+index 1523d2d..896a5c2 100644
+--- a/engine/zig/zig/src/server/tool_parse_test.zig
++++ b/engine/zig/zig/src/server/tool_parse_test.zig
+@@ -2,6 +2,7 @@
+ const std = @import("std");
+ const json = @import("json");
+ const tool_parse = @import("tool_parse.zig");
++const tool_closers = @import("tool_closers.zig");
+ const parse = tool_parse.parse;
+ const closeCall = tool_parse.closeCall;
+ 
+@@ -118,3 +119,49 @@ test "a call to a tool the request did not declare stays text" {
+     try std.testing.expectEqualStrings("lookup", offered.calls.?[0].get("function").?.get("name").?.string);
+     try std.testing.expect((try parse(a, "{\"name\":\"launch\",\"arguments\":{}}", tools, null)).calls == null);
+ }
++test "namespaced openers without closers read in linear time" {
++    var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const tools = (try json.parse(a, "[{\"type\":\"function\",\"function\":{\"name\":\"lookup\"}}]")).ok.array;
++    // one namespace repeated, then a new namespace per opener
++    for ([_]bool{ false, true }) |distinct| {
++        var ns: [2]u64 = undefined;
++        for ([_]usize{ 1000, 8000 }, &ns) |n, *best| {
++            var reply: std.ArrayList(u8) = .empty;
++            for (0..n) |i| try reply.print(a, "<ns{d}:tool_call>", .{if (distinct) i else 0});
++            best.* = std.math.maxInt(u64);
++            for (0..3) |_| {
++                var run: std.heap.ArenaAllocator = .init(std.testing.allocator);
++                defer run.deinit();
++                const start = std.Io.Clock.awake.now(std.testing.io).nanoseconds;
++                const r = try parse(run.allocator(), reply.items, tools, null);
++                best.* = @min(best.*, @as(u64, @intCast(std.Io.Clock.awake.now(std.testing.io).nanoseconds - start)));
++                try std.testing.expect(r.calls == null);
++            }
++        }
++        // 8x the openers: near 8x the time, not 64x
++        try std.testing.expect(ns[1] <= 20 * std.time.ns_per_ms or ns[1] <= 24 * ns[0]);
++    }
++}
++
++test "a closer found by name is the one a search for it finds" {
++    var prng: std.Random.DefaultPrng = .init(0x7f4a7c15);
++    const r = prng.random();
++    const pieces = [_][]const u8{ "</a:tool_call>", "</A:TOOL_CALL>", "</ab:tool_call>", "</b.c:tool_call>", "</a:tool_cal>", "</", "<", "a", ":tool_call>", "x", "</x\u{e9}:tool_call>", "</x\u{c9}:tool_call>" };
++    const names = [_][]const u8{ "a", "A", "ab", "b.c", "B.C", "x\u{e9}", "x\u{c9}", "zz" };
++    for (0..5_000) |_| {
++        var arena: std.heap.ArenaAllocator = .init(std.testing.allocator);
++        defer arena.deinit();
++        const a = arena.allocator();
++        var text: std.ArrayList(u8) = .empty;
++        for (0..r.uintLessThan(usize, 16)) |_| try text.appendSlice(a, pieces[r.uintLessThan(usize, pieces.len)]);
++        var closers: tool_closers.Closers = .{ .text = text.items };
++        // every start in order, every name at each, as the parser asks
++        for (0..text.items.len + 1) |from| for (names) |name| {
++            const closer = try std.mem.concat(a, u8, &.{ "</", name, ":tool_call>" });
++            try std.testing.expectEqual(std.ascii.findIgnoreCasePos(text.items, from, closer), try closers.next(a, name, from));
++        };
++    }
++}
++
+-- 
+2.55.0
+
+
+From 19d4a5a245b0c293634fcdf7e0c518241eb2ae39 Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:53:46 -0700
+Subject: [PATCH 5/6] tf-1.1.0: reject truncated tensors in the Flash Next pack
+ comparison (cherry-pick of upstream 9ef17f27e1, merge 6e990d8e, PR #919)
+
+read_tensor validates the byte range against shape/dtype, the file size and
+the read length instead of comparing two tensors' common prefix. The new
+pack_compare_test.py (6 tests) passes here: python -m unittest
+pack_compare_test -> OK. The upstream GitHub workflow file is NOT ported:
+engine/zig is a sanitized source export without .github/, and this repo has no
+Actions CI at the root; the test runs with python -m unittest discover -s
+engine/zig/tools/zig -p pack_compare_test.py.
+
+Agent: Depths
+---
+ engine/zig/tools/zig/pack_compare.py      | 34 ++++++++--
+ engine/zig/tools/zig/pack_compare_test.py | 75 +++++++++++++++++++++++
+ 2 files changed, 103 insertions(+), 6 deletions(-)
+ create mode 100644 engine/zig/tools/zig/pack_compare_test.py
+
+diff --git a/engine/zig/tools/zig/pack_compare.py b/engine/zig/tools/zig/pack_compare.py
+index 3b991f1..d34effc 100644
+--- a/engine/zig/tools/zig/pack_compare.py
++++ b/engine/zig/tools/zig/pack_compare.py
+@@ -2,6 +2,7 @@
+ from __future__ import annotations
+ 
+ import json
++import math
+ import struct
+ import sys
+ from pathlib import Path
+@@ -9,6 +10,8 @@ from pathlib import Path
+ import numpy as np
+ 
+ PACKS = ("pack.safetensors", "pack_mlx.safetensors", "pack_mtp_mlx.safetensors")
++WIDTHS = {"BOOL": 1, "U8": 1, "I8": 1, "U16": 2, "I16": 2, "F16": 2, "BF16": 2,
++          "U32": 4, "I32": 4, "F32": 4, "U64": 8, "I64": 8, "F64": 8}
+ 
+ 
+ def load_header(path: Path) -> tuple[dict, int]:
+@@ -20,9 +23,25 @@ def load_header(path: Path) -> tuple[dict, int]:
+ 
+ def read_tensor(path: Path, base: int, entry: dict) -> np.ndarray:
+     start, end = entry["data_offsets"]
++    shape = entry["shape"]
++    if type(start) is not int or type(end) is not int or start < 0 or end < start:
++        raise ValueError("invalid tensor byte range")
++    if not isinstance(shape, list) or any(type(n) is not int or n < 0 for n in shape):
++        raise ValueError("invalid tensor shape")
++    width = WIDTHS.get(entry["dtype"])
++    if width is None:
++        raise ValueError("unsupported tensor dtype")
++    expected = math.prod(shape) * width
++    if end - start != expected:
++        raise ValueError(f"tensor byte range has {end - start} bytes, shape and dtype require {expected}")
++    if base + end > path.stat().st_size:
++        raise ValueError("tensor byte range extends beyond the file")
+     with path.open("rb") as f:
+         f.seek(base + start)
+-        return np.frombuffer(f.read(end - start), dtype=np.uint8)
++        raw = f.read(expected)
++    if len(raw) != expected:
++        raise ValueError(f"short tensor read: expected {expected} bytes, read {len(raw)}")
++    return np.frombuffer(raw, dtype=np.uint8)
+ 
+ 
+ def as_float(raw: np.ndarray, dtype: str, count: int) -> np.ndarray:
+@@ -68,11 +87,14 @@ def main() -> int:
+                 clean = False
+                 differ += 1
+                 continue
+-            a = read_tensor(built_path, built_base, mine)
+-            b = read_tensor(reference_path, reference_base, theirs)
+-            if a.shape != b.shape:  # padded tails from a shorter file
+-                n = min(a.size, b.size)
+-                a, b = a[:n], b[:n]
++            try:
++                a = read_tensor(built_path, built_base, mine)
++                b = read_tensor(reference_path, reference_base, theirs)
++            except ValueError as err:
++                print(f"{pack} {name}: INVALID {err}")
++                clean = False
++                differ += 1
++                continue
+             diff = np.flatnonzero(a != b)
+             if diff.size == 0 and a.size == b.size:
+                 identical += 1
+diff --git a/engine/zig/tools/zig/pack_compare_test.py b/engine/zig/tools/zig/pack_compare_test.py
+new file mode 100644
+index 0000000..4f7fae4
+--- /dev/null
++++ b/engine/zig/tools/zig/pack_compare_test.py
+@@ -0,0 +1,75 @@
++"""Pack qualification must reject incomplete tensors even when their common prefix matches."""
++import contextlib
++import io
++import json
++from pathlib import Path
++import struct
++import tempfile
++import unittest
++from unittest.mock import patch
++
++import pack_compare
++
++
++class PackCompareTests(unittest.TestCase):
++    def setUp(self):
++        folder = tempfile.TemporaryDirectory()
++        self.addCleanup(folder.cleanup)
++        self.root = Path(folder.name)
++        self.built, self.reference = self.root / "built", self.root / "reference"
++        for directory in (self.built, self.reference):
++            directory.mkdir()
++            for name in pack_compare.PACKS:
++                self.write(directory / name)
++
++    def write(self, path, payload=b"abcdefgh", shape=None, offsets=None, dtype="U32"):
++        header = {"w": {"dtype": dtype, "shape": [2] if shape is None else shape,
++                         "data_offsets": [0, 8] if offsets is None else offsets}}
++        encoded = json.dumps(header).encode()
++        path.write_bytes(struct.pack("<Q", len(encoded)) + encoded + payload)
++
++    def compare(self):
++        with patch("sys.argv", ["pack_compare", str(self.built), str(self.reference)]), \
++                contextlib.redirect_stdout(io.StringIO()) as out:
++            code = pack_compare.main()
++        self.report = out.getvalue()
++        return code
++
++    def test_identical_complete_packs_pass(self):
++        self.assertEqual(self.compare(), 0)
++        self.assertIn("packs match", self.report)
++
++    def test_truncated_matching_prefix_fails_on_either_side(self):
++        for directory in (self.built, self.reference):
++            with self.subTest(side=directory.name):
++                path = directory / pack_compare.PACKS[0]
++                self.write(path, payload=b"abcd")
++                self.assertEqual(self.compare(), 1)
++                self.assertIn("INVALID", self.report)
++                self.assertNotIn("packs match", self.report)
++                self.write(path)
++
++    def test_both_identically_truncated_files_still_fail(self):
++        for directory in (self.built, self.reference):
++            self.write(directory / pack_compare.PACKS[0], payload=b"abcd")
++        self.assertEqual(self.compare(), 1)
++
++    def test_header_byte_range_must_match_shape_and_dtype(self):
++        for directory in (self.built, self.reference):
++            self.write(directory / pack_compare.PACKS[0], payload=b"abcd", offsets=[0, 4])
++        self.assertEqual(self.compare(), 1)
++
++    def test_complete_byte_mismatch_still_fails(self):
++        self.write(self.built / pack_compare.PACKS[0], payload=b"abcdEfgh")
++        self.assertEqual(self.compare(), 1)
++        self.assertIn("DIFF", self.report)
++
++    def test_complete_empty_and_scalar_tensors_are_valid(self):
++        for directory in (self.built, self.reference):
++            self.write(directory / pack_compare.PACKS[0], payload=b"", shape=[0], offsets=[0, 0])
++            self.write(directory / pack_compare.PACKS[1], payload=b"abcd", shape=[], offsets=[0, 4])
++        self.assertEqual(self.compare(), 0)
++
++
++if __name__ == "__main__":
++    unittest.main()
+-- 
+2.55.0
+
+
+From 58fe591676f8b37bd069eab904f0323750884173 Mon Sep 17 00:00:00 2001
+From: Depths <depths@eva-core>
+Date: Sun, 18 Oct 2026 15:54:31 -0700
+Subject: [PATCH 6/6] tf-1.1.0: grammar vocabulary reads llm_config too,
+ skipped outside the C ABI range (partial cherry-pick of upstream 80559ad2fd,
+ 022344e9bd; merge 93d11166, PRs #951+#953)
+
+Partial port. Ported: grammar.vocabSize() (text_config, then llm_config, then
+root; a non-positive or beyond-c_int vocab_size is skipped rather than cast),
+its two tests appended verbatim to grammar.zig (byte-compared against upstream
+93d11166), and grammar.zig registered in root.zig's test block. NOT ported: the
+server.zig grammarCompiler call-site hunk -- our DSv4.1 tree has no
+grammarCompiler; grammar vocabulary comes from the loaded tokenizer through the
+family vtable (model_text.zig vocab_size, hf_text.zig vocabFn), so the
+config.json lookup that refused Nemotron Omni does not exist here. vocabSize()
+is upstream API parity for the eventual full rebase; nothing calls it yet.
+
+Agent: Depths
+---
+ engine/zig/zig/src/server/grammar.zig | 50 +++++++++++++++++++++++++++
+ engine/zig/zig/src/server/root.zig    |  1 +
+ 2 files changed, 51 insertions(+)
+
+diff --git a/engine/zig/zig/src/server/grammar.zig b/engine/zig/zig/src/server/grammar.zig
+index 15a040c..88de6ad 100644
+--- a/engine/zig/zig/src/server/grammar.zig
++++ b/engine/zig/zig/src/server/grammar.zig
+@@ -13,6 +13,16 @@ pub const fields = [_][]const u8{ "response_format", "guided_json", "guided_rege
+ pub const Kind = @FieldType(api.Structure, "kind");
+ pub const Spec = struct { kind: Kind, text: []const u8 = "", field: []const u8 = "response_format" };
+ 
++/// The text vocabulary within the grammar ABI range: text_config, llm_config, then root.
++pub fn vocabSize(cfg: Value) ?u32 {
++    for ([_]?Value{ cfg.get("text_config"), cfg.get("llm_config"), cfg }) |part| if (part) |p| {
++        const v = p.get("vocab_size") orelse continue;
++        const n = v.int64() orelse continue;
++        if (n > 0 and n <= std.math.maxInt(c_int)) return @intCast(n);
++    };
++    return null;
++}
++
+ /// The JSON decoder's own message, without its position.
+ fn bareMessage(full: []const u8) []const u8 {
+     const at = std.mem.lastIndexOf(u8, full, ": line ") orelse return full;
+@@ -172,3 +182,43 @@ pub fn toolSpec(cx: *Cx, body: Value, auto_all: bool) errors.Refused!?[]const u8
+     try spec_obj.put(a, "parallel_tool_calls", .{ .bool = parallel });
+     return try json.stringify(a, .{ .object = spec_obj }, .{ .ascii = false });
+ }
++
++test "grammar vocabulary reads Nemotron Omni's text model" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const cfg = (try json.parse(a,
++        \\{"model_type":"nemotron_h_omni","llm_config":{"model_type":"nemotron_h","vocab_size":131072}}
++    )).ok;
++    try std.testing.expectEqual(@as(?u32, 131072), vocabSize(cfg));
++}
++
++test "grammar vocabulary preserves nested text and root precedence" {
++    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
++    defer arena.deinit();
++    const a = arena.allocator();
++    const cases = [_]struct { []const u8, ?u32 }{
++        .{ "{\"vocab_size\":32000}", 32000 },
++        .{ "{\"text_config\":{\"vocab_size\":32001},\"vocab_size\":32000}", 32001 },
++        .{ "{\"text_config\":{},\"vocab_size\":32000}", 32000 },
++        .{ "{\"text_config\":null,\"vocab_size\":32000}", 32000 },
++        .{ "{\"llm_config\":{\"vocab_size\":131072},\"vocab_size\":32000}", 131072 },
++        .{ "{\"llm_config\":null,\"vocab_size\":32000}", 32000 },
++        .{ "{\"text_config\":{\"vocab_size\":-1},\"llm_config\":{\"vocab_size\":131072}}", 131072 },
++        .{ "{\"vocab_size\":2147483647}", 2147483647 },
++        .{ "{\"vocab_size\":2147483648}", null },
++        .{ "{\"vocab_size\":4294967295}", null },
++        .{ "{\"text_config\":{\"vocab_size\":2147483648},\"llm_config\":{\"vocab_size\":131072}}", 131072 },
++        .{ "{\"text_config\":{\"vocab_size\":32001},\"llm_config\":{\"vocab_size\":131072},\"vocab_size\":32000}", 32001 },
++        .{ "{}", null },
++        .{ "{\"vocab_size\":-1}", null },
++        .{ "{\"vocab_size\":0}", null },
++        .{ "{\"vocab_size\":4294967296}", null },
++        .{ "{\"vocab_size\":\"131072\"}", null },
++        .{ "{\"vocab_size\":true}", null },
++    };
++    for (cases) |c| {
++        const cfg = (try json.parse(a, c[0])).ok;
++        try std.testing.expectEqual(c[1], vocabSize(cfg));
++    }
++}
+diff --git a/engine/zig/zig/src/server/root.zig b/engine/zig/zig/src/server/root.zig
+index 50de2c8..c24c9a4 100644
+--- a/engine/zig/zig/src/server/root.zig
++++ b/engine/zig/zig/src/server/root.zig
+@@ -25,6 +25,7 @@ test {
+     _ = @import("tool_parse.zig");
+     _ = @import("tool_stream.zig");
+     _ = @import("tool_params.zig");
++    _ = @import("grammar.zig");
+     _ = @import("pyrepr.zig");
+     _ = @import("metrics.zig");
+     _ = @import("http_conn.zig");
+-- 
+2.55.0
+
