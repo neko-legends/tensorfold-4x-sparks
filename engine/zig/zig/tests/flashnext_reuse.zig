@@ -1,5 +1,6 @@
 //! Flash Next prompt reuse against fresh passes: agent-like turns, every depth, copy drafts off and on, state bytes.
 const std = @import("std");
+const platform = @import("sys");
 const mtl = @import("metal");
 const tf = @import("tensorfold");
 const api = @import("engine_api");
@@ -58,7 +59,7 @@ const Run = struct {
     }
     fn marked(ctx: *anyopaque, at: usize) void {
         const r: *Run = @ptrCast(@alignCast(ctx));
-        if (r.store) |s| _ = s.keep(r.prompt, @intCast(at), null, &.{});
+        if (r.store) |s| _ = s.keep(r.prompt, @intCast(at), null, &.{}, &.{});
         if (r.copy_at) |slot| slot.* = snap.save(r.e.?, r.a, at) catch null;
         if (r.pooled_at) |p| p.* = Pooled.of(r.e.?.m, at);
     }
@@ -83,7 +84,7 @@ fn loadTokens(a: Allocator, path: []const u8) ![]u32 {
 fn fresh(e: *fx.Engine, a: Allocator, prompt: []const u32, n: usize, depth: ?usize, copy: bool) !Run {
     e.copy = copy;
     var r: Run = .{ .a = a };
-    _ = try e.generateFrom(prompt, 0, &.{}, n, &.{}, depth, r.out());
+    _ = try e.generateFrom(prompt, 0, &.{}, n, &.{}, depth, .{}, r.out());
     return r;
 }
 
@@ -121,9 +122,9 @@ pub fn main(init: std.process.Init) !void {
     }
     const pool = mtl.objc.Pool.push();
     defer pool.pop();
-    const n_out: usize = if (std.c.getenv("FZ_N")) |v| try std.fmt.parseInt(usize, std.mem.span(v), 10) else 64;
+    const n_out: usize = if (platform.c.getenv("FZ_N")) |v| try std.fmt.parseInt(usize, std.mem.span(v), 10) else 64;
     var depths: std.ArrayList(?usize) = .empty;
-    var dit = std.mem.tokenizeScalar(u8, if (std.c.getenv("FZ_DEPTHS")) |v| std.mem.span(v) else "1,2,3,5,0", ',');
+    var dit = std.mem.tokenizeScalar(u8, if (platform.c.getenv("FZ_DEPTHS")) |v| std.mem.span(v) else "1,2,3,5,0", ',');
     while (dit.next()) |d| {
         const k = try std.fmt.parseInt(usize, d, 10);
         try depths.append(a, if (k == 0) null else k);
@@ -163,10 +164,10 @@ pub fn main(init: std.process.Init) !void {
                 fam.save_s = 0;
                 var r: Run = .{ .a = a, .store = &store, .prompt = turn.prompt };
                 const t0 = mtl.clock.seconds();
-                const plan = try store.begin(a, turn.prompt, turn.history, &.{}, &.{}, null);
+                const plan = try store.begin(a, turn.prompt, turn.history, &.{}, &.{}, null, &.{});
                 const restore_s = mtl.clock.seconds() - t0;
                 const keeper = di + 1 == depths.items.len and copy; // every run resumes from the last turn's state; the last keeps this one's
-                _ = try e.generateFrom(turn.prompt, plan.from, if (keeper) plan.marks else &.{}, n_out, &.{}, depth, r.out());
+                _ = try e.generateFrom(turn.prompt, plan.from, if (keeper) plan.marks else &.{}, n_out, &.{}, depth, .{}, r.out());
                 const same = r.hash() == ref.hash();
                 if (!same) failures += 1;
                 std.debug.print("  depth {d} copy {s}: from {d}, marks {any}, restore {d:.1} ms, save {d:.1} ms: {x:0>16} {s}\n", .{ depth orelse 0, if (copy) "on " else "off", plan.from, plan.marks, restore_s * 1e3, fam.save_s * 1e3, r.hash(), if (same) "SAME" else "DIFF" });
@@ -181,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
 
 /// The state at the turn's history three ways, byte for byte: a fresh pass whose call ends there, a fresh pass whose call runs past it, a resumed one.
 fn stateCheck(e: *fx.Engine, a: Allocator, store: *pc.Store, turn: Turn, failures: *usize) !void {
-    const entry = store.find(turn.prompt[0..turn.history], &.{}) orelse return; // nothing to resume before the history
+    const entry = store.find(turn.prompt[0..turn.history], &.{}, &.{}) orelse return; // nothing to resume before the history
     var states: [3]?*snap.State = .{ null, null, null };
     var pooled: [3]Pooled = .{ .{}, .{}, .{} };
     defer for (states) |s| if (s) |st| snap.drop(a, st);
@@ -194,7 +195,7 @@ fn stateCheck(e: *fx.Engine, a: Allocator, store: *pc.Store, turn: Turn, failure
             from = entry.at;
         }
         var r: Run = .{ .a = a, .copy_at = &states[arm], .pooled_at = &pooled[arm], .e = e };
-        _ = try e.generateFrom(turn.prompt, from, &.{turn.history}, 2, &.{}, 0, r.out());
+        _ = try e.generateFrom(turn.prompt, from, &.{turn.history}, 2, &.{}, 0, .{}, r.out());
     }
     const x = states[0] orelse return error.NoState;
     const n = snap.bytes(turn.history);

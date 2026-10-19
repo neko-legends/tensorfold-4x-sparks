@@ -68,8 +68,7 @@ pub fn writeString(w: *Writer, s: []const u8, o: Options) Writer.Error!void {
             try w.print("\\u{x:0>4}", .{c});
             i += 1;
         } else {
-            // a sequence cut short at the string's end (or a bad lead byte) is U+FFFD and consumes only what is there:
-            // stepping past s.len would slice out of bounds below
+            // a sequence cut short at the string's end is U+FFFD and consumes only the bytes that are there
             const full = std.unicode.utf8ByteSequenceLength(c) catch 1;
             const n = @min(full, s.len - i);
             const code = if (n < full) 0xfffd else decodeWtf8(s[i .. i + n]);
@@ -101,6 +100,8 @@ pub fn floatJson(buf: []u8, f: f64) []const u8 {
 
 /// ``repr(float)``: the shortest round-trip digits, fixed between 1e-4 and 1e16, else exponent form.
 pub fn floatRepr(buf: []u8, f: f64) []const u8 {
+    if (std.math.isNan(f)) return "nan";
+    if (std.math.isInf(f)) return if (f > 0) "inf" else "-inf";
     if (f == 0) return if (std.math.signbit(f)) "-0.0" else "0.0";
     var tmp: [64]u8 = undefined;
     const sci = std.fmt.float.render(&tmp, f, .{ .mode = .scientific }) catch unreachable;
@@ -155,11 +156,11 @@ pub fn floatRepr(buf: []u8, f: f64) []const u8 {
 test "float repr" {
     var buf: [40]u8 = undefined;
     const cases = [_]struct { f64, []const u8 }{
-        .{ 1e16, "1e+16" },           .{ 1e15, "1000000000000000.0" }, .{ 0.0001, "0.0001" },
-        .{ 0.00001, "1e-05" },        .{ 100.0, "100.0" },             .{ 0.1, "0.1" },
-        .{ 1.0 / 3.0, "0.3333333333333333" }, .{ 123456789012345678.0, "1.2345678901234568e+17" },
-        .{ -2.5, "-2.5" },            .{ 5e-324, "5e-324" },           .{ 1.7976931348623157e308, "1.7976931348623157e+308" },
-        .{ 42.0, "42.0" },
+        .{ 1e16, "1e+16" },                   .{ 1e15, "1000000000000000.0" },                        .{ 0.0001, "0.0001" },
+        .{ 0.00001, "1e-05" },                .{ 100.0, "100.0" },                                    .{ 0.1, "0.1" },
+        .{ 1.0 / 3.0, "0.3333333333333333" }, .{ 123456789012345678.0, "1.2345678901234568e+17" },    .{ -2.5, "-2.5" },
+        .{ 5e-324, "5e-324" },                .{ 1.7976931348623157e308, "1.7976931348623157e+308" }, .{ 42.0, "42.0" },
+        .{ std.math.nan(f64), "nan" },        .{ std.math.inf(f64), "inf" },                          .{ -std.math.inf(f64), "-inf" },
     };
     for (cases) |c| try std.testing.expectEqualStrings(c[1], floatRepr(&buf, c[0]));
 }

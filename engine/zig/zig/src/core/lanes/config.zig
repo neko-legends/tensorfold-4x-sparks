@@ -12,6 +12,7 @@ pub const default_prior = [_]f64{ 0.85, 0.75, 0.7, 0.65, 0.6, 0.55, 0.5, 0.5, 0.
 
 /// What a backend reports about its loaded model: the attributes the Python engine reads at setup.
 pub const Model = struct {
+    copy_drafts: bool = true, // global serving switch, independent of shared verification capacity
     exact_width: u32 = 1, // the widest window that reproduces one-token steps bit for bit
     first_copy_rows: u32 = 0, // a lone stream's first copy window (0: the exact width)
     gpu_tokens: bool = false, // one-token rounds may run a step ahead (pipelined)
@@ -19,10 +20,13 @@ pub const Model = struct {
     speculate: bool = false, // the head can draft from a verify's rows
     speculate_early: bool = true, // draft every row's first draft behind the verify
     draft_prior: []const f64 = &.{}, // the head's acceptance by depth until a stream has its own
+    depth_rate: f64 = 0, // the newest round's weight in a depth's acceptance estimate (0: the core's)
     plain_guard: bool = false, // plain rounds compete with drafted depths
+    draft_confidence: ?f64 = null,
     drafts: u32 = 1, // head drafts a round at most
     window_costs: []const Cost = &.{}, // forward ms by exact window width (timed at load)
     mtp_step_ms: f64 = 0.0, // one chained head step (timed at load)
+    draft_step_ms: f64 = 0.0, // a shared round's draft past a stream's first, as the backend's head runs it (0: priced free)
     streams_exact: bool = true, // shared forwards keep each stream's bits
     hidden_rows: bool = false, // the backend runs several streams' windows in one forward
     batch_rows: u32 = 0, // a shared forward's rows at most (0: 32)
@@ -36,6 +40,7 @@ pub const Model = struct {
     join_drafts: bool = false, // with join_tail: a round's joined prompts' first drafts in one call (Engine.finishStreams)
     replay_runs: bool = false, // a round's finals go to the backend together first (Backend.finals)
     lane_costs: []const Cost = &.{}, // a lone stream's window ms by rows, up to its widest tree (timed at load)
+    lone_copies: bool = true, // a lone stream proposes copies (false: only streams in shared rounds do)
 };
 
 pub const Config = struct {
@@ -48,6 +53,7 @@ pub const Config = struct {
     pipelined: bool,
     plain_guard: bool,
     most_drafts: u32,
+    draft_confidence: ?f64 = null,
     family_streams: bool,
     batch_rows: u32,
     batch_streams: u32,
@@ -57,12 +63,11 @@ pub const Config = struct {
     fill_floor: f64 = 0.35, // the share of grafted rows a stream must keep to go on reading its chain back every round
     draft_streams: bool,
     head_trees: bool,
-    /// a prompt in pieces: its last token is the pending row of the stream's first round, drafted ahead and verified
-    /// in the round's shared window (Python's batcher `finals`), not a window of its own before the stream joins
+    /// a prompt in pieces leaves its last token as the pending row of its first shared round's window
     join_tail: bool = false,
     /// a round's pieces of several streams in one backend call (Backend.pieces), which may run them as one forward
     piece_runs: bool = false,
-    /// with join_tail: a round's joined prompts get their first drafts in one backend call (Python's `_windows`)
+    /// with join_tail: a round's joined prompts get their first drafts in one backend call
     join_drafts: bool = false,
     /// a round's finished prompts to the backend together before their finishes (Backend.finals)
     replay_runs: bool = false,
@@ -75,14 +80,18 @@ pub const Config = struct {
     shared_costs: Table,
     lane_costs: Table, // window ms by rows to 64 (lanes/plan_lanes.zig)
     mtp_step_ms: f64,
+    draft_step_ms: f64 = 0, // Model.draft_step_ms
     enter_match: i64 = 8, // matching tokens a copy needs (rejects coincidental indentation)
     copy_rate: f64 = 0.94, // a copied token's chance of landing in allocation
+    lone_copies: bool = true, // Model.lone_copies
     k: Constants = .{},
 
     pub fn init(gpa: Allocator, m: Model, max_rows: u32, max_draft: u32) !Config {
         if (max_rows < 1) return error.BadMaxRows;
         const width: u32 = @max(1, @min(@max(m.exact_width, 1), max_rows));
-        const max_copy = width - 1;
+        if (m.draft_confidence) |floor| if (!(floor >= 0 and floor <= 1)) return error.InvalidDraftConfidence;
+        if (m.head_trees and m.draft_confidence != null) return error.DraftConfidenceNeedsChain;
+        const max_copy = if (m.copy_drafts) width - 1 else 0;
         const first_rows: i64 = if (m.first_copy_rows != 0) m.first_copy_rows else width;
         const first_copy: u32 = @intCast(@max(1, @min(@as(i64, max_copy), first_rows - 1)));
         const prior = if (m.draft_prior.len > 0) m.draft_prior else &default_prior;
@@ -110,6 +119,7 @@ pub const Config = struct {
         const depth_prior = try gpa.dupe(f64, prior);
         errdefer gpa.free(depth_prior);
         return .{
+            .lone_copies = m.lone_copies,
             .family_width = width,
             .max_copy = max_copy,
             .first_copy = first_copy,
@@ -119,10 +129,11 @@ pub const Config = struct {
             .pipelined = m.gpu_tokens,
             .plain_guard = m.plain_guard,
             .most_drafts = @min(m.drafts, @min(width - 1, max_draft)),
+            .draft_confidence = m.draft_confidence,
             .family_streams = streams,
             .batch_rows = batch_rows,
             .batch_streams = if (streams) (if (m.max_streams != 0) m.max_streams else 32) else 1,
-            .node_probabilities = m.draft_probabilities,
+            .node_probabilities = m.draft_probabilities or m.draft_confidence != null,
             .draft_streams = m.draft_streams,
             .head_trees = m.head_trees,
             .join_tail = m.join_tail,
@@ -134,6 +145,8 @@ pub const Config = struct {
             .shared_costs = try alloc.extendCosts(gpa, timed.items, batch_rows),
             .lane_costs = try alloc.extendCosts(gpa, m.lane_costs, 64),
             .mtp_step_ms = m.mtp_step_ms,
+            .k = .{ .depth_rate = if (m.depth_rate > 0) m.depth_rate else (Constants{}).depth_rate },
+            .draft_step_ms = m.draft_step_ms,
         };
     }
 
@@ -153,4 +166,8 @@ test "setup derives widths like Python" {
     try std.testing.expectEqual(@as(u32, 16), c.base_width);
     try std.testing.expectEqual(@as(u32, 4), c.most_drafts);
     try std.testing.expect(c.family_mtp and c.family_streams);
+    try std.testing.expectEqual(@as(f64, 0.15), c.k.depth_rate);
+    var steady = try Config.init(gpa, .{ .exact_width = 16, .mtp = true, .speculate = true, .drafts = 4, .depth_rate = 0.08 }, 16, 15);
+    defer steady.deinit(gpa);
+    try std.testing.expectEqual(@as(f64, 0.08), steady.k.depth_rate);
 }

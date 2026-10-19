@@ -20,23 +20,41 @@ pub const Config = server.Config;
 test {
     @import("std").testing.refAllDecls(@This());
     _ = @import("json");
-    _ = @import("fields.zig");
+    _ = @import("std_options.zig");    _ = @import("fields.zig");
     _ = @import("reply_text.zig");
     _ = @import("tool_parse.zig");
     _ = @import("tool_stream.zig");
     _ = @import("tool_params.zig");
+    _ = @import("tool_grammar.zig");
+    // 1.1.0's required-tools grammar suite is not adopted on this fork (its mask-policy backends stay upstream);
+    // unwired here, present in the tree.
+    _ = @import("grammar.zig");
     _ = @import("pyrepr.zig");
     _ = @import("metrics.zig");
     _ = @import("http_conn.zig");
     _ = @import("auth.zig");
     _ = @import("cli.zig");
+    _ = @import("cli_test.zig");
     _ = @import("live.zig");
     _ = @import("listener.zig");
     _ = @import("hub.zig");
     _ = @import("chunk_plan.zig");
     _ = @import("status_routes.zig");
+    _ = @import("speech.zig");
+    _ = @import("speech_stream_test.zig");
+    _ = @import("drama_prompt.zig");
+    _ = @import("health_test.zig");
+    _ = @import("memory_routes.zig");
+    _ = @import("process_memory.zig");
     _ = @import("log.zig");
+    _ = @import("request_log.zig");
     _ = @import("messages.zig");
+    _ = @import("images.zig");
+    _ = @import("images_video_marker_test.zig");
+    _ = @import("image_key.zig");
+    _ = @import("image_pieces.zig");
+    _ = @import("media_fetch.zig");
+    _ = @import("videos.zig");
     _ = @import("stream_preflight_test.zig");
     _ = @import("deepseek.zig");
     _ = @import("deepseek_test.zig");
@@ -44,8 +62,64 @@ test {
     _ = @import("keepalive_test.zig");
     _ = @import("spark.zig");
     _ = @import("wire_test.zig");
-    _ = @import("late_system_test.zig");
+    _ = @import("stream_dsml_test.zig");
+    _ = @import("logprobs_test.zig");    _ = @import("late_system_test.zig");
     _ = @import("compact_test.zig");
+    _ = @import("request_log.zig");
+    _ = @import("completion_prompt_test.zig");
+    _ = @import("server_init_test.zig");
     _ = @import("decisions.zig");
     _ = @import("decisions_test.zig");
+    _ = @import("systemone.zig");
+    _ = @import("systemone_test.zig");
+    _ = @import("slide.zig");
+    _ = @import("slide_cli.zig");
+    _ = @import("slide_key.zig");
+    _ = @import("slide_graph.zig");
+    _ = @import("slide_graph_delete.zig");
+    _ = @import("slide_model.zig");
+    _ = @import("slide_lesson.zig");
+    _ = @import("slide_words.zig");
+    _ = @import("slide_found.zig");
+    _ = @import("slide_untold.zig");
+    _ = @import("slide_replace.zig");
+    _ = @import("slide_answers.zig");
+    _ = @import("slide_recheck.zig");
+    _ = @import("slide_forget.zig");
+    _ = @import("slide_forget_test.zig");
+    _ = @import("slide_whom.zig");
+    _ = @import("slide_subject.zig");
+    _ = @import("slide_span.zig");
+    _ = @import("slide_route.zig");
+    _ = @import("slide_side.zig");
+    _ = @import("slide_take.zig");
+    _ = @import("slide_teacher.zig");
+    _ = @import("slide_pick.zig");
+    _ = @import("startup.zig");
+    _ = @import("responses_include_test.zig");
+    _ = @import("cortheon/cortheon.zig");
+    // Cortheon's research loop is off by default and its stream integration is not adopted on this fork.
+    _ = @import("recall_routes.zig");
+    // the benchmark command's serve child runs under POSIX signals and waits; Windows refuses the command
+    if (comptime @import("builtin").os.tag != .windows) {
+        _ = @import("benchmark_suite.zig");
+        _ = @import("benchmark_check.zig");
+        _ = @import("benchmark_receipt_test.zig");
+        _ = @import("benchmark_stop_test.zig");
+        _ = @import("benchmark_sse_test.zig");
+        _ = @import("benchmark_stream_test.zig");
+        _ = @import("benchmark_server_test.zig");
+        _ = @import("benchmark_facts_test.zig");
+        _ = @import("benchmark_manifest.zig");
+        _ = @import("benchmark_upload.zig");
+        _ = @import("benchmark_upload_test.zig");
+        _ = @import("benchmark_args.zig");
+        _ = @import("benchmark_cli_test.zig");
+        _ = @import("benchmark_run_test.zig");
+        _ = @import("benchmark_early_test.zig");
+    }
+}
+
+test {
+    _ = @import("benchmark_config_test.zig");
 }

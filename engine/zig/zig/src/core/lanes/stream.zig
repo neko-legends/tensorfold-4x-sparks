@@ -1,11 +1,14 @@
 //! One stream (Python LaneStream) and the round loop's state for it (Python's dicts keyed by stream id).
 const std = @import("std");
+const grammar = @import("grammar.zig");
 const shape = @import("shape.zig");
 const plan_lanes = @import("plan_lanes.zig");
 const Allocator = std.mem.Allocator;
 const Proposer = @import("proposer.zig").Proposer;
+const Reader = @import("recall.zig").Reader;
 const Sampling = @import("sampling.zig").Sampling;
 const State = @import("depth.zig").State;
+const Row = @import("logprob.zig").Row;
 
 pub const Reason = enum {
     none,
@@ -74,7 +77,7 @@ pub const CancelCheck = struct {
     check: *const fn (ptr: *anyopaque) bool,
 };
 
-/// A kept prompt state the backend restores before its prompt pass (core/prompt_cache.zig), and where it keeps new ones.
+/// A kept prompt state to restore before prefill, and destinations for new states.
 pub const Reuse = struct {
     saved: ?*anyopaque = null, // the backend's copy of the state after `at` prompt tokens (null: start at 0)
     at: u32 = 0,
@@ -95,6 +98,16 @@ pub const Held = struct {
     parents: ?[]i32 = null,
 };
 
+/// One image of a prompt: tower input (patches [gh * gw, width]) for the `tokens` placeholder rows from `at`.
+pub const Image = struct {
+    pixels: []const f32,
+    gh: u32,
+    gw: u32,
+    at: u32,
+    tokens: u32,
+    hash: u64 = 0, // core/picture/identity.zig's: the bytes and the grid, as the prompt cache's key names the image
+};
+
 pub const Spec = struct {
     id: []const u8,
     prompt: []const u32,
@@ -103,15 +116,27 @@ pub const Spec = struct {
     sampling: ?Sampling = null,
     drafts: bool = true,
     proposer: ?Proposer = null,
+    recall: ?*Reader = null, // copies and grafts from the record of earlier requests (lanes/recall.zig)
     stop_check: ?StopCheck = null,
     cancel_check: ?CancelCheck = null,
+    yield_check: ?CancelCheck = null, // a background prompt pass: real work waits, so it keeps what it has and stops
     think_budget: u32 = 0,
     think_close: []const u32 = &.{},
     think_end: i64 = -1,
     think_open: ?bool = null, // null: open when a budget is set (the server's rule)
     loop_guard: bool = false,
     chunks: []const u32 = &.{}, // where prefill chunks start after 0 (Python's PrefillPlan); empty: the backend's step
+    history_len: u32 = 0, // prompt prefix lengths a backend may keep for a later turn: the rendered history,
+    shared_prefixes: []const u32 = &.{}, // then shared system blocks
     reuse: Reuse = .{},
+    decide: ?u32 = null, // the prompt row where living lessons decide whether they act on the reply
+    untaught: bool = false, // no learned neuron acts on its rows: the model as shipped (Request.untaught)
+    logprobs: ?u8 = null, // the target's log probabilities for each committed token, with this many best tokens
+    prompt_logprobs: ?u8 = null, // and for each prompt token after the first, with ranks (the prompt pass starts at 0)
+    grammar: ?*grammar.Constraint = null, // structured output: the reply stays in it (the creator frees it)
+    decode_spans: []const [2]u32 = &.{}, // prompt rows an earlier reply decoded (Request.decode_spans), for backends that keep their bits
+    images: []const Image = &.{}, // in prompt order; the backend's tower fills their rows
+    key: []const u32 = &.{}, // the prompt as the cache matches it (image rows by their image); empty: the prompt
 };
 
 pub const Stream = struct {
@@ -122,8 +147,10 @@ pub const Stream = struct {
     sampling: ?Sampling,
     drafts: bool,
     proposer: ?Proposer,
+    recall: ?*Reader,
     stop_check: ?StopCheck,
     cancel_check: ?CancelCheck,
+    yield_check: ?CancelCheck,
     think_budget: u32,
     think_close: []const u32,
     think_end: i64,
@@ -131,9 +158,24 @@ pub const Stream = struct {
     loop_guard: bool,
     loop_period: ?u32 = null,
     chunks: []const u32,
+    history_len: u32,
+    shared_prefixes: []const u32,
+    logprobs: ?u8 = null,
+    grammar: ?*grammar.Constraint = null, // follows each committed token; its masks keep the draws inside it
+    problem: []const u8 = "", // why a stream finished with `error` (static text)
+    rows: std.ArrayList(Row) = .empty, // with `logprobs`: one a token of emitted(), in order
+    prompt_logprobs: ?u8 = null,
+    prompt_rows: std.ArrayList(Row) = .empty, // with `prompt_logprobs`: one a prompt token after the first, in order
     reuse: Reuse = .{},
+    decode_spans: []const [2]u32 = &.{},
+    decide: ?u32 = null,
+    untaught: bool = false,
+    images: []const Image = &.{},
+    key: []const u32 = &.{},
     cached: u32 = 0, // prompt tokens the backend restored from `reuse` (its prompt pass started there)
+    fill_at: std.atomic.Value(u32) = .init(0), // prompt tokens the pass has prefilled; the engine thread writes
     reuse_failed: bool = false, // the backend's restore of `reuse` failed: it prefilled from 0
+    reuse_error: ?anyerror = null, // the rejected restore's reason, logged once when its cache borrow is reported
     context: std.ArrayList(u32) = .empty,
     pending: ?u32 = null,
     force: std.ArrayList(u32) = .empty,
@@ -146,6 +188,7 @@ pub const Stream = struct {
     branch_rows: u64 = 0, // suffix-match branch rows verified (lanes/fill.zig)
     branch_accepted: u64 = 0, // of those, rows on the accepted path
     graft_hit: f64 = 1, // recent share of grafted rows kept; a read of the chain that grafted none counts as a miss
+    recall_hit: f64 = 1, // the same for rows Recall's candidates grafted, kept apart
     odds: ?shape.Odds = null, // how often the target took the head's rank-r lane at each depth (head trees)
     lanes: ?shape.Shape = null, // the shape of the held tree drafts
     landed: [shape.max_depth][shape.ranks][2]u32 = @splat(@splat(.{ 0, 0 })), // tree lanes verified and taken
@@ -175,15 +218,32 @@ pub const Stream = struct {
             .sampling = spec.sampling,
             .drafts = spec.drafts,
             .proposer = if (spec.drafts) spec.proposer else null,
+            .recall = if (spec.drafts) spec.recall else null,
             .stop_check = spec.stop_check,
             .cancel_check = spec.cancel_check,
+            .yield_check = spec.yield_check,
             .think_budget = spec.think_budget,
             .think_close = spec.think_close,
             .think_end = spec.think_end,
             .think_open = spec.think_open orelse (spec.think_budget > 0 or (spec.loop_guard and spec.think_end >= 0)),
             .loop_guard = spec.loop_guard,
             .chunks = spec.chunks,
+            .history_len = spec.history_len,
+            .shared_prefixes = spec.shared_prefixes,
             .reuse = spec.reuse,
+            .fill_at = .init(if (spec.reuse.saved != null) spec.reuse.at else 0), // a kept prefix is filled from the start
+            .decide = spec.decide,
+            .untaught = spec.untaught,
+            .logprobs = spec.logprobs,
+            .prompt_logprobs = spec.prompt_logprobs,
+            .grammar = spec.grammar,
+            .decode_spans = spec.decode_spans,
+            .images = spec.images,
+            .key = spec.key,
+        };
+        // under a grammar a forced close ends at the think end: the grammar takes the reply from the next token
+        if (spec.grammar) |g| if (g.after) |end| if (std.mem.indexOfScalar(u32, s.think_close, end)) |at| {
+            s.think_close = s.think_close[0 .. at + 1];
         };
         try s.context.appendSlice(gpa, spec.prompt);
         return s;
@@ -191,6 +251,8 @@ pub const Stream = struct {
 
     pub fn deinit(s: *Stream, gpa: Allocator) void {
         s.context.deinit(gpa);
+        s.rows.deinit(gpa);
+        s.prompt_rows.deinit(gpa);
         s.force.deinit(gpa);
         s.dropRoundState(gpa);
     }
@@ -235,6 +297,12 @@ pub const Stream = struct {
         return c.check(c.ptr);
     }
 
+    /// Whether a background prompt pass should step aside now (false with no hook); asked before each chunk.
+    pub fn yields(s: *const Stream) bool {
+        const c = s.yield_check orelse return false;
+        return c.check(c.ptr);
+    }
+
     fn budgetActive(s: *const Stream) bool {
         return s.think_open and s.think_budget > 0 and s.think_close.len > 0;
     }
@@ -248,6 +316,11 @@ pub const Stream = struct {
             if (@as(i64, t) == s.think_end) return null;
         }
         return null;
+    }
+
+    /// The thinking budget's cut falls within the next `rows` tokens.
+    pub fn budgetWithin(s: *const Stream, rows: usize) bool {
+        return s.budgetActive() and s.emitted().len + rows >= s.think_budget;
     }
 
     /// Python `think_cut([-1]) == 0`: the next position is the budget's cut.
@@ -274,14 +347,47 @@ pub const Stream = struct {
         return std.mem.indexOfScalar(u32, s.eos, token) != null;
     }
 
-    /// Append tokens until the stream finishes; how many landed (a prefix of `tokens`).
-    pub fn commit(s: *Stream, gpa: Allocator, tokens: []const u32) !usize {
+    /// Each held tree lane whose parent row the round reached: the target took it or not (its depth and rank).
+    pub fn observeLanes(s: *Stream, l: *const shape.Shape, path: []const u32) void {
+        var on: [256]bool = @splat(false);
+        for (path) |r| if (r < on.len) {
+            on[r] = true;
+        };
+        for (l.parents, l.depths, l.ranks, 0..) |par, d, r, i| {
+            const parent_row: usize = if (par < 0) 0 else 1 + @as(usize, @intCast(par));
+            if (!on[parent_row]) continue;
+            const took = on[1 + i];
+            s.odds.?.observe(d, r, took);
+            if (d < shape.max_depth and r < shape.ranks) {
+                s.landed[d][r][0] += 1;
+                s.landed[d][r][1] += @intFromBool(took);
+            }
+        }
+    }
+
+    /// Append tokens, and with `logprobs` their rows, until the stream finishes; how many landed.
+    pub fn commit(s: *Stream, gpa: Allocator, tokens: []const u32, rows: []const Row) !usize {
+        if (rows.len != if (s.logprobs != null) tokens.len else 0) return error.LogprobRowsMismatch;
         var landed: usize = 0;
-        for (tokens) |t| {
+        for (tokens, 0..) |t, i| {
             if (s.finished) break;
             try s.context.append(gpa, t);
+            if (rows.len > 0) try s.rows.append(gpa, rows[i]);
             landed += 1;
             if (@as(i64, t) == s.think_end) s.think_open = false;
+            if (s.grammar) |g| {
+                if (!try g.follow(t)) {
+                    s.finished = true;
+                    s.reason = .@"error";
+                    s.problem = "the reply's grammar rejected a chosen token";
+                    break;
+                }
+                if (g.finished() and !s.isEos(t)) { // the grammar's stop token ends the reply (eos ignored or not)
+                    s.finished = true;
+                    s.reason = .stop;
+                    break;
+                }
+            }
             const fire = if (s.loop_guard and s.think_open and s.think_end >= 0 and s.loop_period == null) detectLoop(s.emitted()) else null;
             if (s.isEos(t) or s.stopped()) {
                 s.finished = true;
@@ -323,9 +429,20 @@ test "commit stops at eos and length" {
     const gpa = std.testing.allocator;
     var s = try Stream.init(gpa, .{ .id = "a", .prompt = &.{ 1, 2 }, .max_new = 3, .eos = &.{9} });
     defer s.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 2), try s.commit(gpa, &.{ 5, 9, 7 }));
+    try std.testing.expectEqual(@as(usize, 2), try s.commit(gpa, &.{ 5, 9, 7 }, &.{}));
     try std.testing.expectEqualSlices(u32, &.{ 5, 9 }, s.emitted());
     try std.testing.expect(s.finished and s.reason == .stop);
+}
+
+test "a logprob stream lands a row with each token it lands, and refuses tokens without rows" {
+    const gpa = std.testing.allocator;
+    var s = try Stream.init(gpa, .{ .id = "a", .prompt = &.{ 1, 2 }, .max_new = 3, .eos = &.{9}, .logprobs = 0 });
+    defer s.deinit(gpa);
+    try std.testing.expectError(error.LogprobRowsMismatch, s.commit(gpa, &.{5}, &.{}));
+    const rows = [_]Row{ .{ .token = 5, .logprob = -0.5 }, .{ .token = 9, .logprob = -1 }, .{ .token = 7, .logprob = -2 } };
+    try std.testing.expectEqual(@as(usize, 2), try s.commit(gpa, &.{ 5, 9, 7 }, &rows));
+    try std.testing.expectEqual(@as(usize, 2), s.rows.items.len);
+    try std.testing.expectEqual(@as(u32, 9), s.rows.items[1].token);
 }
 
 test "loop guard stops at the cap even when no cycle fires" {
@@ -334,7 +451,7 @@ test "loop guard stops at the cap even when no cycle fires" {
     for (&tokens, 0..) |*token, i| token.* = @intCast(100 + i);
     var guarded = try Stream.init(gpa, .{ .id = "guarded", .prompt = &.{1}, .max_new = 10, .think_close = &.{ 90, 91, 92 }, .think_end = 91, .loop_guard = true });
     defer guarded.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 10), try guarded.commit(gpa, &tokens));
+    try std.testing.expectEqual(@as(usize, 10), try guarded.commit(gpa, &tokens, &.{}));
     try std.testing.expect(guarded.finished and guarded.reason == .length);
 }
 
@@ -346,11 +463,11 @@ test "loop guard fires, closes thinking, and latches once" {
     for (0..257) |_| try tokens.append(gpa, 7);
     var s = try Stream.init(gpa, .{ .id = "loop", .prompt = &.{1}, .max_new = 400, .think_close = &.{ 90, 91, 92 }, .think_end = 91, .loop_guard = true });
     defer s.deinit(gpa);
-    try std.testing.expectEqual(@as(usize, 321), try s.commit(gpa, tokens.items));
+    try std.testing.expectEqual(@as(usize, 321), try s.commit(gpa, tokens.items, &.{}));
     try std.testing.expectEqual(@as(u32, 1), s.loop_period.?);
     try std.testing.expect(!s.finished and !s.think_open and s.force.items.len == 3);
-    while (s.popForce()) |token| _ = try s.commit(gpa, &.{token});
+    while (s.popForce()) |token| _ = try s.commit(gpa, &.{token}, &.{});
     try std.testing.expect(!s.finished and s.force.items.len == 0);
-    _ = try s.commit(gpa, &.{8});
+    _ = try s.commit(gpa, &.{8}, &.{});
     try std.testing.expect(!s.finished and s.loop_period.? == 1);
 }

@@ -1,5 +1,6 @@
 //! A server's life: keys, the listening socket, the startup lines, the live line, and a clean stop on SIGTERM or SIGINT.
 const std = @import("std");
+const platform = @import("sys");
 const api = @import("engine_api");
 const json = @import("json");
 const auth = @import("auth.zig");
@@ -10,8 +11,9 @@ const listener_mod = @import("listener.zig");
 const model_text = @import("model_text.zig");
 const server_mod = @import("server.zig");
 const routes = @import("routes.zig");
+const recall_routes = @import("recall_routes.zig");
 const Allocator = std.mem.Allocator;
-const posix = std.posix;
+const posix = platform.posix;
 
 var stop_requested: std.atomic.Value(bool) = .init(false);
 /// The signal that asked for the stop (0: none yet), for the shutdown line
@@ -20,14 +22,14 @@ var stop_signal: std.atomic.Value(i32) = .init(0);
 var stop_count: std.atomic.Value(u32) = .init(0);
 
 fn onStop(sig: posix.SIG) callconv(.c) void {
-    stop_signal.store(@intCast(@intFromEnum(sig)), .release);
+    stop_signal.store(@intCast(@backingInt(sig)), .release);
     _ = stop_count.fetchAdd(1, .acq_rel);
     stop_requested.store(true, .release);
 }
 
 fn signalName(sig: i32) []const u8 {
-    if (sig == @intFromEnum(posix.SIG.TERM)) return "SIGTERM";
-    if (sig == @intFromEnum(posix.SIG.INT)) return "SIGINT";
+    if (sig == @backingInt(posix.SIG.TERM)) return "SIGTERM";
+    if (sig == @backingInt(posix.SIG.INT)) return "SIGINT";
     return "a stop signal";
 }
 
@@ -46,7 +48,7 @@ pub fn stopping() bool {
 }
 
 /// The hard limit macOS reads as unlimited.
-const rlim_infinity: u64 = std.c.RLIM.INFINITY;
+const rlim_infinity: u64 = platform.c.RLIM.INFINITY;
 
 /// The targets to try, in order: the hard limit when finite, else the fallbacks 65536 then 10240, first that works; never an unlimited soft limit, since a loop over every descriptor would do absurd work.
 fn fillTargets(max: u64, out: *[2]u64) []const u64 {
@@ -78,14 +80,22 @@ pub const Setup = struct {
     engine: api.Engine,
     text: model_text.Text,
     served: []const u8,
+    /// The checkpoint's folder (structured output reads its tokenizer.json and config.json, /slide shows its shards).
+    model_dir: []const u8 = "",
     /// Sampling defaults from generation_config.json and the flags, as a JSON object; null: greedy.
     sampling: ?json.Value = null,
     environ: ?*const std.process.Environ.Map = null,
     started: i96 = 0,
+    /// The release, backend and GPU the open /health names.
+    identity: server_mod.Identity = .{},
+    /// A test build's TF_SLIDE_FORGET_FAIL: the fact whose check a delete fails (0: none, as in every release).
+    forget_fail: u32 = 0,
     /// Called once the socket listens, with its port (tests read it).
     on_listen: ?*const fn (port: u16) void = null,
     /// The checkpoint family's own chat rules (DeepSeek-V4.1), or null.
     family: ?@import("family.zig").Family = null,
+    /// Recall's record, attached to the engine already (--recall); null: off (upstream 1.1.0).
+    recall: ?*api.recall_store.Store = null,
     /// The HTTP surface (spark.zig): a family whose Python app is the Spark server's answers as it does.
     wire: @import("spark.zig").Wire = .tensorfold,
     /// Run by `run` so the engine stops before the server is freed; null: the caller closes it after `run`.
@@ -137,6 +147,7 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
     };
     const config: server_mod.Config = .{
         .served_name = s.served,
+        .model_dir = s.model_dir,
         .model_ids = ids.items,
         .default_max_tokens = args.max_tokens,
         .enable_thinking = args.thinking,
@@ -146,6 +157,7 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
         .keep_warm_s = args.keep_warm,
         .default_sampling = s.sampling,
         .use_drafts = !args.no_drafts,
+        .vision_urls = args.vision_urls,
         .seed_salt = salt,
         .request_log = env(s, "TENSORFOLD_REQUEST_LOG"),
         .dashboard = args.dashboard,
@@ -155,12 +167,20 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
         .compact_at = if (args.compact_auto) .{ .auto = {} } else if (args.compact_fraction) |f| .{ .fraction = f } else null,
         .compact_keep = args.compact_keep,
         .compact_memory = args.compact_memory,
+        .slide_graph = args.slide_graph,
+        .slide_forget_fail = s.forget_fail,
+        .cortheon = args.cortheon,
+        .cortheon_search_key = env(s, "BRAVE_SEARCH_API_KEY"),
+        .saved_conversations = args.learn_conversations,
+        .identity = s.identity,
+        .environ = s.environ,
     };
     const srv = server_mod.Server.init(gpa, io, s.engine, s.text, config, if (store.enabled()) &store else null) catch {
         std.debug.print("tensorfold: the server could not start\n", .{});
         return 1;
     };
     defer srv.deinit();
+    srv.recall = s.recall;
     if (args.loop_guard and !srv.info.loop_guard) {
         std.debug.print("tensorfold: --loop-guard is not supported by this native engine\n", .{});
         return 2;
@@ -183,8 +203,8 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
     const loaded = if (s.started > 0) @as(f64, @floatFromInt(now - s.started)) / 1e9 else 0;
     var window_text: [24]u8 = undefined;
     log.line("serving {s} at http://{s}:{d}/v1 (sampling: {s}; drafts: {s}; context: {s}; loaded in {d:.1}s)", .{
-        s.served,                            args.host,                                                                                   port,   shownSampling(a, s.sampling),
-        if (args.no_drafts) "off" else "on", if (window > 0) std.fmt.bufPrint(&window_text, "{d}", .{window}) catch "?" else "unlimited", loaded,
+        s.served,                                                   args.host,                                                                                   port,   shownSampling(a, s.sampling),
+        if (args.no_drafts or srv.info.plain_only) "off" else "on", if (window > 0) std.fmt.bufPrint(&window_text, "{d}", .{window}) catch "?" else "unlimited", loaded,
     });
     if (greedy(s.sampling))
         log.line("WARNING: default sampling is greedy (temperature <= 0) - a client that omits `temperature` decodes greedily, which on a long agentic turn can loop in reasoning and return empty content", .{});
@@ -192,6 +212,8 @@ pub fn run(gpa: Allocator, io: std.Io, args: cli.Args, s: Setup) u8 {
     if (s.wire == .spark) log.line("serving: {d} slot(s) x {d} tokens; wire spark; health {t}; request log {s}; disconnect {s}", .{ srv.info.lanes, window, spark_settings.health, if (spark_settings.log) |l| l.path else "off", if (spark_settings.disconnect) "on" else "off" });
     if (args.thinking and std.mem.indexOf(u8, s.text.templateSource(), "enable_thinking") != null)
         log.line("thinking on (the chat template's default): replies reason in reasoning_content before the answer in content, and max_tokens counts both. --no-thinking turns it off; a request can send chat_template_kwargs {{\"enable_thinking\": false}}", .{});
+    if (s.recall) |r| recall_routes.line(r);
+    if (srv.cortheon) |c| log.line("cortheon on: chat requests get Cortheon's reasoning program, web research before building, and cortheon_search/cortheon_fetch run here ({s}); a request can send \"cortheon\": false", .{c.engine});
     live.columns_env = env(s, "COLUMNS");
     var ticker: live.Ticker = .{ .engine = s.engine };
     const drawing = live.wanted(io, if (env(s, "TENSORFOLD_NO_LIVE")) |v| std.mem.eql(u8, v, "1") else false);
@@ -287,6 +309,7 @@ test "the targets are the hard limit, or the fallbacks under an unlimited one" {
 }
 
 test "the raise lifts a low soft limit, and a second raise does nothing" {
+    if (@import("builtin").os.tag == .windows) return error.SkipZigTest; // no descriptor limits to raise
     const before = try posix.getrlimit(.NOFILE);
     defer posix.setrlimit(.NOFILE, before) catch {};
     if (@as(u64, @intCast(before.max)) <= 256) return error.SkipZigTest;

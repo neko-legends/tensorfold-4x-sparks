@@ -1,6 +1,8 @@
-//! Frozen server goldens for `zig build test-golden`, with the seven differences that are still known.
+//! Frozen server goldens for `zig build test-golden`, with the thirteen differences that are still known.
 const std = @import("std");
-const posix = std.posix;
+const builtin = @import("builtin");
+const platform = @import("sys");
+const posix = platform.posix;
 const Io = std.Io;
 const wire = @import("wire.zig");
 const Reply = wire.Reply;
@@ -16,7 +18,45 @@ const known_diffs = [_]Known{
     .{ .group = "metrics-open", .name = "metrics" },
     .{ .group = "metrics-open", .name = "v1-metrics" },
     .{ .group = "keys", .name = "metrics-counted" },
+    .{ .group = "tools", .name = "two_tools-stream" },
+    .{ .group = "tools", .name = "two_tools-single-stream" },
+    .{ .group = "anthropic", .name = "tool-use-stream" },
+    // a backend without a token grammar refuses required and named tool choices, which Python answered unforced
+    .{ .group = "tools", .name = "choice-\"required\"" },
+    .{ .group = "tools", .name = "choice-{\"type\": \"function\", \"function\": {\"name\": \"lookup\"}}" },
+    .{ .group = "anthropic", .name = "tool-result" },
 };
+
+/// Why two request logs differ: their line counts and the first line that does, each cut to 100 bytes.
+fn logDiff(a: std.mem.Allocator, want: []const u8, got: []const u8) ![]const []const u8 {
+    var out: std.ArrayList([]const u8) = .empty;
+    var wl = std.mem.splitScalar(u8, want, '\n');
+    var gl = std.mem.splitScalar(u8, got, '\n');
+    var n: usize = 0;
+    while (true) : (n += 1) {
+        const w = wl.next();
+        const g = gl.next();
+        if (w == null and g == null) break;
+        if (w != null and g != null and std.mem.eql(u8, w.?, g.?)) continue;
+        const ws = w orelse "<end>";
+        const gs = g orelse "<end>";
+        try out.append(a, try std.fmt.allocPrint(a, "line {d}: golden [{s}] zig [{s}]", .{ n + 1, ws[0..@min(ws.len, 100)], gs[0..@min(gs.len, 100)] }));
+        break;
+    }
+    try out.append(a, try std.fmt.allocPrint(a, "TENSORFOLD_REQUEST_LOG: golden {d} lines, zig {d} lines", .{ std.mem.count(u8, want, "\n"), std.mem.count(u8, got, "\n") }));
+    return out.items;
+}
+
+/// Reads a spawned server's stdout to its end, so its log lines never fill the pipe (4 KiB on Windows), then closes it.
+fn drainStdout(io: Io, out: Io.File) void {
+    defer out.close(io);
+    var buf: [4096]u8 = undefined;
+    var reader = out.reader(io, &buf);
+    while ((reader.interface.discardShort(buf.len) catch return) == buf.len) {}
+}
+
+/// The parent's SystemRoot, which a Windows child needs for Winsock; null elsewhere.
+var system_root: ?[]const u8 = null;
 
 fn isKnown(group: []const u8, name: []const u8) bool {
     for (known_diffs) |k| {
@@ -199,6 +239,17 @@ const Outcome = struct { group: []const u8, name: []const u8, verdict: Verdict, 
 
 var outcomes: std.ArrayList(Outcome) = .empty;
 
+/// A case name as a file name every OS checks out: Windows' reserved characters, controls and '%' become %XX.
+fn fileName(a: std.mem.Allocator, name: []const u8) ![]const u8 {
+    var out: std.ArrayList(u8) = .empty;
+    for (name) |c| {
+        if (c < 0x20 or std.mem.indexOfScalar(u8, "<>:\"|?*\\%", c) != null) {
+            try out.appendSlice(a, try std.fmt.allocPrint(a, "%{X:0>2}", .{c}));
+        } else try out.append(a, c);
+    }
+    return out.toOwnedSlice(a);
+}
+
 fn runCase(a: std.mem.Allocator, io: Io, golden_dir: []const u8, port: u16, case: std.json.Value) !void {
     const group = case.object.get("group").?.string;
     const name = case.object.get("name").?.string;
@@ -274,7 +325,7 @@ fn runCase(a: std.mem.Allocator, io: Io, golden_dir: []const u8, port: u16, case
 
     // the golden comparison
     var path_buf: [512]u8 = undefined;
-    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}/{s}.json", .{ golden_dir, group, name });
+    const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}/{s}.json", .{ golden_dir, group, try fileName(a, name) });
     const golden_text = Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1 << 28)) catch {
         try outcomes.append(a, .{ .group = group, .name = name, .verdict = .no_golden });
         return;
@@ -340,6 +391,7 @@ fn spawnServer(a: std.mem.Allocator, io: Io, binary: []const u8, fixtures: []con
         } else try argv.append(a, arg);
     }
     var map = std.process.Environ.Map.init(a);
+    if (system_root) |root| try map.put("SystemRoot", root); // Winsock refuses to start without it
     try map.put("TENSORFOLD_NO_LIVE", "1");
     try map.put("TF_FAKE_CONTEXT", context_tokens);
     var it = env.iterator();
@@ -365,7 +417,7 @@ fn spawnServer(a: std.mem.Allocator, io: Io, binary: []const u8, fixtures: []con
             try fw.interface.writeAll(content);
             try fw.interface.flush();
             const kpz = try std.fmt.allocPrintSentinel(a, "{s}", .{kp}, 0);
-            _ = std.c.fchmodat(posix.AT.FDCWD, kpz, 0o600, 0);
+            _ = platform.c.fchmodat(posix.AT.FDCWD, kpz, 0o600, 0);
         }
     }
     const child = try a.create(std.process.Child);
@@ -376,19 +428,24 @@ fn spawnServer(a: std.mem.Allocator, io: Io, binary: []const u8, fixtures: []con
         .stderr = .inherit,
         .environ_map = &map,
     });
-    // the startup lines until the port
+    // the startup lines until the port, each taken with its newline (one before PORT: a raised open-file limit's)
     var rbuf: [4096]u8 = undefined;
     var reader = child.stdout.?.reader(io, &rbuf);
     while (true) {
-        const line = reader.interface.takeDelimiterExclusive('\n') catch return error.NoPortLine;
+        const line = (reader.interface.takeDelimiter('\n') catch return error.NoPortLine) orelse return error.NoPortLine;
         if (std.mem.startsWith(u8, line, "PORT ")) {
             const port = try std.fmt.parseInt(u16, std.mem.trim(u8, line[5..], " \r"), 10);
+            // the server's log lines keep coming on stdout: drained, or a full pipe blocks the server
+            const drain = try std.Thread.spawn(.{}, drainStdout, .{ io, child.stdout.? });
+            child.stdout = null; // the drain owns it; closed by wait, its number would go to the next server's pipe
+            drain.detach();
             return .{ .child = child, .port = port, .log_path = log_path, .key_path = key_path };
         }
     }
 }
 
 pub fn main(init: std.process.Init) !void {
+    if (builtin.os.tag == .windows) system_root = init.environ_map.get("SystemRoot");
     const gpa = init.gpa;
     const io = init.io;
     const args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -397,7 +454,7 @@ pub fn main(init: std.process.Init) !void {
     const cases_path = args[2];
     const golden_dir = args[3];
     const fixtures = args[4];
-    const tmp_dir = try std.fmt.allocPrint(init.arena.allocator(), ".zig-tmp-golden-{d}", .{std.c.getpid()});
+    const tmp_dir = try std.fmt.allocPrint(init.arena.allocator(), ".zig-tmp-golden-{d}", .{platform.c.getpid()});
     Io.Dir.cwd().createDir(io, tmp_dir, .default_dir) catch {};
     defer Io.Dir.cwd().deleteTree(io, tmp_dir) catch {};
 
@@ -421,18 +478,29 @@ pub fn main(init: std.process.Init) !void {
         if (obj.get("cases")) |cases| {
             for (cases.array.items) |case| try runCase(init.arena.allocator(), io, golden_dir, server.?.port, case);
         }
+        var after_signal = false; // Windows: a step's cases after a signal it cannot send are skipped, and said so
         for (obj.get("then").?.array.items) |then| {
             const t = then.object;
             const kind = t.get("kind").?.string;
             const s = &server.?;
             if (std.mem.eql(u8, kind, "cases")) {
+                if (after_signal) {
+                    std.debug.print("SKIPPED {d} cases after a signal Windows cannot send\n", .{t.get("cases").?.array.items.len});
+                    continue;
+                }
                 for (t.get("cases").?.array.items) |case| try runCase(init.arena.allocator(), io, golden_dir, s.port, case);
             } else if (std.mem.eql(u8, kind, "sleep")) {
                 std.Io.sleep(io, .fromMilliseconds(@intFromFloat(t.get("seconds").?.float * 1000.0)), .awake) catch {};
             } else if (std.mem.eql(u8, kind, "sigterm")) {
+                if (builtin.os.tag == .windows) {
+                    std.debug.print("SKIPPED lifecycle/sigterm-exit-0: Windows has no SIGTERM to send, the server is ended\n", .{});
+                    posix.kill(s.child.id.?, posix.SIG.TERM) catch {};
+                    _ = s.child.wait(io) catch {};
+                    continue;
+                }
                 posix.kill(s.child.id.?, posix.SIG.TERM) catch {};
                 const term = s.child.wait(io) catch return error.WaitFailed;
-                try outcomes.append(gpa, .{
+                try outcomes.append(init.arena.allocator(), .{
                     .group = "lifecycle",
                     .name = "sigterm-exit-0",
                     .verdict = if (term == .exited and term.exited == 0) .equal else .differ,
@@ -440,13 +508,14 @@ pub fn main(init: std.process.Init) !void {
                 });
             } else if (std.mem.eql(u8, kind, "compare_log")) {
                 const golden_log = try std.fmt.allocPrint(init.arena.allocator(), "{s}/{s}", .{ golden_dir, t.get("golden").?.string });
-                const want = Io.Dir.cwd().readFileAlloc(io, golden_log, init.arena.allocator(), .limited(1 << 28)) catch "";
-                const got = Io.Dir.cwd().readFileAlloc(io, s.log_path.?, init.arena.allocator(), .limited(1 << 28)) catch "";
-                try outcomes.append(gpa, .{
+                // a checkout with autocrlf gives the frozen log CRLF endings, the server writes LF: both compare as LF
+                const want = try std.mem.replaceOwned(u8, init.arena.allocator(), Io.Dir.cwd().readFileAlloc(io, golden_log, init.arena.allocator(), .limited(1 << 28)) catch "", "\r\n", "\n");
+                const got = try std.mem.replaceOwned(u8, init.arena.allocator(), Io.Dir.cwd().readFileAlloc(io, s.log_path.?, init.arena.allocator(), .limited(1 << 28)) catch "", "\r\n", "\n");
+                try outcomes.append(init.arena.allocator(), .{
                     .group = "lifecycle",
                     .name = "request-log",
                     .verdict = if (std.mem.eql(u8, want, got)) .equal else .differ,
-                    .why = if (std.mem.eql(u8, want, got)) &.{} else &.{"TENSORFOLD_REQUEST_LOG lines differ from the frozen ones"},
+                    .why = if (std.mem.eql(u8, want, got)) &.{} else try logDiff(init.arena.allocator(), want, got),
                 });
             } else if (std.mem.eql(u8, kind, "rewrite_key")) {
                 var file = try Io.Dir.cwd().createFile(io, s.key_path.?, .{});
@@ -456,8 +525,10 @@ pub fn main(init: std.process.Init) !void {
                 try fw.interface.writeAll(t.get("content").?.string);
                 try fw.interface.flush();
                 posix.kill(s.child.id.?, posix.SIG.HUP) catch {}; // the server rereads the key file, as the reference does
+                after_signal = builtin.os.tag == .windows;
             } else if (std.mem.eql(u8, kind, "sighup")) {
                 posix.kill(s.child.id.?, posix.SIG.HUP) catch {};
+                after_signal = builtin.os.tag == .windows;
             } else if (std.mem.eql(u8, kind, "terminate")) {
                 posix.kill(s.child.id.?, posix.SIG.TERM) catch {};
                 _ = s.child.wait(io) catch {};

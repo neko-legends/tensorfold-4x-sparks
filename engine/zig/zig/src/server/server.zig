@@ -1,5 +1,6 @@
 //! The server: one engine and tokenizer behind the HTTP routes, one thread a connection.
 const std = @import("std");
+const platform = @import("sys");
 const api = @import("engine_api");
 const json = @import("json");
 const errors = @import("errors.zig");
@@ -13,13 +14,18 @@ const listener_mod = @import("listener.zig");
 const routes = @import("routes.zig");
 const responses = @import("responses.zig");
 const grammar = @import("grammar.zig");
-const clock = @import("clock.zig");
-const prompt = @import("prompt.zig");
 const tool_specs = @import("tool_specs.zig");
+const clock = @import("clock.zig");
+const tool_grammar = @import("tool_grammar.zig");
 const chunk_plan = @import("chunk_plan.zig");
+const prompt = @import("prompt.zig");
 const log = @import("log.zig");
 const family_mod = @import("family.zig");
 const spark = @import("spark.zig");
+const live = @import("live.zig");
+const slide_graph = @import("slide_graph.zig");
+const slide_lesson = @import("slide_lesson.zig");
+const cortheon = @import("cortheon/cortheon.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -27,8 +33,11 @@ const Allocator = std.mem.Allocator;
 /// auto compacts near the window. fraction compacts past that share of it.
 pub const CompactAt = union(enum) { auto, fraction: f64 };
 
+pub const Identity = @import("identity.zig").Identity;
+
 pub const Config = struct {
     served_name: []const u8,
+    model_dir: []const u8 = "",
     /// The served name first, then aliases, without repeats.
     model_ids: []const []const u8,
     default_max_tokens: i64 = 4096,
@@ -42,6 +51,8 @@ pub const Config = struct {
     /// Sampling when a request names none (generation_config.json and the serve flags), or null for greedy.
     default_sampling: ?Value = null,
     use_drafts: bool = true,
+    /// --vision-urls: image parts may name public HTTPS URLs, fetched before admission (media_fetch.zig).
+    vision_urls: bool = false,
     seed_salt: i64 = 0,
     /// TENSORFOLD_REQUEST_LOG: where chat and completion bodies are appended; null: nowhere.
     request_log: ?[]const u8 = null,
@@ -51,6 +62,16 @@ pub const Config = struct {
     compact_keep: ?u32 = null,
     /// Directory of the stored note, or null when notes are not stored.
     compact_memory: ?[]const u8 = null,
+    /// --slide-graph: the file holding the Sliding Weights fact graph; null keeps the graph in memory.
+    slide_graph: ?[]const u8 = null,
+    /// A fact whose check a delete fails, to test its put-back (0: none); only -Dslide-test-hooks builds set it.
+    slide_forget_fail: u32 = 0,
+    /// --cortheon: Cortheon's program and server-run web research for chat requests; off changes no reply.
+    cortheon: bool = false,
+    /// BRAVE_SEARCH_API_KEY: Cortheon searches through Brave instead of DuckDuckGo.
+    cortheon_search_key: ?[]const u8 = null,
+    /// --learn-conversations: /v1/imprint answers; without it each of its routes refuses and names the flag.
+    saved_conversations: bool = false,
     timeouts: http_conn.Timeouts = .{},
     /// The checkpoint family's own chat rules (DeepSeek-V4.1); null: the chat template path.
     family: ?family_mod.Family = null,
@@ -58,8 +79,13 @@ pub const Config = struct {
     wire: spark.Wire = .tensorfold,
     /// The Spark surface's knobs (request log, disconnect, health mode).
     spark: spark.Settings = .{},
+    /// The open /health names these after its other keys; empty fields are left out.
+    identity: Identity = .{},
+    /// The process environment GET /v1/benchmark/manifest reads (rank count, revision, the hardware probe); null: none.
+    environ: ?*const std.process.Environ.Map = null,
 };
 
+const Form = struct { opener: []const u8, lead: ?[]const u8, tail: ?[]const u8 };
 pub const Server = struct {
     gpa: Allocator,
     io: std.Io,
@@ -73,6 +99,7 @@ pub const Server = struct {
     markers: reply_text.Markers = reply_text.think_markers,
     chunks: chunk_plan.Plan = .{},
     effort_levels: []const []const u8 = &.{},
+    thinking_switch: bool = false,
     eos: []const u32 = &.{},
     think_close: []const u32 = &.{},
     think_close_end: ?u32 = null,
@@ -93,12 +120,32 @@ pub const Server = struct {
     /// The idle keepalive on the engine's queue, armed by --keep-warm; null when off or not Metal.
     keepalive: ?*api.keepalive.Keepalive = null,
     preparing: std.atomic.Value(i64) = .init(0),
+    speech_inflight: std.atomic.Value(u32) = .init(0),
     arena: std.heap.ArenaAllocator,
+    /// Structured output's compiler, opened by the first structured request (Python's grammar.compiler).
+    grammars: ?*api.grammar.Compiler = null,
+    grammar_problem: ?[]const u8 = null,
+    grammar_mutex: std.Io.Mutex = .init,
+    /// The facts the learner was taught and whether the weights recall them.
+    slide: slide_graph.Graph,
+    teacher: slide_lesson.Teacher, // what every Sliding Weights lesson shares: keep prompts, the turn's end
+    /// The folder's snapshot made or hashed whole by this process (under teacher.learning): later lessons trust it.
+    snapshot_checked: bool = false,
+    /// Cortheon's web reader and what replies hid from their clients; null without --cortheon.
+    cortheon: ?*cortheon.State = null,
+    /// Recall's record (--recall), which GET and DELETE /v1/recall read and empty; main opens and closes it.
+    recall: ?*api.recall_store.Store = null,
 
     /// Reads what the template and tokenizer decide once: late system role, think markers, efforts, the forced close.
     pub fn init(gpa: Allocator, io: std.Io, engine: api.Engine, text: model_text.Text, config: Config, keys: ?*auth.Store) !*Server {
         const srv = try gpa.create(Server);
-        srv.* = .{ .gpa = gpa, .io = io, .engine = engine, .info = engine.info(), .text = text, .config = config, .keys = keys, .metrics = .{ .gpa = gpa }, .store = .{ .gpa = gpa }, .arena = .init(gpa), .family = config.family };
+        srv.* = .{ .gpa = gpa, .io = io, .engine = engine, .info = engine.info(), .text = text, .config = config, .keys = keys, .metrics = .{ .gpa = gpa }, .store = .{ .gpa = gpa }, .arena = .init(gpa), .slide = .init(gpa, io, config.slide_graph), .teacher = .init(gpa), .family = config.family };
+        errdefer srv.deinit(); // a later step's failure stops the keepalive before the caller closes the engine
+        if (!srv.info.text_generation) {
+            if (config.cortheon) return error.CortheonRequiresTextGeneration;
+            return srv;
+        }
+        if (config.cortheon) srv.cortheon = try cortheon.State.init(gpa, io, "TensorFold-Cortheon (+https://github.com/ashhart/TensorFold)", config.cortheon_search_key);
         if (config.keep_warm_s > 0) if (engine.keepaliveTarget()) |target| {
             srv.keepalive = api.keepalive.Keepalive.start(gpa, io, target, @as(i64, config.keep_warm_s) * std.time.ns_per_s) catch |e| blk: {
                 log.line("idle keepalive off: {s}", .{@errorName(e)});
@@ -117,9 +164,12 @@ pub const Server = struct {
         }
         srv.eos = try a.dupe(u32, text.eosIds());
         if (text.tokenId(reply_text.channel_markers.close) != null) srv.markers = reply_text.channel_markers;
-        srv.effort_levels = try fields.effortLevels(a, text.templateSource());
+        const source = text.templateSource();
+        srv.effort_levels = try fields.effortLevels(a, source);
+        srv.thinking_switch = std.mem.indexOf(u8, source, "enable_thinking") != null or
+            std.mem.indexOf(u8, source, "thinking_mode") != null;
         srv.late_system = try lateSystem(a, text);
-        srv.needs_user_after_tool = needsUserAfterTool(text.templateSource());
+        srv.needs_user_after_tool = needsUserAfterTool(source);
         if (text.tokenId("</think>")) |end| {
             const lead = try text.encode(a, "\n", false);
             const trail = try text.encode(a, "\n\n", false);
@@ -128,7 +178,8 @@ pub const Server = struct {
         }
         if (srv.info.prefill_step > 0) {
             srv.chunks = try chunk_plan.markers(srv, a, srv.info.prefill_step);
-            log.line("prompt chunks of up to {d},{d:0>3} tokens, cut at replies {d}+ tokens apart", .{ srv.info.prefill_step / 1000, srv.info.prefill_step % 1000, srv.chunks.min_chunk });
+            var step: [32]u8 = undefined;
+            log.line("prompt chunks of up to {s} tokens, cut at replies {d}+ tokens apart", .{ live.commas(&step, srv.info.prefill_step), srv.chunks.min_chunk });
         }
         return srv;
     }
@@ -137,9 +188,13 @@ pub const Server = struct {
         if (srv.health) |h| h.deinit();
         if (srv.reqlog) |l| l.deinit();
         if (srv.keepalive) |k| k.stop(); // before the engine's queue goes away
+        if (srv.grammars) |g| g.close();
+        srv.metrics.deinit();
         srv.arena.deinit();
         srv.store.deinit();
-        srv.metrics.deinit();
+        srv.slide.deinit();
+        srv.teacher.deinit();
+        if (srv.cortheon) |c| c.deinit();
         srv.gpa.destroy(srv);
     }
 
@@ -153,7 +208,8 @@ pub const Server = struct {
     pub fn resolveSampling(srv: *Server, cx: *Cx, f: Value, temperature: f64, prompt_ids: []const u32) errors.Refused!?api.Sampling {
         _ = temperature; // the request's own temperature field decides, as in the Python server
         const options = try json.newObject(cx.a);
-        if (srv.config.default_sampling) |d| try merge(options, cx, try fields.parseNumbers(cx, d));
+        const defaults = if (srv.config.default_sampling) |d| try fields.parseNumbers(cx, d) else null;
+        if (defaults) |d| try merge(options, cx, d);
         const asked = try fields.parseNumbers(cx, f);
         // a family whose Python server ignores the request's min_p keeps the default's
         if (srv.family) |fam| if (!fam.vt.reads_min_p) {
@@ -162,6 +218,10 @@ pub const Server = struct {
         try merge(options, cx, asked);
         const temp = number(options.get("temperature")) orelse 0;
         if (temp <= 0) return null;
+        if (srv.info.greedy_only) return cx.refuse(if ((if (defaults) |d| number(d.get("temperature")) else null) orelse 0 > 0)
+            "this engine decodes greedily only and this server samples by default: send temperature 0, or serve with --temperature 0"
+        else
+            "this engine decodes greedily only: send temperature 0 or leave it out");
         const seed: u64 = if (options.get("seed")) |s| seedBits(s) else api.seedFor(prompt_ids, srv.config.seed_salt);
         return .{
             .seed = seed,
@@ -170,6 +230,34 @@ pub const Server = struct {
             .top_p = @floatCast(number(options.get("top_p")) orelse 1.0),
             .min_p = @floatCast(number(options.get("min_p")) orelse 0.0),
         };
+    }
+
+    /// A specific engine name, or the server's backend identity when the shared host uses its default name.
+    /// (opener, lead, tail) of this template's tool calls, read from a rendered probe call.
+    fn callForm(srv: *Server, cx: *Cx) errors.Refused!?Form {
+        const probe = (try json.parse(cx.a, "[{\"role\": \"user\", \"content\": \"x\"}, {\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"call_0\", \"type\": \"function\", \"function\": {\"name\": \"tfprobe_fn\", \"arguments\": {}}}]}]")).ok;
+        var scratch: Cx = .{ .a = cx.a };
+        const text = if (prompt.renderIds(srv, &scratch, probe, &.{}, false, null, false)) |ids| try srv.text.decode(cx.a, ids) else |_| "";
+        if (std.mem.lastIndexOf(u8, text, "tfprobe_fn")) |at| {
+            var best: ?usize = null;
+            var opener: []const u8 = "";
+            for (reply_text.calls) |c| if (std.mem.lastIndexOf(u8, text[0..at], c[0])) |s| {
+                if (best == null or s > best.? or (s == best.? and std.mem.order(u8, c[0], opener) == .gt)) {
+                    best = s;
+                    opener = c[0];
+                }
+            };
+            if (best) |s| {
+                const end = at + "tfprobe_fn".len;
+                return .{ .opener = opener, .lead = text[s + opener.len .. at], .tail = if (end < text.len) text[end .. end + 1] else "" };
+            }
+        }
+        for (reply_text.calls) |c| if (srv.text.tokenId(c[0]) != null) return .{ .opener = c[0], .lead = null, .tail = null };
+        return null;
+    }
+
+    pub fn backendName(srv: *const Server) []const u8 {
+        return if (std.mem.eql(u8, srv.info.name, "lanes") and srv.config.identity.backend.len > 0) srv.config.identity.backend else srv.info.name;
     }
 
     /// The call gate and grammar a request asks for, or its refusal when the engine cannot enforce them.
@@ -201,43 +289,60 @@ pub const Server = struct {
         };
     }
 
-    const Form = struct { opener: []const u8, lead: ?[]const u8, tail: ?[]const u8 };
+    /// A request's grammar, compiled once here (a 400 with xgrammar's reason when it cannot be enforced).
+    pub fn compiledStructure(srv: *Server, cx: *Cx, kind: grammar.Kind, text: []const u8, field: []const u8, thinking: bool) errors.Refused!api.Structure {
+        const c = srv.grammarCompiler() orelse return cx.fail(.request, "{s}: {s}", .{ if (kind == .structural_tag) field else "structured output", srv.grammar_problem.? });
+        var err: [512]u8 = undefined;
+        const compiled = c.compile(srv.io, @fromBackingInt(@intCast(@backingInt(kind))), text, &err) catch
+            return cx.fail(.request, "{s}: the grammar cannot be enforced: {s}", .{ field, std.mem.sliceTo(&err, 0) });
+        compiled.free(); // kept in the compiler's cache for the engine's compile
+        return .{ .kind = kind, .text = text, .after = if (thinking) srv.text.tokenId(srv.markers.close) else null, .compiler = c };
+    }
 
-    /// (opener, lead, tail) of this template's tool calls, read from a rendered probe call.
-    fn callForm(srv: *Server, cx: *Cx) errors.Refused!?Form {
-        const probe = (try json.parse(cx.a, "[{\"role\": \"user\", \"content\": \"x\"}, {\"role\": \"assistant\", \"content\": \"\", \"tool_calls\": [{\"id\": \"call_0\", \"type\": \"function\", \"function\": {\"name\": \"tfprobe_fn\", \"arguments\": {}}}]}]")).ok;
-        var scratch: Cx = .{ .a = cx.a };
-        const text = if (prompt.renderIds(srv, &scratch, probe, &.{}, false, null, false)) |ids| try srv.text.decode(cx.a, ids) else |_| "";
-        if (std.mem.lastIndexOf(u8, text, "tfprobe_fn")) |at| {
-            var best: ?usize = null;
-            var opener: []const u8 = "";
-            for (reply_text.calls) |c| if (std.mem.lastIndexOf(u8, text[0..at], c[0])) |s| {
-                if (best == null or s > best.? or (s == best.? and std.mem.order(u8, c[0], opener) == .gt)) {
-                    best = s;
-                    opener = c[0];
-                }
+    /// The model's grammar compiler: tokenizer.json, the text model's vocab_size, the eos ids.
+    fn grammarCompiler(srv: *Server) ?*api.grammar.Compiler {
+        srv.grammar_mutex.lockUncancelable(srv.io);
+        defer srv.grammar_mutex.unlock(srv.io);
+        if (srv.grammars) |g| return g;
+        if (srv.grammar_problem != null) return null;
+        const a = srv.arena.allocator();
+        srv.grammar_problem = blk: {
+            const dir = std.Io.Dir.cwd();
+            const tok = dir.readFileAlloc(srv.io, std.fs.path.join(a, &.{ srv.config.model_dir, "tokenizer.json" }) catch break :blk "out of memory", a, .limited(256 << 20)) catch break :blk "the checkpoint has no tokenizer.json";
+            const cfg_text = dir.readFileAlloc(srv.io, std.fs.path.join(a, &.{ srv.config.model_dir, "config.json" }) catch break :blk "out of memory", a, .limited(16 << 20)) catch break :blk "the checkpoint has no config.json";
+            const cfg = switch (json.parse(a, cfg_text) catch break :blk "out of memory") {
+                .ok => |v| v,
+                .err => break :blk "config.json is not JSON",
             };
-            if (best) |s| {
-                const end = at + "tfprobe_fn".len;
-                return .{ .opener = opener, .lead = text[s + opener.len .. at], .tail = if (end < text.len) text[end .. end + 1] else "" };
-            }
-        }
-        for (reply_text.calls) |c| if (srv.text.tokenId(c[0]) != null) return .{ .opener = c[0], .lead = null, .tail = null };
-        return null;
+            const vocab = grammar.vocabSize(cfg) orelse break :blk "structured output needs the checkpoint's config.json vocab_size";
+            var err: [512]u8 = undefined;
+            const c = a.create(api.grammar.Compiler) catch break :blk "out of memory";
+            c.* = api.grammar.Compiler.open(srv.io, a, tok, vocab, srv.eos, &err) catch |e| break :blk switch (e) {
+                error.NoGrammarLibrary => "the server cannot load " ++ api.grammar.library ++ " (xgrammar; zig build grammar)",
+                else => a.dupe(u8, std.mem.sliceTo(&err, 0)) catch "out of memory",
+            };
+            srv.grammars = c;
+            log.line("structured output: xgrammar over {d} tokens", .{vocab});
+            break :blk null;
+        };
+        return srv.grammars;
     }
 
     /// Counts one finished request for /metrics.
-    pub fn noteRequest(srv: *Server, prompt_len: usize, generated: usize, drafted: u64, accepted: u64, rounds: u64, received: i96, first: ?i96, last: ?i96, prefill: ?f64) void {
+    pub fn noteRequest(srv: *Server, prompt_len: usize, cached: usize, generated: usize, drafted: u64, accepted: u64, rounds: u64, received: i96, first: ?i96, last: ?i96, prefill: ?f64) void {
         const now = clock.nowNs(srv.io);
         const tpot = srv.metrics.tpotValue(first, last, generated);
-        srv.metrics.note(srv.io, prompt_len, generated, drafted, accepted, rounds, @max(0, clock.seconds(now - received)), if (first) |f| clock.seconds(f - received) else null, if (first) |f| @max(0, clock.seconds(now - f)) else null, prefill, tpot);
+        srv.metrics.note(srv.io, prompt_len, cached, generated, drafted, accepted, rounds, @max(0, clock.seconds(now - received)), if (first) |f| clock.seconds(f - received) else null, if (first) |f| @max(0, clock.seconds(now - f)) else null, prefill, tpot);
     }
 
     /// Accepts connections until ``stop`` is set, each on its own thread.
     pub fn serve(srv: *Server, listener: listener_mod.Listener, stop: *const std.atomic.Value(bool)) void {
         while (listener.accept(stop)) |c| {
+            // counted before its thread runs, so a zero count once this loop ends means no connection is left
+            _ = srv.open_connections.fetchAdd(1, .acq_rel);
             const t = std.Thread.spawn(.{ .stack_size = 8 << 20 }, connection, .{ srv, c }) catch {
-                _ = std.posix.system.close(c.fd);
+                _ = srv.open_connections.fetchSub(1, .acq_rel);
+                _ = platform.posix.system.close(c.fd);
                 continue;
             };
             t.detach();
@@ -245,9 +350,8 @@ pub const Server = struct {
     }
 
     fn connection(srv: *Server, accepted: listener_mod.Listener.Accepted) void {
-        _ = srv.open_connections.fetchAdd(1, .acq_rel);
         defer _ = srv.open_connections.fetchSub(1, .acq_rel);
-        defer _ = std.posix.system.close(accepted.fd);
+        defer _ = platform.posix.system.close(accepted.fd);
         var peer_buf: [64]u8 = undefined;
         const peer = listener_mod.peerText(&peer_buf, accepted.peer);
         var conn = http_conn.Conn.init(srv.gpa, accepted.fd, peer) catch return;
@@ -335,7 +439,7 @@ fn lateSystem(a: Allocator, text: model_text.Text) ![]const u8 {
     return if (std.mem.indexOf(u8, rendered, probe_text) != null) "system" else "user";
 }
 
-/// ``needs_user_after_tool``: the template raises "No user query found" when the conversation has no user query, which a conversation whose user turn became tool results no longer has; such templates gain a user turn after a trailing tool message.
+/// ``needs_user_after_tool``: templates raising "No user query found" gain a user turn after a trailing tool message.
 fn needsUserAfterTool(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "No user query found") != null;
 }

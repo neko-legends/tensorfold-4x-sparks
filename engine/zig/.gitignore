@@ -17,3 +17,4 @@ venv/
 zig-out/
 
 .zig-tmp-golden*/
+.q27-metal-check/

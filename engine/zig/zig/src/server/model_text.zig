@@ -36,10 +36,19 @@ pub const Text = struct {
         template_source: *const fn (ctx: *anyopaque) []const u8,
         /// Whether an id is a special token (an added token flagged special); null: none are known.
         special: ?*const fn (ctx: *anyopaque, id: u32) bool = null,
+        /// Ids of ``text`` with no added token matched (a spelled special token is plain text); null: ``encode``.
+        encode_plain: ?*const fn (ctx: *anyopaque, a: Allocator, text: []const u8) Error![]u32 = null,
+        /// A token's own bytes (a partial UTF-8 sequence kept whole) for logprob rows; null: the tokenizer can't say.
+        token_bytes: ?*const fn (ctx: *anyopaque, a: Allocator, id: u32) Allocator.Error!?[]u8 = null,
     };
 
     pub fn encode(t: Text, a: Allocator, text: []const u8, add_special: bool) Error![]u32 {
         return t.vtable.encode(t.ctx, a, text, add_special);
+    }
+
+    pub fn encodePlain(t: Text, a: Allocator, text: []const u8) Error![]u32 {
+        const f = t.vtable.encode_plain orelse return t.encode(a, text, false);
+        return f(t.ctx, a, text);
     }
 
     pub fn decode(t: Text, a: Allocator, ids: []const u32) Allocator.Error![]u8 {
@@ -56,6 +65,12 @@ pub const Text = struct {
 
     pub fn vocabSize(t: Text) u32 {
         return t.vtable.vocab_size(t.ctx);
+    }
+
+    /// A token's own bytes, or null when this text cannot give them.
+    pub fn tokenBytes(t: Text, a: Allocator, id: u32) Allocator.Error!?[]u8 {
+        const f = t.vtable.token_bytes orelse return null;
+        return f(t.ctx, a, id);
     }
 
     pub fn eosIds(t: Text) []const u32 {
@@ -80,5 +95,4 @@ pub const Text = struct {
         const f = t.vtable.special orelse return false;
         return f(t.ctx, id);
     }
-
 };

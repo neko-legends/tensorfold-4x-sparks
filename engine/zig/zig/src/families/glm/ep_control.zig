@@ -1,5 +1,6 @@
 //! The expert-parallel pair's control protocol over a link's window: identities, requests and stop decisions, each acked.
 const std = @import("std");
+const platform = @import("sys");
 const fabric = @import("fabric");
 const Rdma = fabric.rdma.Rdma;
 
@@ -12,6 +13,7 @@ const REQ_FLAG = 32; // u64, at rank 1: rank 0's last request
 const REQ_ACK = 40; // u64, at rank 0: the last request rank 1 has copied out
 const BYE = 48; // u64, at rank 1: rank 0 has closed
 const REPLY = 56; // u64, at rank 0: rank 1's result of the last command, (command << 1) | ok
+const REPLY_VALUE = 128; // u64 payload published before the command reply signal
 const IDENT = 64; // the peer's Identity
 const REQ = PAGE; // the request: a 64-byte head, then the prompt's tokens
 pub const REQ_TOKENS = 262144;
@@ -22,7 +24,7 @@ pub const BYTES = REQ + std.mem.alignForward(usize, 64 + 4 * REQ_TOKENS, PAGE);
 /// What a rank runs; the pair works only when both agree on all but their expert ranges, which must tile [0, experts).
 pub const Identity = extern struct {
     magic: u32 = 0x474c4d45,
-    version: u32 = 1,
+    version: u32 = 2,
     layers: u32,
     run: u32,
     mtp: u32,
@@ -53,7 +55,9 @@ pub const Request = struct { max_tokens: usize, depth: usize, eos: []const u32, 
 pub const Command = union(enum) { request: Request, lanes: struct { kind: u32, words: []const u32 } };
 
 fn ticks() u64 {
-    return std.c.mach_absolute_time(); // 24 MHz on Apple silicon
+    if (@import("builtin").is_test and @import("builtin").os.tag != .macos)
+        return @intCast(@divTrunc(std.Io.Clock.awake.now(std.testing.io).toNanoseconds() * 24, 1000));
+    return platform.c.mach_absolute_time(); // 24 MHz on Apple silicon
 }
 
 pub const Control = struct {
@@ -95,8 +99,8 @@ pub const Control = struct {
             if (bounded and ticks() - t0 > c.limit) return error.EpPeerSilent;
             spins += 1;
             if (spins > 100_000) { // a long wait: back off
-                const ts: std.c.timespec = .{ .sec = 0, .nsec = 50_000 };
-                _ = std.c.nanosleep(&ts, null);
+                const ts: platform.c.timespec = .{ .sec = 0, .nsec = 50_000 };
+                _ = platform.c.nanosleep(&ts, null);
             } else std.atomic.spinLoopHint();
         }
     }
@@ -174,6 +178,17 @@ pub const Control = struct {
     /// Rank 1: the result of the command just taken (a learned state written or read), for rank 0's `waitReply`.
     pub fn reply(c: *Control, ok: bool) !void {
         try c.rd.signal(c.peer, c.base + REPLY, (c.req << 1) | @intFromBool(ok));
+    }
+
+    pub fn replyValue(c: *Control, value: u64) !void {
+        try c.rd.write2Signal(c.peer, c.base + REPLY_VALUE, std.mem.asBytes(&value), &.{}, c.base + REPLY, (c.req << 1) | 1);
+    }
+    pub fn waitReplyValue(c: *Control) !u64 {
+        return (try c.waitReplyOptional()) orelse error.EpOutOfStep;
+    }
+    pub fn waitReplyOptional(c: *Control) !?u64 {
+        if (!try c.waitReply()) return null;
+        return @atomicLoad(u64, c.word(REPLY_VALUE), .acquire);
     }
 
     /// Rank 0: whether rank 1 carried out the last command sent.
@@ -283,8 +298,8 @@ test "early cancels: rank 0 waits for rank 1's acks, nothing is overwritten or s
     };
     var e0: ?anyerror = undefined;
     const th = try std.Thread.spawn(.{}, Rank0.run, .{ &p.c[0], &e0 });
-    const ts: std.c.timespec = .{ .sec = 0, .nsec = 200_000_000 }; // rank 1 held back while rank 0 runs ahead
-    _ = std.c.nanosleep(&ts, null);
+    const ts: platform.c.timespec = .{ .sec = 0, .nsec = 200_000_000 }; // rank 1 held back while rank 0 runs ahead
+    _ = platform.c.nanosleep(&ts, null);
     for (prompts, 0..) |pr, i| {
         const r = (try p.c[1].waitRequest()).?;
         try std.testing.expectEqualSlices(u32, &pr, r.prompt);
@@ -347,4 +362,30 @@ test "a dead link or a local close ends a wait at once" {
     p.failed.store(false, .release);
     p.c[1].stop.store(true, .release);
     try std.testing.expectEqual(@as(?Request, null), try p.c[1].waitRequest());
+}
+
+test "disk replies publish their full 64-bit value under the matching command sequence" {
+    const a = std.testing.allocator;
+    const p = try Pair.init(a);
+    defer p.deinit(a);
+    const Rank0 = struct {
+        fn run(c: *Control, out: *?anyerror) void {
+            out.* = null;
+            c.sendCommand(19, &.{ 1, 2, 3 }) catch |err| {
+                out.* = err;
+                return;
+            };
+            const got = c.waitReplyValue() catch |err| {
+                out.* = err;
+                return;
+            };
+            if (got != 0x123456789abcdef0) out.* = error.BadDiskReply;
+        }
+    };
+    var result: ?anyerror = undefined;
+    const thread = try std.Thread.spawn(.{}, Rank0.run, .{ &p.c[0], &result });
+    _ = (try p.c[1].waitCommand()).?;
+    try p.c[1].replyValue(0x123456789abcdef0);
+    thread.join();
+    try std.testing.expectEqual(@as(?anyerror, null), result);
 }

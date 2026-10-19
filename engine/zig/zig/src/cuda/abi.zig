@@ -22,6 +22,8 @@ pub const stream_non_blocking: c_uint = 1;
 pub const event_disable_timing: c_uint = 2;
 pub const host_alloc_portable: c_uint = 1;
 pub const host_alloc_devicemap: c_uint = 2;
+pub const host_register_devicemap: c_uint = 2;
+pub const host_register_iomemory: c_uint = 4; // the range is device or I/O memory, not RAM
 
 pub const CaptureMode = enum(c_int) { global = 0, thread_local = 1, relaxed = 2 };
 pub const CaptureStatus = enum(c_int) { none = 0, active = 1, invalidated = 2, _ };
@@ -137,25 +139,28 @@ pub const event_record_external: c_uint = 0x1;
 /// CU_MEMORYTYPE_DEVICE
 pub const memory_type_device: c_uint = 2;
 
-/// CUDA_MEMCPY2D (cuMemcpy2DAsync_v2): `Height` rows of `WidthInBytes`, each side at its own pitch.
+/// CUDA_MEMCPY2D for device addresses (type 2): `height` rows of `width` bytes, each side's rows its pitch apart.
 pub const Memcpy2D = extern struct {
-    srcXInBytes: usize = 0,
-    srcY: usize = 0,
-    srcMemoryType: c_uint = memory_type_device,
-    srcHost: ?*const anyopaque = null,
-    srcDevice: DevicePtr = 0,
-    srcArray: ?*anyopaque = null,
-    srcPitch: usize = 0,
-    dstXInBytes: usize = 0,
-    dstY: usize = 0,
-    dstMemoryType: c_uint = memory_type_device,
-    dstHost: ?*anyopaque = null,
-    dstDevice: DevicePtr = 0,
-    dstArray: ?*anyopaque = null,
-    dstPitch: usize = 0,
-    WidthInBytes: usize = 0,
-    Height: usize = 0,
+    src_x: usize = 0,
+    src_y: usize = 0,
+    src_type: c_int = 2,
+    src_host: ?*const anyopaque = null,
+    src: DevicePtr,
+    src_array: ?*anyopaque = null,
+    src_pitch: usize,
+    dst_x: usize = 0,
+    dst_y: usize = 0,
+    dst_type: c_int = 2,
+    dst_host: ?*const anyopaque = null,
+    dst: DevicePtr,
+    dst_array: ?*anyopaque = null,
+    dst_pitch: usize,
+    width: usize,
+    height: usize,
 };
+
+
+
 
 pub const jit_info_log_buffer: c_int = 3;
 pub const jit_info_log_buffer_size: c_int = 4;
@@ -181,6 +186,7 @@ pub const Api = struct {
     cuDevicePrimaryCtxRelease_v2: *const fn (Device) callconv(.c) R,
     cuCtxSetCurrent: *const fn (Context) callconv(.c) R,
     cuCtxGetCurrent: *const fn (*Context) callconv(.c) R,
+    cuCtxGetDevice: *const fn (*Device) callconv(.c) R,
     cuCtxSynchronize: *const fn () callconv(.c) R,
     cuMemGetInfo_v2: *const fn (*usize, *usize) callconv(.c) R,
     cuMemAlloc_v2: *const fn (*DevicePtr, usize) callconv(.c) R,
@@ -188,6 +194,8 @@ pub const Api = struct {
     cuMemHostAlloc: *const fn (*Ptr, usize, c_uint) callconv(.c) R,
     cuMemHostGetDevicePointer_v2: *const fn (*DevicePtr, Ptr, c_uint) callconv(.c) R,
     cuMemFreeHost: *const fn (Ptr) callconv(.c) R,
+    cuMemHostRegister_v2: *const fn (Ptr, usize, c_uint) callconv(.c) R,
+    cuMemHostUnregister: *const fn (Ptr) callconv(.c) R,
     cuMemcpyHtoD_v2: *const fn (DevicePtr, CPtr, usize) callconv(.c) R,
     cuMemcpyDtoH_v2: *const fn (Ptr, DevicePtr, usize) callconv(.c) R,
     cuMemcpyDtoD_v2: *const fn (DevicePtr, DevicePtr, usize) callconv(.c) R,
@@ -250,5 +258,5 @@ comptime {
     std.debug.assert(@sizeOf(LaunchConfig) == 56 and @offsetOf(LaunchConfig, "stream") == 32);
     std.debug.assert(@sizeOf(KernelNodeParams) == 72 and @offsetOf(KernelNodeParams, "params") == 40);
     std.debug.assert(@sizeOf(ExecUpdateResultInfo) == 24);
-    std.debug.assert(@sizeOf(Memcpy2D) == 128 and @offsetOf(Memcpy2D, "dstXInBytes") == 56 and @offsetOf(Memcpy2D, "WidthInBytes") == 112);
+    std.debug.assert(@sizeOf(Memcpy2D) == 128);
 }

@@ -1,8 +1,9 @@
-//! What the round loop asks a backend (Metal, CUDA or the fake) to compute; drawn tokens stay on the GPU behind handles.
+//! Backend operations for shared rounds; drawn tokens remain on the GPU behind handles.
 const std = @import("std");
 const Stream = @import("stream.zig").Stream;
 const Shape = @import("shape.zig").Shape;
 const Held = @import("stream.zig").Held;
+const Row = @import("logprob.zig").Row;
 
 /// A token to feed: one the backend drew and holds (a handle), or a host value (forced or pending).
 pub const Feed = union(enum) { handle: u64, value: u32 };
@@ -16,6 +17,7 @@ pub const Window = struct {
     parents: ?[]const i32, // each row's parent row (row 0: -1) for a tree; null for a chain
     positions: []const u64, // the absolute position each row's draw is keyed at
     early: bool = false, // also draft each row's first head draft behind the verify (speculate_early)
+    masks: []const u32 = &.{}, // structured output: each row's allowed-token bits (rows x words, lanes/grammar.zig); empty: none
 
     pub fn rows(w: Window) usize {
         return 1 + @as(usize, w.held) + w.tokens.len;
@@ -25,8 +27,29 @@ pub const Window = struct {
 /// A drafted level's best tokens by the head (the first is the held draft) and the head's probability for each.
 pub const Alternative = struct { tokens: [4]u32, probs: [4]f64 };
 
-/// A window's results: each row's drawn token and the held drafts the forward verified (host drafts echo back).
-pub const Verified = struct { sampled: []u32, drafts: []u32 };
+/// A window's results: each row's drawn token, the held drafts the forward verified, and logprob rows when asked.
+pub const Verified = struct { sampled: []u32, drafts: []u32, rows: []Row = &.{} };
+
+/// Tapped cache rows for a drafter: the prompt's until the first verify, then each verify's kept rows until the next.
+pub const Features = struct {
+    pub const Space = enum { host, device };
+    pub const Dtype = enum { bf16, f16, f32, u32 };
+    pub const Fence = union(enum) { none, cuda_event: u64, metal_event: u64 };
+    buffer: u64, // a host pointer, or a device pointer on `device`
+    offset: u64 = 0, // bytes into `buffer` where the first row starts
+    rows: u32, // packed rows, row-major
+    row_bytes: u32, // a row is the drafter's taps in its `taps` order, each the hidden width of `dtype`
+    space: Space,
+    device: i32 = 0, // the drafter must run on this device
+    dtype: Dtype,
+    ready: Fence = .none, // .none: written; else the fence to wait on before reading, kind naming the backend
+};
+
+/// Takes a prompt chunk's tapped rows, the first at position `start`, while they are still held.
+pub const FeatureSink = struct {
+    ptr: *anyopaque,
+    take: *const fn (ptr: *anyopaque, s: *Stream, f: Features, start: u64) anyerror!void,
+};
 
 /// Absorb a stream's kept rows into its draft head and hold `depth` drafts for its next round.
 pub const DraftRequest = struct {
@@ -42,13 +65,20 @@ pub const DraftRequest = struct {
     ranks: bool = false, // also keep each chained level's best tokens (alternatives(), for grafts)
 };
 
+pub const Committed = struct { ptr: *anyopaque, call: *const fn (*anyopaque) void };
+
 pub const Backend = struct {
+    first_before_draft: bool = false,
     ptr: *anyopaque,
     vtable: *const VTable,
 
     pub const VTable = struct {
         /// Prefill the stream's prompt into its caches (and its draft head's).
         prefill: *const fn (ptr: *anyopaque, s: *Stream) anyerror!void,
+        /// One chunk of the prompt pass, false while chunks remain; null: the pass runs whole.
+        prefill_step: ?*const fn (ptr: *anyopaque, s: *Stream) anyerror!bool = null,
+        /// Several prompts in one pass, each as after `prefill`; false or an error leaves none prefilled.
+        prefill_many: ?*const fn (ptr: *anyopaque, ss: []const *Stream) anyerror!bool = null,
         /// Draw the first token from the prompt's last row at `position`; a handle to it.
         first: *const fn (ptr: *anyopaque, s: *Stream, position: u64) anyerror!u64,
         /// Feed one token and queue the draw of the next at `position` (a one-token round); a handle to it.
@@ -69,32 +99,40 @@ pub const Backend = struct {
         tree: ?*const fn (ptr: *anyopaque, s: *Stream, gpa: std.mem.Allocator) anyerror!?Held = null,
         /// The head's best tokens and probabilities at each level it drafted for the stream (waits for the drafts).
         alternatives: ?*const fn (ptr: *anyopaque, s: *Stream, out: []Alternative) anyerror!usize = null,
+        /// The drafter's layers, told once before any forward so the target keeps only those (null: built with them).
+        prepare_features: ?*const fn (ptr: *anyopaque, taps: []const u32) anyerror!void = null,
+        /// Cache rows [start, start + count) of the prepared taps, within what `Features` says is held (null: none).
+        features: ?*const fn (ptr: *anyopaque, s: *Stream, taps: []const u32, start: u64, count: u32) anyerror!Features = null,
+        /// The prompt pass handing `sink` each chunk's tapped rows as it makes them (null: features() after the pass).
+        prefill_features: ?*const fn (ptr: *anyopaque, s: *Stream, taps: []const u32, sink: FeatureSink) anyerror!void = null,
+        /// The first token's logprob row (the prompt's last row) for a stream with `logprobs`; null: not given.
+        first_row: ?*const fn (ptr: *anyopaque, s: *Stream) anyerror!Row = null,
+        /// `first` with the first token drawn among `mask`'s allowed tokens (structured output).
+        first_masked: ?*const fn (ptr: *anyopaque, s: *Stream, position: u64, mask: []const u32) anyerror!u64 = null,
+        /// The stream's held drafts as host tokens in window order, waiting for the draft (a grammar walks them).
+        held: ?*const fn (ptr: *anyopaque, s: *Stream, out: []u32) anyerror!void = null,
+        /// `prefill` fills `Stream.prompt_rows` for a stream with `prompt_logprobs` (it then starts from 0).
+        prompt_rows: bool = false,
+        /// The backend stores `Stream.fill_at` as its pass runs: the status reader may count its fill totals.
+        reports_fill: bool = false,
         /// The stream left the rounds: free its caches and held drafts.
         release: *const fn (ptr: *anyopaque, s: *Stream) void,
-        /// A prompt in pieces between rounds (a family's round planner, lane_host.zig `Rounds`) in place of `prefill`:
-        /// `begin` takes the stream (its caches; a saved prefix restored), `piece` runs prompt rows [start, end)
-        /// (`save`: the prompt's snapshot right after them), `finish` the prompt's last row (then `first`). null: the
-        /// backend runs whole prompts only.
+        /// A prompt in pieces between rounds (`Rounds`) instead of `prefill`: begin, pieces, finish; null: whole only.
         begin: ?*const fn (ptr: *anyopaque, s: *Stream) anyerror!Begun = null,
         piece: ?*const fn (ptr: *anyopaque, s: *Stream, start: u64, end: u64, save: bool) anyerror!void = null,
         finish: ?*const fn (ptr: *anyopaque, s: *Stream) anyerror!void = null,
-        /// `finish` without the prompt's last row (Config.join_tail): true when the backend left that token for the
-        /// stream's first round (pending at the prompt's last position, nothing drawn); false when it ran the row as
-        /// `finish` does (then `first`). null: `finish` only.
+        /// `finish` minus the last row (Config.join_tail): true when that token is left for the first round.
         join: ?*const fn (ptr: *anyopaque, s: *Stream) anyerror!bool = null,
-        /// A round's pieces of several streams in one call (Config.piece_runs): the backend may run them as one forward
-        /// (several slots' rows at once); a failure fails every stream of the call. null: `piece` a piece.
+        /// A round's pieces in one call (Config.piece_runs), maybe one forward; a failure fails them all.
         pieces: ?*const fn (ptr: *anyopaque, list: []const Piece) anyerror!void = null,
-        /// Before a round's `finish` / `join` calls (Config.replay_runs): the backend may run work those streams' finishes
-        /// share in one go (the DSV4.1 target: their CED decoder replays in one forward). null: nothing.
+        /// Before a round's `finish` / `join` calls (Config.replay_runs): their shared work in one go.
         finals: ?*const fn (ptr: *anyopaque, streams: []const *Stream) anyerror!void = null,
     };
 
     /// One stream's prompt rows [start, end) of a round (`save`: the prompt's snapshot right after them).
     pub const Piece = struct { stream: *Stream, start: u64, end: u64, save: bool };
 
-    /// `begin`'s outcome: prompt tokens the stream's state holds (a restored prefix), and whether a damaged saved
-    /// entry was dropped instead (the prompt then runs from 0).
+    /// `begin`'s outcome: restored prefix tokens, or a damaged saved entry dropped (the prompt runs from 0).
     pub const Begun = struct { cached: u64 = 0, damaged: bool = false };
 
     pub fn pieces(b: Backend) bool {
@@ -122,16 +160,24 @@ pub const Backend = struct {
     pub fn draft(b: Backend, requests: []const DraftRequest) !void {
         return b.vtable.draft(b.ptr, requests);
     }
+    pub fn features(b: Backend, s: *Stream, taps: []const u32, start: u64, count: u32) !Features {
+        const f = b.vtable.features orelse return error.NoFeatures;
+        return f(b.ptr, s, taps, start, count);
+    }
+    pub fn firstRow(b: Backend, s: *Stream) !Row {
+        const f = b.vtable.first_row orelse return error.LogprobsUnsupported;
+        return f(b.ptr, s);
+    }
     pub fn release(b: Backend, s: *Stream) void {
         b.vtable.release(b.ptr, s);
     }
 
-    /// A driver of its own starts a stream: the prompt pass and its first token, committed; a cancel or failure releases it.
+    /// Start a stream and commit its first token; cancellation or failure releases it.
     pub fn opening(b: Backend, gpa: std.mem.Allocator, s: *Stream) !u32 {
         errdefer b.release(s);
         try b.prefill(s);
         const token = try b.read(try b.first(s, s.prompt_len));
-        _ = try s.commit(gpa, &.{token});
+        _ = try s.commit(gpa, &.{token}, &.{});
         return token;
     }
 };

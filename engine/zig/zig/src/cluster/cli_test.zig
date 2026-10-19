@@ -1,5 +1,6 @@
 //! The cluster commands end to end on fake hosts: init, check, status, serve with in-process bring-up, and node.
 const std = @import("std");
+const platform = @import("sys");
 const cli = @import("cli.zig");
 const fixtures = @import("probe_fixtures.zig");
 
@@ -51,7 +52,7 @@ test "four fake hosts: init discovers the mesh, check plans GLM-5.3, serve bring
     try std.testing.expectEqual(@as(u8, 0), init.code);
     try std.testing.expect(has(init.out, "\"peer\": \"s4\""));
     const models = ", \"models\": { \"glm-5.3\": { \"path\": \"/models/glm53\", \"parallel\": { \"tensor\": 4, \"expert\": 4 }, \"streams\": 32, \"context\": 8192 } } }\n";
-    const json = try std.mem.concat(a, u8, &.{ init.out[0 .. std.mem.lastIndexOf(u8, init.out, ",\n  \"models\"").?], models });
+    const json = try std.mem.concat(a, u8, &.{ init.out[0..std.mem.lastIndexOf(u8, init.out, ",\n  \"models\"").?], models });
     try tmp.dir.writeFile(io, .{ .sub_path = "cluster.json", .data = json });
     try tmp.dir.writeFile(io, .{ .sub_path = "glm.json", .data = glm53_config });
     const file = try std.fs.path.join(a, &.{ root, "cluster.json" });
@@ -86,7 +87,7 @@ const studios =
 ;
 
 test "check plans K3 from its config and Hub file list and names the raise a low node needs; serve stops before launching" {
-    const dir = std.testing.environ.getPosix("TF_K3_DIR") orelse return error.SkipZigTest;
+    const dir = platform.getenv("TF_K3_DIR") orelse return error.SkipZigTest;
     var arena: std.heap.ArenaAllocator = .init(std.heap.page_allocator);
     defer arena.deinit();
     const a = arena.allocator();

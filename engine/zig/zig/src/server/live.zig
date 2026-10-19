@@ -1,5 +1,6 @@
 //! The live status line (connections, decode and prefill tok/s), redrawn in a terminal, and /health's copy of it.
 const std = @import("std");
+const platform = @import("sys");
 const api = @import("engine_api");
 const json = @import("json");
 const log = @import("log.zig");
@@ -39,6 +40,11 @@ pub fn line(buf: []u8, status: api.Status) []const u8 {
 /// ``f"{x:,.0f}"``: rounded half to even, thousands separated by commas.
 fn grouped(buf: []u8, x: f64) []const u8 {
     const n: u64 = @intFromFloat(@max(0, @round(x) - @as(f64, if (@abs(x - @trunc(x)) == 0.5 and @mod(@trunc(x), 2) == 0) 1 else 0)));
+    return commas(buf, n);
+}
+
+/// ``f"{n:,}"``: thousands separated by commas, any size (128 stays ``128``). ``buf`` holds at least 27 bytes.
+pub fn commas(buf: []u8, n: u64) []const u8 {
     var digits: [24]u8 = undefined;
     const text = std.fmt.bufPrint(&digits, "{d}", .{n}) catch return "0";
     var w: std.Io.Writer = .fixed(buf);
@@ -89,7 +95,7 @@ fn columns() usize {
     if (os == .linux) {
         if (std.os.linux.ioctl(1, std.os.linux.T.IOCGWINSZ, @intFromPtr(&ws)) == 0 and ws.col > 0) return ws.col;
     } else if (os.isDarwin()) {
-        if (std.c.ioctl(1, @bitCast(@as(u32, 0x40087468)), &ws) == 0 and ws.col > 0) return ws.col;
+        if (platform.c.ioctl(1, @bitCast(@as(u32, 0x40087468)), &ws) == 0 and ws.col > 0) return ws.col;
     }
     return 100;
 }
@@ -103,4 +109,13 @@ pub fn wanted(io: std.Io, no_live: bool) bool {
 test "status line" {
     var buf: [256]u8 = undefined;
     try std.testing.expectEqualStrings("[tensorfold] 3 connections (1 waiting) \u{b7} decode 142 tok/s \u{b7} prefill 1,210 tok/s", line(&buf, .{ .running = 2, .waiting = 1, .decode_tokens_per_second = 142.2, .prefill_tokens_per_second = 1210.4 }));
+}
+
+test "commas" {
+    var buf: [32]u8 = undefined;
+    try std.testing.expectEqualStrings("0", commas(&buf, 0));
+    try std.testing.expectEqualStrings("128", commas(&buf, 128));
+    try std.testing.expectEqualStrings("1,000", commas(&buf, 1000));
+    try std.testing.expectEqualStrings("2,048", commas(&buf, 2048));
+    try std.testing.expectEqualStrings("1,234,567", commas(&buf, 1234567));
 }

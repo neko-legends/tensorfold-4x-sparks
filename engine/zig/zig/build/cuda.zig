@@ -1,6 +1,7 @@
 //! The CUDA half of the root build: kernel fatbins with each Python extension's nvcc flags, the runtime, Nemotron, the CLI.
 
 const std = @import("std");
+const exlr8_build = @import("exlr8.zig");
 
 /// Each .cu in zig/kernels/cuda (`src`, else `name`) with the flags its Python extension passes in `extra_cuda_cflags`.
 const Kernel = struct { name: []const u8, flags: []const []const u8, src: ?[]const u8 = null, arch_specific: bool = false };
@@ -136,7 +137,10 @@ fn family(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     nemotron.addImport("cuda", cuda);
     nemotron.addImport("core", core);
     nemotron.addImport("lanes", lanes);
+    const heat = b.createModule(.{ .root_source_file = b.path("zig/src/core/heat.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    nemotron.addImport("heat", heat);
     nemotron.addImport("nemotron_draft_ids", draft_ids);
+    nemotron.addImport("radio", b.createModule(.{ .root_source_file = b.path("zig/src/families/radio/radio.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{ .{ .name = "cuda", .module = cuda }, .{ .name = "core", .module = core }, .{ .name = "lanes", .module = lanes } } }));
     return .{ .core = core, .lanes = lanes, .nemotron = nemotron, .tokenizer = tokenizer };
 }
 
@@ -199,10 +203,26 @@ pub fn targets(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.bu
     cli.addImport("core", mods.core);
     cli.addImport("lanes", mods.lanes);
     cli.addImport("nemotron", mods.nemotron);
+    cli.addOptions("build_options", build_options);
+    const cli_checkpoint = b.createModule(.{ .root_source_file = b.path("zig/src/cli/cli.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    {
+        const opts = b.addOptions();
+        opts.addOption(bool, "exlr8", false);
+        opts.addOption(bool, "lora", false);
+        cli_checkpoint.addOptions("build_options", opts);
+    }
+    cli_checkpoint.addImport("core", mods.core);
+    // the standalone checkpoint CLI holds no serving engine: the none module answers its engine seam
+    const cli_none = b.createModule(.{ .root_source_file = b.path("zig/src/native/none.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    cli_none.addImport("engine_api", mods.lanes.import_table.get("engine_api") orelse b.createModule(.{ .root_source_file = b.path("zig/src/core/engine_api.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = mods.lanes }} }));
+    cli_checkpoint.addImport("native_engines", cli_none);
+    cli.addImport("checkpoint_cli", cli_checkpoint);
     b.installArtifact(b.addExecutable(.{ .name = "tensorfold", .root_module = cli }));
     const runner = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/main.zig"), .target = target, .optimize = optimize, .link_libc = true });
     runner.addImport("cuda", cuda);
     runner.addImport("lanes", mods.lanes);
+    runner.addImport("core", mods.core);
+    runner.addImport("nemotron", mods.nemotron);
     b.installArtifact(b.addExecutable(.{ .name = "tf-cuda-test", .root_module = runner }));
     const dsv41_runner = b.createModule(.{ .root_source_file = b.path("zig/tests/cuda/dsv41_main.zig"), .target = target, .optimize = optimize, .link_libc = true });
     dsv41_runner.addImport("cuda", cuda);
@@ -268,9 +288,19 @@ fn nativeServer(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
         .target = target,
         .optimize = .ReleaseSafe,
         .link_libc = true,
-        .imports = &.{ .{ .name = "engine_api", .module = m.api }, .{ .name = "tokenizer", .module = tokenizer }, .{ .name = "template", .module = template }, .{ .name = "json", .module = json }, .{ .name = "dsv41_serve", .module = dsv41_serve }, .{ .name = "native_engines", .module = m.engines }, .{ .name = "checkpoint_cli", .module = b.createModule(.{ .root_source_file = b.path("zig/src/cli/cli.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = &.{.{ .name = "native_engines", .module = m.engines }} }) } },
+        .imports = &.{ .{ .name = "engine_api", .module = m.api }, .{ .name = "tokenizer", .module = tokenizer }, .{ .name = "template", .module = template }, .{ .name = "json", .module = json }, .{ .name = "dsv41_serve", .module = dsv41_serve }, .{ .name = "native_engines", .module = m.engines } },
     }) });
     exe.root_module.addOptions("build_options", build_options);
+    // the checkpoint CLI: no exlr8 module graph in this build (its pulls gate off through build_options)
+    {
+        const cc = b.createModule(.{ .root_source_file = b.path("zig/src/cli/cli.zig"), .target = target, .optimize = .ReleaseSafe, .link_libc = true, .imports = &.{.{ .name = "native_engines", .module = m.engines }} });
+        if (nemotron.import_table.get("core")) |fam_core| cc.addImport("core", fam_core);
+        const opts = b.addOptions();
+        opts.addOption(bool, "exlr8", false);
+        opts.addOption(bool, "lora", false);
+        cc.addOptions("build_options", opts);
+        exe.root_module.addImport("checkpoint_cli", cc);
+    }
     if (!install_native) {
         exe.root_module.strip = true;
         return exe;

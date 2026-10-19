@@ -1,4 +1,4 @@
-//! An optional row policy in place of windows.allocate: a family's own depth rule (DeepSeek's DSpark depth) trims drafts.
+//! An optional row policy in place of windows.allocate: a family's own depth rule trims drafts.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Stream = @import("stream.zig").Stream;

@@ -10,7 +10,6 @@ const kern = nm.kernels;
 const Metal = nm.backend.Metal;
 const opts = mtl.ResourceOptions.shared | mtl.ResourceOptions.untracked;
 
-
 pub const Probe = struct {
     b: *Metal,
     c: *st.Cache,
@@ -290,7 +289,7 @@ pub fn pipelines(k: *const kern.Kernels, prefixes: []const []const u8, out: []mt
     var n: usize = 0;
     for (0..kern.total) |i| {
         for (prefixes) |pre| if (std.mem.startsWith(u8, kern.keyOf(i), pre)) {
-            out[n] = k.pipelines[i].id;
+            out[n] = (k.pipelines[i] orelse break).id; // a packed kernel that did not build is never dispatched
             n += 1;
             break;
         };

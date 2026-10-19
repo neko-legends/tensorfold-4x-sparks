@@ -13,5 +13,6 @@ d="$root/zig/src/families/deepseek_v41"
   "-Mlanes=$root/zig/src/core/lanes/lanes.zig" \
   "-Mtokenizer=$root/zig/src/core/tokenizer/tokenizer.zig" \
   "-Mtemplate=$root/zig/src/core/template/template.zig" "$@"
+"$zig" test "$root/zig/src/server/json.zig"
 "$zig" test -lc --dep lanes "-Mroot=$root/zig/src/core/engine_api.zig" "-Mlanes=$root/zig/src/core/lanes/lanes.zig"
 "$zig" test "$root/zig/src/server/json.zig"

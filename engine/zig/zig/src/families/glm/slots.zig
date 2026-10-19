@@ -1,13 +1,21 @@
 //! Stream slots on one Mac: a stream's caches each; prompt chunks, shared windows, keeps and drafts run on them.
 const std = @import("std");
+const platform = @import("sys");
 const mtl = @import("metal");
 const st = @import("state.zig");
 const fwd = @import("forward.zig");
 const mtp = @import("mtp.zig");
 const prompt_mod = @import("prompt.zig");
 const snapshot = @import("snapshot.zig");
+const pool_mod = @import("pool.zig");
+const kept_mod = @import("kept.zig");
 const Engine = @import("engine.zig").Engine;
 const Ref = @import("weights.zig").Ref;
+const Fence = @import("../../core/fence.zig").Fence;
+const lanes = @import("lanes");
+
+/// Handles of tokens on the GPU: queued rounds' picks and the host tokens they read, a slot each.
+const ring_len = 64;
 
 /// One stream's rows in a shared window: its pending token, then the drafts the slot holds, then host drafts.
 pub const Win = struct { slot: u32, pending: u32, held: u32, tokens: []const u32 };
@@ -23,10 +31,12 @@ pub const Slot = struct {
     mtp: bool = false, // the head follows this stream (it drafts)
     held_n: u32 = 0,
     prompt_len: u32 = 0,
+    prompt_tokens: []u32 = &.{}, // owned while a prompt fills: another stream may replace the shared ID scratch
     row0: u32 = 0, // the last window's first row
     rows: u32 = 0, // the last window's rows until a keep settles them (0: settled)
     width: u32 = 0, // the last window's rows
     seen: u64 = 0, // the window that last ran this slot's rows
+    region: ?pool_mod.Region = null, // pooled: this stream's share of the MLA pool (pool.zig)
 };
 
 pub const Slots = struct {
@@ -35,6 +45,8 @@ pub const Slots = struct {
     slots: []Slot,
     snaps: std.AutoHashMapUnmanaged(u32, *snapshot.Snap) = .empty, // kept prompt states by id (a pair's ranks agree)
     next_snap: u32 = 1,
+    uses: u64 = 0, // the clock kept states' use stamps come from
+    disk: @import("learned_pair.zig").State = .{},
     learned: ?[:0]const u8 = null, // --learn: this Mac's learned-state directory (rank 1 names its files in it)
     rows: Ref, // bf16 [max_rows, hidden]: the rows every stream's head absorbs, gathered
     ids: Ref, // u32 [max_rows]: their next tokens
@@ -44,7 +56,18 @@ pub const Slots = struct {
     windows: u64 = 0,
     log: bool = false, // GLM_WINDOWS=1: each window's streams, rows, GPU time and the GPU's idle gap before it
     last_end: f64 = 0,
+    last_ret: u64 = 0, // when the last window's wait returned (host clock ticks)
+    ahead: [2]f64 = .{ 0, 0 }, // the last launch's GPU start and end (0: none)
+    launched: ?mtl.CommandBuffer = null, // keeps and drafts committed ahead: the window after them encodes while they run
     digest: u64 = 0, // the last window's picks hashed: a pair's ranks compare theirs
+    grow: ?kept_mod.Grow = null, // the prompt cache's leave to make a resident state whole before its slot writes below it
+    expire: ?kept_mod.Expire = null, // invalidates lookup immediately; destruction waits for the host's safe boundary
+    borrowed: ?kept_mod.Borrowed = null, // a lookup still restoring this state: eviction spares it while anything else fits
+    ring: Ref, // u32 [ring_len]: tokens by handle, a queued round's input read from its slot on the GPU
+    ring_at: u32 = 0,
+    ring_cb: [ring_len]?mtl.CommandBuffer = @splat(null), // the queued round writing each slot (retained) until read
+    fence: ?Fence = null, // orders queued rounds on the GPU
+    pool: ?pool_mod.Pool = null, // one Mac: the streams share the engine's MLA caches (GLM_POOL=0: a window each)
 
     const Open = struct { cb: mtl.CommandBuffer, enc: mtl.ComputeEncoder, pool: mtl.objc.Pool };
 
@@ -53,113 +76,46 @@ pub const Slots = struct {
         const slots = try gpa.alloc(Slot, @max(n, 1));
         errdefer gpa.free(slots);
         for (slots, 0..) |*slot, i| slot.* = .{
-            .s = if (i == 0) e.s else try st.initState(&e.arena, &e.c, e.s.cap, &e.s),
+            .s = if (i == 0) e.s else try st.initState(&e.arena, &e.c, if (pool_mod.on(e)) 0 else e.s.cap, &e.s),
             .held = try e.arena.buffer(st.max_rows * 4),
             .last = try e.arena.buffer(@as(usize, e.c.hidden) * 2),
         };
         const plane = @as(usize, st.max_rows) * e.c.hidden * 2;
-        return .{ .gpa = gpa, .e = e, .slots = slots, .log = std.c.getenv("GLM_WINDOWS") != null, .rows = try e.arena.buffer(plane), .ids = try e.arena.buffer(st.max_rows * 4), .lasts = try e.arena.buffer(plane), .picks = try e.arena.buffer(st.max_rows * 4) };
+        var sl: Slots = .{ .gpa = gpa, .e = e, .slots = slots, .log = platform.c.getenv("GLM_WINDOWS") != null, .rows = try e.arena.buffer(plane), .ids = try e.arena.buffer(st.max_rows * 4), .lasts = try e.arena.buffer(plane), .picks = try e.arena.buffer(st.max_rows * 4), .ring = try e.arena.buffer(ring_len * 4) };
+        if (pool_mod.on(e)) pool_mod.setUp(&sl);
+        return sl;
     }
 
     pub fn deinit(sl: *Slots, gpa: std.mem.Allocator) void {
+        sl.land() catch {};
+        sl.e.sync();
+        sl.dropRing();
+        if (sl.fence) |f| f.deinit();
         var it = sl.snaps.valueIterator();
-        while (it.next()) |snap| freeSnap(gpa, snap.*);
+        while (it.next()) |snap| kept_mod.freeSnap(gpa, snap.*);
         sl.snaps.deinit(gpa);
+        for (sl.slots) |slot| gpa.free(slot.prompt_tokens);
         gpa.free(sl.slots);
     }
 
-    fn freeSnap(gpa: std.mem.Allocator, snap: *snapshot.Snap) void {
-        snap.buf.deinit();
-        gpa.destroy(snap);
+    pub const save = kept_mod.save;
+    pub const restore = kept_mod.restore;
+    pub const usable = kept_mod.usable;
+    pub const probe = kept_mod.probe;
+    pub const writeSnap = kept_mod.writeSnap;
+    pub const readSnap = kept_mod.readSnap;
+    pub const blank = kept_mod.blank;
+    pub const drop = kept_mod.drop;
+    pub const pick = kept_mod.pick;
+    pub const copyOut = kept_mod.copyOut;
+    pub const copyIds = kept_mod.copyIds;
+
+    /// Prompt states stay resident (their MLA prefixes in their slots) unless learned ones go to files.
+    pub fn resident(sl: *const Slots) bool {
+        return sl.learned == null;
     }
 
-    /// Keep slot `i`'s prompt state at `at` tokens (its pass stands there) as snapshot `id` (0: the next).
-    pub fn save(sl: *Slots, i: u32, at: u32, id: u32) !*snapshot.Snap {
-        const slot = try sl.slotAt(i);
-        if (at == 0 or at != slot.s.pos or slot.rows != 0 or sl.snaps.contains(id)) return error.SnapshotOutOfStep;
-        const n = snapshot.bytes(&sl.e.c, at);
-        const buf = try sl.e.device.buffer(n, mtl.ResourceOptions.shared | mtl.ResourceOptions.untracked);
-        errdefer buf.deinit();
-        const snap = try sl.gpa.create(snapshot.Snap);
-        errdefer sl.gpa.destroy(snap);
-        snap.* = .{ .id = if (id != 0) id else sl.next_snap, .at = at, .buf = buf, .bytes = n };
-        try sl.copySnap(slot, snap, true);
-        try sl.snaps.put(sl.gpa, snap.id, snap);
-        sl.next_snap = @max(sl.next_snap, snap.id + 1);
-        return snap;
-    }
-
-    /// Slot `i`, just begun, takes snapshot `id`'s state: its prompt pass goes on from the snapshot's position.
-    pub fn restore(sl: *Slots, i: u32, id: u32) !void {
-        const slot = try sl.slotAt(i);
-        const snap = sl.snaps.get(id) orelse return error.SnapshotOutOfStep;
-        if (slot.s.pos != 0 or snap.at >= slot.prompt_len) return error.SnapshotOutOfStep;
-        try sl.copySnap(slot, snap, false);
-    }
-
-    /// A fixed prompt's state through slot 0, hashed: two builds agree only when their prompt passes give equal bits.
-    pub fn probe(sl: *Slots) !u64 {
-        var toks: [4096 + 40 + 7]u32 = undefined; // a full chunk past the sparse index's reach, a middle one, a short one
-        for (&toks, 0..) |*t, i| t.* = @intCast(1000 + i * 7919 % 50000);
-        const len: u32 = @intCast(@min(toks.len, sl.e.s.cap -| (st.max_rows + 2)));
-        try sl.begin(0, toks[0..len], true);
-        defer sl.release(0);
-        var at: u32 = 0;
-        for ([_]u32{ 4096, 4136, len }) |end| while (at < @min(end, len)) {
-            const n = sl.chunkRows(at, @min(end, len));
-            try sl.chunk(0, at, n);
-            at += n;
-        };
-        const snap = try sl.save(0, at, 0);
-        defer sl.drop(snap.id);
-        return std.hash.Wyhash.hash(0x70, snap.buf.contents()[0..snap.bytes]);
-    }
-
-    /// Snapshot `id` to its learned-state file, once the copy into it has finished.
-    pub fn writeSnap(sl: *Slots, id: u32, file: [:0]const u8) !void {
-        const snap = sl.snaps.get(id) orelse return error.SnapshotOutOfStep;
-        try sl.flush();
-        try snapshot.writeFile(snap, file);
-    }
-
-    /// A learned state of `at` tokens read from `file` as snapshot `id`.
-    pub fn readSnap(sl: *Slots, id: u32, at: u32, file: [:0]const u8) !*snapshot.Snap {
-        if (id == 0 or sl.snaps.contains(id)) return error.SnapshotOutOfStep;
-        const n = snapshot.bytes(&sl.e.c, at);
-        const buf = try sl.e.device.buffer(n, mtl.ResourceOptions.shared | mtl.ResourceOptions.untracked);
-        errdefer buf.deinit();
-        const snap = try sl.gpa.create(snapshot.Snap);
-        errdefer sl.gpa.destroy(snap);
-        snap.* = .{ .id = id, .at = at, .buf = buf, .bytes = n };
-        try snapshot.readFile(snap, file);
-        try sl.snaps.put(sl.gpa, id, snap);
-        sl.next_snap = @max(sl.next_snap, id + 1);
-        return snap;
-    }
-
-    /// Forget snapshot `id`.
-    pub fn drop(sl: *Slots, id: u32) void {
-        const kv = sl.snaps.fetchRemove(id) orelse return;
-        freeSnap(sl.gpa, kv.value);
-    }
-
-    fn copySnap(sl: *Slots, slot: *Slot, snap: *snapshot.Snap, into: bool) !void {
-        try sl.flush();
-        const pool = mtl.objc.Pool.push();
-        defer pool.pop();
-        const x = sl.ctx(slot);
-        const b = sl.e.begin();
-        snapshot.copy(&x, b.enc, &slot.s, .{ .buf = snap.buf }, snap.at, into);
-        try sl.e.finish(b.cb, b.enc);
-    }
-
-    /// A free slot, or null when every slot holds a stream.
-    pub fn free(sl: *const Slots) ?u32 {
-        for (sl.slots, 0..) |s, i| if (!s.used) return @intCast(i);
-        return null;
-    }
-
-    fn ctx(sl: *Slots, slot: *Slot) fwd.Ctx {
+    pub fn ctx(sl: *Slots, slot: *Slot) fwd.Ctx {
         var x = sl.e.ctx();
         x.s = &slot.s;
         return x;
@@ -170,17 +126,51 @@ pub const Slots = struct {
         if (sl.open == null) {
             const pool = mtl.objc.Pool.push();
             const b = sl.e.begin();
+            if (sl.launched != null) sl.fence.?.wait(b.enc); // after the keeps and drafts committed ahead
             sl.open = .{ .cb = b.cb, .enc = b.enc, .pool = pool };
         }
         return sl.open.?.enc;
     }
 
-    /// Commit the open command buffer and wait for it.
+    /// Commit the open command buffer and wait for it (and for work committed ahead of it).
     pub fn flush(sl: *Slots) !void {
-        const o = sl.open orelse return;
+        return sl.flushBy(false);
+    }
+
+    /// flush; `spin`: the host spins on the buffer's status (Engine.finishBy).
+    fn flushBy(sl: *Slots, spin: bool) !void {
+        const o = sl.open orelse return sl.land();
         sl.open = null;
         defer o.pool.pop();
-        try sl.e.finish(o.cb, o.enc);
+        const done = sl.e.finishBy(o.cb, o.enc, spin);
+        try sl.land();
+        return done;
+    }
+
+    /// The open buffer's keeps and drafts committed now, ordered before the next buffer by the fence.
+    fn launch(sl: *Slots) !void {
+        const o = sl.open orelse return;
+        try sl.land();
+        if (sl.fence == null) sl.fence = try Fence.init(sl.e.device);
+        sl.open = null;
+        defer o.pool.pop();
+        sl.fence.?.update(o.enc);
+        o.enc.end();
+        o.cb.commit();
+        sl.launched = o.cb.retain();
+    }
+
+    /// Work committed ahead, finished: its GPU span kept for the window log, its failure returned.
+    fn land(sl: *Slots) !void {
+        const cb = sl.launched orelse return;
+        sl.launched = null;
+        defer cb.release();
+        cb.wait();
+        sl.ahead = .{ cb.gpuStart(), cb.gpuEnd() };
+        if (cb.failure()) |msg| {
+            std.log.err("glm: keeps and drafts committed ahead failed: {s}", .{msg});
+            return error.GpuFailed;
+        }
     }
 
     /// Slot `i`'s cache length once its last window settles (a window no keep has settled keeps every row).
@@ -189,7 +179,7 @@ pub const Slots = struct {
         return slot.s.pos + slot.rows;
     }
 
-    fn slotAt(sl: *Slots, i: u32) !*Slot {
+    pub fn slotAt(sl: *Slots, i: u32) !*Slot {
         if (i >= sl.slots.len or !sl.slots[i].used) return error.SlotOutOfStep;
         return &sl.slots[i];
     }
@@ -197,10 +187,16 @@ pub const Slots = struct {
     /// A new stream in slot `i`: its prompt into the engine's prompt ids, its caches cleared.
     pub fn begin(sl: *Slots, i: u32, prompt: []const u32, drafts: bool) !void {
         if (i >= sl.slots.len or sl.slots[i].used) return error.SlotOutOfStep;
-        if (prompt.len == 0 or prompt.len + st.max_rows + 1 > sl.e.s.cap) return error.ContextFull;
+        if (prompt.len == 0 or prompt.len + st.max_rows + 1 > pool_mod.capacity(sl)) return error.ContextFull;
+        const least: u32 = @intCast(prompt.len + st.max_rows + 1);
+        if (sl.pool != null and sl.slots[i].region == null) try pool_mod.reserve(sl, i, least, null);
+        if (prompt.len + st.max_rows + 1 > sl.slots[i].s.cap) return error.ContextFull;
+        const tokens = try sl.gpa.dupe(u32, prompt);
+        errdefer sl.gpa.free(tokens);
         sl.settleAll(); // the prompt pass overwrites the projections a window's keep replays
         try sl.flush();
         sl.e.sync();
+        sl.dropRing(); // a released stream's last queued round, finished and never read
         const slot = &sl.slots[i];
         slot.s.reset();
         slot.used = true;
@@ -208,7 +204,7 @@ pub const Slots = struct {
         slot.held_n = 0;
         slot.rows = 0;
         slot.prompt_len = @intCast(prompt.len);
-        @memcpy(Engine.u32s(sl.e.prompt_ids, prompt.len), prompt);
+        slot.prompt_tokens = tokens;
     }
 
     /// The rows the prompt chunk at `at` takes up to `end` (a planned start or the prompt's end): generate's split.
@@ -218,19 +214,22 @@ pub const Slots = struct {
         return @min(if (chunked) sl.e.chunk_rows else st.max_rows, left);
     }
 
-    /// Prompt rows [at, at + n) of slot `i`, the head absorbing each with its next token; the last pick to `picks`.
-    pub fn chunk(sl: *Slots, i: u32, at: u32, n: u32) !void {
+    /// Prompt rows [at, at + n) of slot `i`; `draws` rules a pass row, the first reply token's rule.
+    pub fn chunk(sl: *Slots, i: u32, at: u32, n: u32, draws: ?*const fwd.Draws) !void {
         const e = sl.e;
         const slot = try sl.slotAt(i);
         const P = slot.prompt_len;
         if (n == 0 or at != slot.s.pos or at + n > P or n > @max(e.chunk_rows, st.max_rows)) return error.ChunkOutOfStep;
+        kept_mod.overwrite(sl, i, at); // what the backend did not copy out goes stale
         const D = e.c.hidden;
         const last = at + n == P;
         const absorb = if (last) n - 1 else n;
-        try sl.flush();
+        try @import("prompt_input.zig").prepare(PromptInput{ .sl = sl }, slot.prompt_tokens, at, n);
         const pool = mtl.objc.Pool.push();
         defer pool.pop();
         var x = sl.ctx(slot);
+        x.inject = if (e.vision) |v| v.injected(i) else null; // an image prompt's rows over its placeholders (slot_images.zig)
+        if (draws) |d| x.draws = d; // the head's one output row reads rule row 0, keyed at the prompt's length
         const b = e.begin();
         const ids = e.prompt_ids.at(@as(usize, at) * 4);
         const next = e.prompt_ids.at(@as(usize, at + 1) * 4);
@@ -252,16 +251,36 @@ pub const Slots = struct {
         if (last) fwd.head(&x, b.enc, slot.last, e.sc.logits, e.sc.picks, 1);
         try e.finish(b.cb, b.enc);
         slot.s.pos = at + n; // the pass stands here: a snapshot of it is this prefix's state
+        if (last) {
+            sl.gpa.free(slot.prompt_tokens);
+            slot.prompt_tokens = &.{};
+        }
     }
 
-    /// One forward over every window, each stream's rows against its own caches; each row's pick into `picks`.
-    pub fn window(sl: *Slots, wins: []const Win) !void {
+    const PromptInput = struct {
+        sl: *Slots,
+        pub fn settle(p: @This()) void {
+            p.sl.settleAll();
+        }
+        pub fn flush(p: @This()) !void {
+            try p.sl.flush();
+        }
+        pub fn stage(p: @This(), at: u32, tokens: []const u32) void {
+            @memcpy(Engine.u32s(p.sl.e.prompt_ids.at(@as(usize, at) * 4), tokens.len), tokens);
+        }
+    };
+
+    /// One forward over every window, each stream's rows against its own caches; `draws` rules its rows.
+    pub fn window(sl: *Slots, wins: []const Win, draws: ?*const fwd.Draws) !void {
         const e = sl.e;
         var segs: [st.max_rows]fwd.Seg = undefined;
         if (wins.len == 0 or wins.len > segs.len) return error.WindowOutOfStep;
+        const t_in = platform.c.mach_absolute_time();
         sl.settleAll();
+        try sl.launch(); // the GPU runs the keeps and drafts while the window encodes
         const ids = Engine.u32s(e.sc.ids, st.max_rows);
         var x = e.ctx();
+        if (draws) |d| x.draws = d; // each row's rule is its stream's, keyed at its own position
         const enc = sl.encoder();
         var total: u32 = 0;
         for (wins, segs[0..wins.len], 0..) |w, *g, wi| {
@@ -282,12 +301,90 @@ pub const Slots = struct {
         x.segs = segs[0..wins.len];
         fwd.backbone(&x, enc, e.sc.ids, total, segs[0].pos);
         fwd.head(&x, enc, e.sc.hidden, e.sc.logits, e.sc.picks, total);
-        try sl.flush();
-        if (sl.log) std.log.info("glm window: streams {d} rows {d} gpu {d:.2} ms gap {d:.2} ms", .{ wins.len, total, (e.gpu[1] - e.gpu[0]) * 1e3, (e.gpu[0] - sl.last_end) * 1e3 });
+        sl.ahead = .{ 0, 0 };
+        try sl.flushBy(true);
+        const ret = platform.c.mach_absolute_time();
+        if (sl.log) {
+            const first = if (sl.ahead[1] > 0) sl.ahead[0] else e.gpu[0];
+            std.log.info("glm window: streams {d} rows {d} gpu {d:.2} ms gap {d:.2} ms ahead {d:.2} join {d:.3} host {d:.2} encode {d:.2} ms", .{ wins.len, total, (e.gpu[1] - e.gpu[0]) * 1e3, (first - sl.last_end) * 1e3, (sl.ahead[1] - sl.ahead[0]) * 1e3, if (sl.ahead[1] > 0) (e.gpu[0] - sl.ahead[1]) * 1e3 else 0, @as(f64, @floatFromInt(t_in -| sl.last_ret)) / 24e3, @as(f64, @floatFromInt(e.committed - t_in)) / 24e3 });
+        }
+        sl.last_ret = ret;
         sl.last_end = e.gpu[1];
         sl.windows += 1;
         for (wins) |w| sl.slots[w.slot].seen = sl.windows;
         sl.digest = std.hash.Wyhash.hash(sl.windows, std.mem.sliceAsBytes(Engine.u32s(e.sc.picks, total)));
+    }
+
+    /// A handle for host token `t`: its ring slot.
+    pub fn ringPut(sl: *Slots, t: u32) u32 {
+        const h = sl.ring_at;
+        sl.ring_at = (h + 1) % ring_len;
+        Engine.u32s(sl.ring, ring_len)[h] = t;
+        return h;
+    }
+
+    /// Handle `h`'s token, once the round writing it has finished.
+    pub fn ringGet(sl: *Slots, h: u32) !u32 {
+        if (h >= ring_len) return error.HandleOutOfStep;
+        if (sl.ring_cb[h]) |cb| {
+            sl.ring_cb[h] = null;
+            defer mtl.objc.release(cb.id);
+            cb.wait();
+            sl.e.gpu = .{ cb.gpuStart(), cb.gpuEnd() };
+            if (cb.failure()) |msg| {
+                sl.e.event.set(sl.e.ev); // a failed buffer may never signal: the next one must not wait on it
+                std.log.err("glm: a queued round failed: {s}", .{msg});
+                return error.GpuFailed;
+            }
+        }
+        return Engine.u32s(sl.ring, ring_len)[h];
+    }
+
+    /// Queued rounds the host will not read (their work done): their command buffers let go.
+    fn dropRing(sl: *Slots) void {
+        for (&sl.ring_cb) |*cb| if (cb.*) |c| {
+            c.wait();
+            mtl.objc.release(c.id);
+            cb.* = null;
+        };
+    }
+
+    /// Slot `i`'s next row queued ahead: its token from `from`, the row before settled; `sampling` arms its keyed draw.
+    pub fn queueRound(sl: *Slots, i: u32, from: u32, sampling: ?lanes.Sampling) !u32 {
+        const e = sl.e;
+        const slot = try sl.slotAt(i);
+        if (from >= ring_len) return error.HandleOutOfStep;
+        if (slot.rows > 0) sl.settle(slot, slot.rows);
+        try sl.flush();
+        if (slot.s.pos + 2 > slot.s.cap) return error.ContextFull;
+        if (sl.fence == null) sl.fence = try Fence.init(e.device);
+        const fence = sl.fence.?;
+        const to = sl.ring_at;
+        if (sl.ring_cb[to] != null) return error.HandleOutOfStep; // a round 64 handles back is still unread
+        sl.ring_at = (to + 1) % ring_len;
+        const pool = mtl.objc.Pool.push();
+        defer pool.pop();
+        const cb = e.queue.commandBuffer();
+        const enc = cb.compute(.serial);
+        fence.wait(enc); // after the round queued before it; synchronous work has finished before this is encoded
+        var x = sl.ctx(slot);
+        const draws = @import("draw_rule.zig").promptDraws(sampling, slot.s.pos + 1, e.c.vocab);
+        x.draws = &draws;
+        copyWords(&x, enc, sl.ring.at(@as(usize, from) * 4), e.sc.ids, 1);
+        fwd.backbone(&x, enc, e.sc.ids, 1, slot.s.pos);
+        fwd.head(&x, enc, e.sc.hidden, e.sc.logits, sl.ring.at(@as(usize, to) * 4), 1);
+        fence.update(enc);
+        enc.end();
+        e.ev += 1;
+        cb.signal(e.event, e.ev); // a synchronous window after it waits for this
+        cb.commit();
+        sl.ring_cb[to] = .{ .id = mtl.objc.retain(cb.id) };
+        slot.row0 = 0;
+        slot.rows = 1;
+        slot.width = 1;
+        sl.windows += 1;
+        slot.seen = sl.windows;
+        return to;
     }
 
     /// The last window's first `kept` rows of slot `i` stay in its caches.
@@ -401,9 +498,12 @@ pub const Slots = struct {
     pub fn release(sl: *Slots, i: u32) void {
         if (i >= sl.slots.len) return;
         const slot = &sl.slots[i];
+        sl.gpa.free(slot.prompt_tokens);
+        slot.prompt_tokens = &.{};
         slot.used = false;
         slot.rows = 0;
         slot.held_n = 0;
+        if (sl.pool != null) pool_mod.leave(sl, i);
         for (sl.slots) |s| if (s.used) return;
         sl.flush() catch |err| std.log.err("glm: the slots' last command buffer failed: {s}", .{@errorName(err)});
     }

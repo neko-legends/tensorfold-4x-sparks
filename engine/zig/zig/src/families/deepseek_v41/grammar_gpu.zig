@@ -712,6 +712,7 @@ pub const GrammarEngine = struct {
             .choice => .choice,
             .grammar => .grammar,
             .tools => .tools,
+            .structural_tag => .tools, // 1.1.0's name for a tool-call grammar: same enforcement here
         };
         return .{ .kind = kind, .text = s.text };
     }

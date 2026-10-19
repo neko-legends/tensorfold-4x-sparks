@@ -9,6 +9,7 @@ const Ep = @import("ep.zig").Ep;
 const moe_route = @import("../../core/moe_route.zig");
 const hc_shape = @import("kernels.zig").hc_shape;
 const hc_core = @import("../../core/hc.zig");
+const wide = @import("wide.zig");
 const Ref = wts.Ref;
 /// The MoE block (moe.zig).
 pub const moe = @import("moe.zig").moe;
@@ -30,7 +31,38 @@ pub const Ctx = struct {
     draft_vocab: u32 = 154880, // the MTP head's tokens: the vocabulary's first this many
     m_row: u32 = 0, // the MTP head's logits row in m_logits (a rank log keeps each depth's in its own row)
     segs: []const Seg = &.{}, // a shared window's streams in row order (empty: every row is `s`'s)
+    inject: ?*const Inject = null, // a prompt pass's image rows over its placeholder embeddings
+    draws: ?*const Draws = null, // the rows' draw rules in row order (null: every row draws greedily)
 };
+
+/// An image prompt's tower output: prompt rows [at, at + n) of each span embed as rows [row, row + n) of `rows`.
+pub const Inject = struct { rows: Ref, spans: []const Span };
+pub const Span = struct { at: u32, n: u32, row: u32 };
+
+/// The image rows among `rows` embedding rows (positions pos..) written over `out`; nothing without an injection.
+pub fn inject(x: *const Ctx, e: mtl.ComputeEncoder, out: Ref, rows: u32, pos: u32) void {
+    const inj = x.inject orelse return;
+    const D: usize = x.c.hidden;
+    for (inj.spans) |sp| {
+        const lo = @max(sp.at, pos);
+        const hi = @min(sp.at + sp.n, pos + rows);
+        if (lo >= hi) continue;
+        const n: usize = hi - lo;
+        e.setPipeline(x.k.copy_u32);
+        bind(e, 0, .{ inj.rows.at((sp.row + lo - sp.at) * D * 2), out.at((lo - pos) * D * 2) });
+        e.setValue(@as(u32, @intCast(n * D / 2)), 2);
+        e.dispatchThreads(size(n * D / 2, 1, 1), size(256, 1, 1));
+    }
+}
+
+// The draw rules live in draw_rule.zig (Metal-free: the host references and the tests use them uncoupled).
+pub const Draws = @import("draw_rule.zig").Draws;
+pub const Rule = @import("draw_rule.zig").Rule;
+pub const ruleOf = @import("draw_rule.zig").ruleOf;
+pub const rulesFor = @import("draw_rule.zig").rulesFor;
+pub const parseSampling = @import("draw_rule.zig").parseSampling;
+pub const envSampling = @import("draw_rule.zig").envSampling;
+pub const SamplingError = @import("draw_rule.zig").SamplingError;
 
 /// One stream's rows in a shared window: its caches, its first row, its rows and the position of the first.
 pub const Seg = struct { s: *st.State, row0: u32, rows: u32, pos: u32 };
@@ -52,7 +84,7 @@ fn withState(x: *const Ctx, g: Seg) Ctx {
 
 /// Single launches (or tight groups) for a profile that times each alone.
 pub const Part = struct {
-    pub const names = [_][]const u8{ "hc_expand", "hc_mix", "kda_in", "kda_step", "kda_out", "mla_proj", "mla_cache", "mla_absorb", "mla_select", "mla_attn", "mla_unabs", "mla_out", "r_cast", "r_router", "r_topk", "x_locpost", "x_pack", "x_unpack", "e_gateup", "e_down", "s_gateup", "s_down", "combine", "dense", "head_qmv", "head_argmax" };
+    pub const names = [_][]const u8{ "hc_expand", "hc_mix", "kda_in", "kda_step", "kda_out", "mla_proj", "mla_cache", "mla_absorb", "mla_select", "mla_attn", "mla_unabs", "mla_out", "r_cast", "r_router", "r_topk", "x_locpost", "x_pack", "x_unpack", "e_gateup", "e_down", "s_gateup", "s_down", "combine", "dense", "head_qmv", "head_argmax", "kda_pre", "kda_scan", "kda_post" };
     pub fn bit(comptime name: []const u8) u32 {
         inline for (names, 0..) |n, i| if (comptime std.mem.eql(u8, n, name)) return @as(u32, 1) << i;
         @compileError("no part " ++ name);
@@ -95,7 +127,7 @@ pub fn snap(x: *Ctx, e: mtl.ComputeEncoder, src: Ref, plane: usize) void {
 }
 
 pub const Rows = extern struct { rows: i32, width: i32, x_stride: i32, y_stride: i32, eps: f32 };
-const ScoreArgs = extern struct { p0: u32, q_stride: u32, w_stride: u32, s_stride: u32 };
+const ScoreArgs = extern struct { p0: u32, q_stride: u32, w_stride: u32, s_stride: u32, rows: u32 };
 const SelectArgs = extern struct { p0: u32, top: u32, width: u32, s_stride: u32, i_stride: u32 };
 
 pub fn bind(e: mtl.ComputeEncoder, first: usize, refs: anytype) void {
@@ -112,11 +144,11 @@ pub fn size(w: usize, h: usize, d: usize) mtl.Size {
     return mtl.Size.of(w, h, d);
 }
 
-/// x [rows, K] through a 4-bit matrix: qmv_rows, MLX's one-row qmv_fast sums for every row.
-pub fn qmv(x: *const Ctx, e: mtl.ComputeEncoder, pipe: mtl.Pipeline, in: Ref, q: wts.Q4, out: Ref, rows: u32) void {
+/// x [rows, K] through a 4-bit/64 matrix (qmv_rows, MLX's one-row qmv_fast sums), else each member at its width (wide).
+pub fn qmv(x: *const Ctx, e: mtl.ComputeEncoder, pipe: mtl.Pipeline, in: Ref, q: wts.Affine, out: Ref, rows: u32) void {
+    if (!wide.native(q)) return wide.dense(&x.k.wide.?, e, q, .{ .in = in, .ldx = q.k, .out = out, .ldo = q.n, .rows = rows });
     e.setPipeline(pipe);
     bind(e, 0, .{ in, q.w, q.s, q.b, out });
-    _ = x;
     e.dispatchThreads(size(32 * rows, q.n / 4, 1), size(32 * rows, 1, 1));
 }
 
@@ -135,11 +167,12 @@ pub fn scale(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, out: Ref, rows: u32,
     e.dispatchThreads(size(width, rows, 1), size(@min(width, 256), 1, 1));
 }
 
-/// The window's tokens (`ids`, u32) as embedding rows in all four streams.
-pub fn embed(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32) void {
+/// The window's tokens (`ids`, u32, at positions pos..) as embedding rows in all four streams, image rows injected.
+pub fn embed(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32, pos: u32) void {
     const sc = x.sc;
     const D = x.c.hidden;
     embedRows(x, e, ids, sc.h, rows);
+    inject(x, e, sc.h, rows, pos);
     e.setPipeline(x.k.streams);
     bind(e, 0, .{ sc.h, sc.x[0] });
     e.setValue([2]u32{ D, rows }, 2);
@@ -149,11 +182,16 @@ pub fn embed(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32) void {
 
 pub fn embedRows(x: *const Ctx, e: mtl.ComputeEncoder, ids: Ref, out: Ref, rows: u32) void {
     const q = x.w.embed;
-    e.setPipeline(x.k.embed);
+    const per: u32 = switch (q.bits) { // values a thread: two codes a byte at 4 bits, four in three bytes at 6, one at 8
+        4 => 2,
+        6 => 4,
+        else => 1,
+    };
+    e.setPipeline(if (q.bits == 4) x.k.embed else x.k.wide.?.embed[if (q.bits == 6) 0 else 1]);
     bind(e, 0, .{ ids, q.w, q.s, q.b });
     shape(e, 4, .{x.c.hidden});
     bind(e, 5, .{out});
-    e.dispatchThreads(size(x.c.hidden / 2, rows, 1), size(256, 1, 1));
+    e.dispatchThreads(size(x.c.hidden / per, rows, 1), size(256, 1, 1));
 }
 
 /// A block boundary: the pending branch into the streams, then (with `hc`) the next block's mix, split and norm (core/hc.zig).
@@ -161,7 +199,9 @@ pub fn boundary(x: *Ctx, e: mtl.ComputeEncoder, rows: u32, pending: bool, hc: ?w
     const sc = x.sc;
     const k = x.k;
     const h = hc orelse { // the last boundary: the pending branch written into the streams alone
-        if (pending and on(x, "hc_expand")) {
+        if (pending and on(x, "hc_expand") and hc_core.inPlace(sc.x[0], sc.x[1])) {
+            hc_core.expandInPlace(e, k.hc_core, hc_shape, rows, sc.x[0], sc.branch, sc.post, sc.comb);
+        } else if (pending and on(x, "hc_expand")) {
             e.setPipeline(k.hc_expand_10);
             bind(e, 0, .{ sc.x[x.xi], sc.branch, sc.post, sc.comb });
             e.setValue(x.c.eps, 4);
@@ -200,10 +240,25 @@ pub fn kdaStep(x: *const Ctx, e: mtl.ComputeEncoder, ki: usize, w: *const wts.Kd
     const c = x.c;
     const L = &x.s.kda[ki];
     const cur = L.cur;
-    e.setPipeline(if (c.tp > 1) x.k.kda_rows_tp else x.k.kda_rows);
+    const gate = wide.kdaGate(if (x.k.wide) |*p| p else null, w.f_b, w.g_b);
+    var fb = [3]Ref{ w.f_b.w, w.f_b.s, w.f_b.b };
+    var gb = [3]Ref{ w.g_b.w, w.g_b.s, w.g_b.b };
+    if (gate == .pre) { // f_b and g_b at their widths on f_a and g_a first, [rows, width] each (in gu: no MLP runs yet)
+        const W = c.kdaWidth();
+        const f = x.sc.gu;
+        const g = f.at(@as(usize, st.max_rows) * W * 2);
+        wide.dense(&x.k.wide.?, e, w.f_b, .{ .in = proj.at(3 * W * 2), .ldx = c.kdaProj(), .out = f, .ldo = W, .rows = rows });
+        wide.dense(&x.k.wide.?, e, w.g_b, .{ .in = proj.at((3 * W + c.kda_dim) * 2), .ldx = c.kdaProj(), .out = g, .ldo = W, .rows = rows });
+        fb = .{ f, f, f };
+        gb = .{ g, g, g };
+    }
+    e.setPipeline(switch (gate) {
+        .generated => if (c.tp > 1) x.k.kda_rows_tp else x.k.kda_rows,
+        .pre, .fused => |p| p,
+    });
     bind(e, 0, .{proj});
     shape(e, 1, .{ rows, c.kdaProj() });
-    bind(e, 2, .{ L.cs[cur], w.conv_w, w.f_b.w, w.f_b.s, w.f_b.b, w.g_b.w, w.g_b.s, w.g_b.b, w.a, w.dt_bias, L.st[cur], w.o_norm });
+    bind(e, 2, .{ L.cs[cur], w.conv_w, fb[0], fb[1], fb[2], gb[0], gb[1], gb[2], w.a, w.dt_bias, L.st[cur], w.o_norm });
     e.setValue(c.lower_bound, 14);
     e.setValue(c.eps, 15);
     bind(e, 16, .{ y, L.st[1 - cur], L.cs[1 - cur] });
@@ -295,9 +350,10 @@ pub fn mlaCache(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, w: *const wts.M
     }
 }
 
-/// Every row's 64 heads of q_nope (in `qp`, a row qrProj apart) into the latent: MLX's qvm on kv_b's key half.
+/// Every row's 64 heads of q_nope (`qp`, rows qrProj apart) into the latent: qvm on kv_b's key half, or embed_q's qmv.
 pub fn absorb(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Mla, qp: Ref, ql: Ref, rows: u32) void {
     const c = x.c;
+    if (w.absorbed) |pair| return wide.perHead(&x.k.wide.?, e, pair[0], c.mla_heads, .{ .in = qp, .ldx = c.qrProj(), .out = ql, .ldo = c.mla_heads * c.kv_lora, .rows = rows }, c.nope, c.kv_lora);
     e.setPipeline(x.k.absorb);
     bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, qp, ql });
     e.setValue(c.qrProj(), 5);
@@ -305,9 +361,10 @@ pub fn absorb(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Mla, qp: Ref, 
     e.dispatchGroups(size(1, c.kv_lora / 64, rows * c.mla_heads), size(64, 1, 1));
 }
 
-/// Every row's 64 heads' latent outputs to values [rows, heads * v]: MLX's batched qmv_fast on kv_b's value half.
+/// Every row's 64 heads' latent outputs to values [rows, heads * v]: qmv_fast on kv_b's value half, or unembed_out's.
 pub fn unabsorb(x: *const Ctx, e: mtl.ComputeEncoder, w: *const wts.Mla, att: Ref, vals: Ref, rows: u32) void {
     const c = x.c;
+    if (w.absorbed) |pair| return wide.perHead(&x.k.wide.?, e, pair[1], c.mla_heads, .{ .in = att, .ldx = c.mla_heads * c.kv_lora, .out = vals, .ldo = c.mla_heads * c.v_dim, .rows = rows }, c.kv_lora, c.v_dim);
     e.setPipeline(x.k.unabsorb);
     bind(e, 0, .{ w.kv_b.w, w.kv_b.s, w.kv_b.b, att, vals });
     e.setValue(c.mla_heads, 5);
@@ -340,7 +397,31 @@ fn attendSparse(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, g: Seg, first: 
     const n = g.rows - first;
     const r: usize = g.row0 + first; // the first sparse row's place in the window
     selectKeys(x, e, mi, sc.qp.at((r * c.qrProj() + c.mla_heads * c.nope) * 2), c.qrProj(), sc.iw.at(r * c.i_heads * 2), sc.sscore, sc.indices, n, g.pos + first);
-    attendIndexed(x, e, mi, sc.ql.at(r * c.mla_heads * c.kv_lora * 2), sc.indices, sc.att.at(r * c.mla_heads * c.kv_lora * 2), n, g.pos + g.rows);
+    const ql = sc.ql.at(r * c.mla_heads * c.kv_lora * 2);
+    const att = sc.att.at(r * c.mla_heads * c.kv_lora * 2);
+    if (c.tp > 1) return attendIndexed(x, e, mi, ql, sc.indices, att, n, g.pos + g.rows);
+    attendBlocks(x, e, mi, ql, sc.indices, att, n, g.pos + g.rows);
+}
+
+/// `n` rows' 64 heads over their listed keys on the tensor units: each block of attn_span entries its own softmax, then the blocks in order.
+fn attendBlocks(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, ql: Ref, indices: Ref, out: Ref, n: u32, key_length: u32) void {
+    const c = x.c;
+    const k = x.k;
+    const blocks = c.attnBlocks();
+    const vals = @as(usize, n) * blocks * c.mla_heads * c.kv_lora * 4;
+    const marks = @as(usize, n) * blocks * c.mla_heads * 4;
+    const part = x.sc.apart;
+    e.setPipeline(k.sparse_split);
+    bind(e, 0, .{ ql, x.s.mla[mi].keys, indices });
+    e.setValue(@as(f32, 1.0 / 16.0), 3);
+    e.setValue([4]i32{ @intCast(c.keyWidth()), @intCast(key_length), cfg.attn_span, 0 }, 4);
+    bind(e, 5, .{ part, part.at(vals), part.at(vals + marks) });
+    e.dispatchGroups(size(c.mla_heads / 16, blocks, n), size(128, 1, 1));
+    e.setPipeline(k.sparse_combine);
+    bind(e, 0, .{ part, part.at(vals), part.at(vals + marks) });
+    e.setValue(@as(i32, @intCast(blocks)), 3);
+    bind(e, 4, .{out});
+    e.dispatchGroups(size(c.mla_heads, n, 1), size(128, 1, 1));
 }
 
 /// Key lists for `n` rows at positions p0.. past index_topk keys (indexer queries `iq` a row `q_stride` apart).
@@ -349,10 +430,10 @@ pub fn selectKeys(x: *const Ctx, e: mtl.ComputeEncoder, mi: usize, iq: Ref, q_st
     const k = x.k;
     const s_stride = x.s.cap / c.kpool + 1;
     const most = (p0 + n) / c.kpool; // the last row's blocks
-    e.setPipeline(k.index_scores);
+    e.setPipeline(k.index_decode); // a row's heads as the tensor op's rows (glm_index_nax.metal)
     bind(e, 0, .{ iq, iw, x.s.mla[mi].pool, scores });
-    e.setValue(ScoreArgs{ .p0 = p0, .q_stride = q_stride, .w_stride = c.i_heads, .s_stride = s_stride }, 4);
-    e.dispatchGroups(size((most + 7) / 8, n, 1), size(256, 1, 1));
+    e.setValue(ScoreArgs{ .p0 = p0, .q_stride = q_stride, .w_stride = c.i_heads, .s_stride = s_stride, .rows = n }, 4);
+    e.dispatchGroups(size((most + 127) / 128, n, 1), size(128, 1, 1));
     e.setPipeline(k.index_select);
     bind(e, 0, .{ scores, indices });
     e.setValue(SelectArgs{ .p0 = p0, .top = c.i_topk / c.kpool, .width = c.keyWidth(), .s_stride = s_stride, .i_stride = c.keyWidth() }, 2);
@@ -389,7 +470,7 @@ pub fn backbone(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32, pos: u32) v
     const c = x.c;
     const sc = x.sc;
     const k = x.skip;
-    if (k & Class.ends == 0) embed(x, e, ids, rows);
+    if (k & Class.ends == 0) embed(x, e, ids, rows, pos);
     const plane = @as(usize, rows) * c.hidden * 2;
     snap(x, e, sc.h, plane);
     var pending = false;
@@ -431,13 +512,13 @@ pub fn backbone(x: *Ctx, e: mtl.ComputeEncoder, ids: Ref, rows: u32, pos: u32) v
     snap(x, e, sc.hidden, plane);
 }
 
-/// LM head logits and argmax for `rows` rows of `in` into `logits` and `picks` (u32).
+/// LM head logits and draws for `rows` rows of `in` into `logits` and `picks` (u32): each row its rule's draw.
 pub fn head(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, picks: Ref, rows: u32) void {
-    headOver(x, e, in, logits, picks, rows, x.c.vocab);
+    headOver(x, e, in, logits, picks, rows, x.c.vocab, false);
 }
 
-/// `head` over the vocabulary's first `vocab` tokens (the MTP head's draft vocabulary: the most frequent BPE merges).
-pub fn headOver(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, picks: Ref, rows: u32, vocab: u32) void {
+/// `head` over the first `vocab` tokens; `greedy` forces the MTP draft head's argmax draws.
+pub fn headOver(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, picks: Ref, rows: u32, vocab: u32, greedy: bool) void {
     if (x.skip & Class.head != 0) return;
     const part = x.c.vocabPart(); // TP2: this Mac's half, its picks merged with the peer's
     const n: u32 = if (vocab > part[0]) @min(vocab, part[1]) - part[0] else 0;
@@ -445,10 +526,9 @@ pub fn headOver(x: *const Ctx, e: mtl.ComputeEncoder, in: Ref, logits: Ref, pick
         var q = x.w.head;
         q.n = n;
         qmv(x, e, if (x.c.tp > 1) x.k.qmv_head_tp else x.k.qmv_head, in, q, logits, rows);
-        e.setPipeline(x.k.argmax);
-        bind(e, 0, .{ logits, picks });
-        e.setValue(n, 2);
-        e.dispatchGroups(size(rows, 1, 1), size(1024, 1, 1));
+        const payload = @import("draw_rule.zig").Payload.init(if (greedy) null else x.draws, rows, vocab);
+        // draw_dispatch splits the rows into runs of one mode: sampled tf_sample_full, else argmax.
+        @import("draw_dispatch.zig").encode(e, x.k.sample, x.k.argmax, logits.buf, logits.off, picks.buf, picks.off, &payload, n);
     }
     if (x.c.tp > 1) x.ep.?.argmax(e, logits, picks, n, part[0], rows);
 }

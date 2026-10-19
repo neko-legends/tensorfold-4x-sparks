@@ -53,7 +53,16 @@ fn server(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
         n.addImport("tokenizer", tokenizer); // TF_DSV41_CALIB=measure's calibration text (calib_gpu.zig)
         m.addImport("native_engines", n);
         // models / info / pull: the checkpoint commands over the same engines
-        m.addImport("checkpoint_cli", b.createModule(.{ .root_source_file = b.path("zig/src/cli/cli.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "native_engines", .module = n }} }));
+        const cli_checkpoint = b.createModule(.{ .root_source_file = b.path("zig/src/cli/cli.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "native_engines", .module = n }} });
+        { // EXLR8 node pulls need the exlr8 module graph; this build carries none
+            const opts = b.addOptions();
+            opts.addOption(bool, "exlr8", false);
+            opts.addOption(bool, "lora", false);
+            cli_checkpoint.addOptions("build_options", opts);
+        }
+        if (serve.import_table.get("core")) |serve_core| cli_checkpoint.addImport("core", serve_core);
+        if (cli_checkpoint.import_table.get("core")) |cc| cli_checkpoint.addImport("exlr8", @import("exlr8.zig").coreAlias(b, target, optimize, cc));
+        m.addImport("checkpoint_cli", cli_checkpoint);
     }
     return .{ .json = json, .serve = serve, .server = m, .api = api };
 }
@@ -73,6 +82,12 @@ pub fn tests(b: *std.Build, build_options: *std.Build.Step.Options, test_step: *
     test_step.dependOn(serve_step);
     if (host.result.os.tag != .macos) { // macOS runs the server's tests in nativeServer, with its Metal engines
         const server_step = b.step("test-server", "The native HTTP server's tests, DeepSeek-V4.1 over HTTP included (TF_DSV41_MODEL: the release tokenizer too)");
+        // 1.1.0's required-tools witness runs a lane fake: the server's tests import the lanes module and the
+        // 27B's mask policy fake (a no-op gate on this fork: see tool_required_test's structures note)
+        s.server.addImport("lanes", s.api.import_table.get("lanes").?);
+        const q27 = @import("qwen27_required.zig").modules(b, s.api.import_table.get("lanes").?);
+        s.server.addImport("qwen27_mask_fake", q27.fake);
+        s.server.addImport("qwen27_masks", q27.masks);
         server_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = s.server })).step);
         server_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = s.json })).step);
         server_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = s.api })).step);
@@ -107,4 +122,12 @@ pub fn tests(b: *std.Build, build_options: *std.Build.Step.Options, test_step: *
         .imports = &.{.{ .name = "dsv41_serve", .module = fast.serve }},
     }) });
     b.step("tf-dsv41-tokbench", "The DeepSeek-V4.1 tokenizer's throughput over gen_tokenizer.py's corpus").dependOn(&b.addInstallArtifact(bench, .{}).step);
+}
+
+/// Adds the shared `json` import (and `lanes` through `engine_api` when present); returns the json module.
+pub fn addTo(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const j = b.createModule(.{ .root_source_file = b.path("zig/src/server/json.zig"), .target = target, .optimize = optimize });
+    m.addImport("json", j);
+    if (m.import_table.get("engine_api")) |api| if (api.import_table.get("lanes")) |lanes| m.addImport("lanes", lanes);
+    return j;
 }

@@ -18,6 +18,8 @@ const http_body = @import("http_body.zig");
 const routes = @import("routes.zig");
 const spark = @import("spark.zig");
 const pyrepr = @import("pyrepr.zig");
+const warm = @import("warm.zig");
+const cortheon = @import("cortheon/cortheon.zig");
 const Server = @import("server.zig").Server;
 const Conn = @import("http_conn.zig").Conn;
 const Value = json.Value;
@@ -30,8 +32,8 @@ pub const Out = struct {
     vt: *const VTable,
 
     pub const VTable = struct {
-        /// 200 with text/event-stream: the stream's head.
-        open: *const fn (ctx: *anyopaque) error{Closed}!void,
+        /// 200 with text/event-stream: the stream's head, with the prepared prompt's token count (0: none).
+        open: *const fn (ctx: *anyopaque, prompt_len: usize) error{Closed}!void,
         /// One ``data:`` payload; null is ``[DONE]``.
         event: *const fn (ctx: *anyopaque, payload: ?Value) error{Closed}!void,
         /// A whole JSON reply.
@@ -65,7 +67,7 @@ const ClientOut = struct {
         return .{ .ctx = c, .vt = &.{ .open = open, .event = event, .reply = reply, .keepalive = keepalive } };
     }
 
-    fn open(ctx: *anyopaque) error{Closed}!void {
+    fn open(ctx: *anyopaque, _: usize) error{Closed}!void {
         const c: *ClientOut = @ptrCast(@alignCast(ctx));
         return sse.open(c.conn);
     }
@@ -142,12 +144,20 @@ const Plan = struct {
     named: []const u8,
 };
 
+/// A chat body checked as a chat completion's is, for routes that render it without a reply (/v1/imprint).
+pub fn chatInput(srv: *Server, cx: *Cx, raw: Value) errors.Refused!chat.Input {
+    return (try plan(srv, cx, true, raw)).input;
+}
+
 /// Everything checked before a reply starts (a refusal here is a 400 with no stream opened).
 fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     const body = try fields.parseNumbers(cx, raw);
+    // rows need each token's exact bytes: a tokenizer whose decoding depends on context (null) can't give them
+    const asked = if (is_chat) json.truthyField(body, "logprobs") else body.field("logprobs") != null;
+    const exact_bytes = asked and srv.info.logprobs and (srv.text.tokenBytes(cx.a, 0) catch return error.OutOfMemory) != null;
+    const logprobs = if (srv.config.wire != .spark) (if (is_chat) try fields.probabilityOptions(cx, body, exact_bytes) else try fields.legacyLogprobs(cx, body, exact_bytes)) else null;
     if (srv.config.wire != .spark) { // the Spark servers ignore these fields (and log requests their own way)
         try fields.validateModalities(cx, body);
-        try fields.probabilityOptions(cx, body);
         if (srv.config.request_log) |path| request_log.append(cx.a, path, body);
     }
     var input: chat.Input = .{ .fields = undefined, .body = body };
@@ -159,10 +169,10 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
         input.tools = try fam.tools(cx, body);
     };
     if (is_chat and srv.family == null) {
-        input.messages = try messages.normalize(cx, body.get("messages"), "system", srv.needs_user_after_tool);
+        input.messages = try messages.normalizeWith(cx, body.get("messages"), "system", srv.needs_user_after_tool, .of(srv.info.vision));
         input.tools = try tool_specs.active(cx, body.get("tools"), body.get("tool_choice"));
     } else if (!is_chat) if (body.get("messages")) |m| if (m == .array and m.array.len > 0) {
-        input.messages = try messages.normalize(cx, m, "system", srv.needs_user_after_tool);
+        input.messages = try messages.normalizeWith(cx, m, "system", srv.needs_user_after_tool, .of(srv.info.vision));
     };
     if (!is_chat and input.messages.array.len == 0) input.prompt = try legacyPrompt(srv, cx, body.get("prompt"));
     // ``body.get("max_tokens") or body.get("max_completion_tokens")``: both are ints or None by now
@@ -182,6 +192,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     // a family's engine with structured output (DeepSeek-V4.1, TF_DSV41_GRAMMAR=1): tool calls held to their schemas
     if (srv.family != null and srv.info.structures) if (try grammar.toolSpec(cx, body, grammar.toolGrammarEnv())) |t| try sampling.put(cx.a, "tools_grammar", .{ .string = t });
     if (srv.family == null and input.tools.len > 0 and try tool_specs.choiceRequiresCall(cx.a, body.get("tool_choice"))) try sampling.put(cx.a, "tool_call_required", .{ .bool = true });
+    if (body.field("parallel_tool_calls")) |p| if (p == .bool and !p.bool) try sampling.put(cx.a, "tool_call_single", .{ .bool = true });
     const thinking: fields.Thinking = if (srv.family) |fam| blk: {
         const t = try fam.thinking(cx, body);
         break :blk .{ .enable = t.enable, .effort = t.effort };
@@ -189,6 +200,16 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     if (thinking.effort) |e| try sampling.put(cx.a, "reasoning_effort", .{ .string = e });
     if (thinking.enable) |on| try sampling.put(cx.a, "enable_thinking", .{ .bool = on });
     input.fields = .{ .object = sampling };
+    const streamed = if (body.get("stream")) |s| s.truthy() else false;
+    input.prompt_logprobs = try fields.promptLogprobs(cx, body, !is_chat, streamed, srv.info.prompt_logprobs);
+    if (logprobs != null) {
+        // 0.6.6's set: the rows describe the plain reply text, so nothing may reshape it
+        var structured = false;
+        for (grammar.fields) |k| structured = structured or json.truthyField(body, k);
+        if (input.tools.len > 0 or json.truthyField(body, "stop") or structured or json.truthyField(body, "thinking_budget"))
+            return cx.refuse("logprobs support chat without tools, stop strings, structured output or a thinking budget");
+    }
+    input.logprobs = logprobs;
     var policy: tool_stream.Policy = .{};
     if (body.field("parallel_tool_calls")) |p| {
         if (p != .bool) return cx.refuse("parallel_tool_calls must be a boolean");
@@ -198,7 +219,7 @@ fn plan(srv: *Server, cx: *Cx, is_chat: bool, raw: Value) errors.Refused!Plan {
     const options = body.get("stream_options");
     return .{
         .input = input,
-        .stream = if (body.get("stream")) |s| s.truthy() else false,
+        .stream = streamed,
         .separate_usage = options != null and options.? == .object and json.truthyField(options.?, "include_usage"),
         .policy = policy,
         .named = replyModel(srv, body),
@@ -211,14 +232,17 @@ fn legacyPrompt(srv: *Server, cx: *Cx, prompt: ?Value) errors.Refused!chat.Promp
     if (p == .array and p.array.len > 0 and allInts(p.array)) {
         const vocab = srv.text.vocabSize();
         const out = try cx.a.alloc(u32, p.array.len);
-        for (p.array, out) |t, *slot| {
-            const n = if (t == .int) t.int64() else null;
-            if (n == null or n.? < 0 or n.? >= vocab) return cx.fail(.request, "prompt token ids must be integers in the valid range 0 to {d}", .{@as(i64, vocab) - 1});
-            slot.* = @intCast(n.?);
-        }
+        for (p.array, out) |t, *slot| slot.* = try promptId(cx, vocab, t);
         return .{ .ids = out };
     }
     return .{ .text = try promptText(srv, cx, p) };
+}
+
+/// A prompt token id, refused unless it is an integer inside the vocabulary.
+fn promptId(cx: *Cx, vocab: u32, t: Value) errors.Refused!u32 {
+    const n = if (t == .int) t.int64() else null;
+    if (n == null or n.? < 0 or n.? >= vocab) return cx.fail(.request, "prompt token ids must be integers in the valid range 0 to {d}", .{@as(i64, vocab) - 1});
+    return @intCast(n.?);
 }
 
 fn allInts(items: []const Value) bool {
@@ -232,18 +256,9 @@ fn promptText(srv: *Server, cx: *Cx, p: Value) errors.Refused![]const u8 {
         .null => return "",
         .array => |items| {
             if (allInts(items)) {
-                const toks = try cx.a.alloc(u32, items.len);
                 const vocab = srv.text.vocabSize();
-                for (items, toks) |t, *slot| {
-                    if (t == .bool) {
-                        slot.* = @intFromBool(t.bool);
-                        continue;
-                    }
-                    // as legacyPrompt: an id outside the vocabulary is the request's error, not an @intCast panic
-                    const n = t.int64();
-                    if (n == null or n.? < 0 or n.? >= vocab) return cx.fail(.request, "prompt token ids must be integers in the valid range 0 to {d}", .{@as(i64, vocab) - 1});
-                    slot.* = @intCast(n.?);
-                }
+                const toks = try cx.a.alloc(u32, items.len);
+                for (items, toks) |t, *slot| slot.* = try promptId(cx, vocab, t);
                 return srv.text.decode(cx.a, toks) catch return error.OutOfMemory;
             }
             var parts: std.ArrayList([]const u8) = .empty;
@@ -278,7 +293,8 @@ pub fn run(srv: *Server, a: Allocator, out: Out, gone: Gone, is_chat: bool, raw:
         return;
     };
     p.input.id = id;
-    var r: Run = .{ .srv = srv, .a = a, .out = out, .is_chat = is_chat, .plan = p, .id = id, .created = std.Io.Clock.real.now(srv.io).toSeconds() };
+    const turn = cortheon.begin(srv, a, raw, id, is_chat, &p.input);
+    var r: Run = .{ .srv = srv, .a = a, .out = out, .is_chat = is_chat, .plan = p, .id = id, .created = std.Io.Clock.real.now(srv.io).toSeconds(), .turn = turn };
     if (p.stream) r.stream(gone, field) else r.whole(gone, field);
 }
 
@@ -331,6 +347,8 @@ const Run = struct {
     created: i64,
     streamed_prose: bool = false,
     prose_sent: std.ArrayList(u8) = .empty, // the content a tool stream sent
+    text_offset: usize = 0, // characters a completion stream's logprob rows have covered
+    turn: ?*cortheon.Turn = null, // --cortheon's work on this request
 
     fn chunk(r: *Run, delta: ?Value, finish: ?[]const u8) Allocator.Error!Value {
         const a = r.a;
@@ -344,11 +362,15 @@ const Run = struct {
         if (r.is_chat) {
             const d: Value = if (delta) |v| (if (v == .object) v else if (v.string.len > 0) try chat.deltaOf(a, "content", v.string) else .{ .object = try json.newObject(a) }) else .{ .object = try json.newObject(a) };
             try choice.put(a, "delta", d);
+            // a content delta's rows (logprobs.Stream) are the choice's, as OpenAI streams them
+            if (d == .object) if (d.object.fetchOrderedRemove("logprobs")) |kv| try choice.put(a, "logprobs", kv.value);
             try choice.put(a, "finish_reason", if (finish) |f| .{ .string = f } else .null);
         } else {
-            try choice.put(a, "text", delta orelse .{ .string = "" });
+            const d = delta orelse Value{ .string = "" };
+            const rows = if (d == .object) d.object.get("logprobs") else null;
+            try choice.put(a, "text", if (d == .object) d.object.get("content") orelse .{ .string = "" } else d);
             try choice.put(a, "finish_reason", if (finish) |f| .{ .string = f } else .null);
-            if (r.srv.config.wire != .spark) try choice.put(a, "logprobs", .null);
+            if (r.srv.config.wire != .spark) try choice.put(a, "logprobs", if (rows) |v| try @import("logprobs.zig").legacy(a, v, &r.text_offset) else .null);
         }
         const list = try a.alloc(Value, 1);
         list[0] = .{ .object = choice };
@@ -383,6 +405,7 @@ const Run = struct {
         if (reply.stop_sequence) |s| try o.put(r.a, "stop_sequence", .{ .string = s });
         try o.put(r.a, "tensorfold", reply.runtime);
         try o.put(r.a, "speculative", reply.speculative);
+        if (r.turn) |t| try o.put(r.a, "cortheon", try t.summary(r.a));
     }
 
     /// The engine's stats as the Spark server sends them (``tensorfold``), with ``return_token_ids``'s ids.
@@ -405,8 +428,8 @@ const Run = struct {
         const tools = r.plan.input.tools;
         if (tools.len == 0) return null;
         const parsed = try tool_parse.parse(r.a, reply.content, tools, r.plan.policy.maxCalls());
-        const calls = parsed.calls orelse {
-            if (r.plan.policy.single) reply.content = try r.plan.policy.parsedContent(r.a, parsed.content);
+        const calls = (if (r.turn != null) cortheon.clientCalls(parsed.calls) else parsed.calls) orelse {
+            if (r.plan.policy.single or parsed.calls != null) reply.content = try r.plan.policy.parsedContent(r.a, parsed.content);
             return null;
         };
         reply.content = try r.plan.policy.parsedContent(r.a, parsed.content);
@@ -420,10 +443,10 @@ const Run = struct {
         if (r.srv.config.wire == .spark) return r.out.vt.reply(r.out.ctx, if (cx.kind == .server) 500 else cx.status(), sparkError(a, cx, field) catch return);
         const kind_ok = cx.kind != .other and cx.kind != .server;
         const body = (if (kind_ok) errorBody(a, cx, field) else errorOther(a, cx.message)) catch return;
-        r.out.vt.reply(r.out.ctx, if (kind_ok) 400 else 500, wrapError(a, body) catch return);
+        r.out.vt.reply(r.out.ctx, if (kind_ok) cx.status() else 500, wrapError(a, body) catch return);
     }
 
-    /// A reply that ended before anything was sent: a refusal's 400, a failure's 500, nothing when the client left.
+    /// An unsent reply: request 400, unavailable 503, failure 500, nothing when the client left.
     fn unsent(r: *Run, cx: *Cx, e: chat.Failure, field: []const u8) void {
         switch (e) {
             error.Cancelled => {},
@@ -440,7 +463,8 @@ const Run = struct {
     /// A context-window refusal on a stream: the role chunk when there are no tools, then the error event and [DONE].
     fn streamedContext(r: *Run, cx: *const Cx, tools: bool, field: []const u8) void {
         const a = r.a;
-        r.out.vt.open(r.out.ctx) catch return;
+        // a context-window refusal: the head opens with no prompt behind it, so it carries no count
+        r.out.vt.open(r.out.ctx, 0) catch return;
         if (!tools and r.is_chat) r.emit(r.chunk(roleDelta(a) catch return, null) catch return) catch return;
         logRefused(r.id, cx.message);
         const body = errorBody(a, cx, field) catch return;
@@ -451,11 +475,23 @@ const Run = struct {
     fn whole(r: *Run, gone: Gone, field: []const u8) void {
         const a = r.a;
         var cx: Cx = .{ .a = a };
-        var reply = chat.run(r.srv, &cx, r.plan.input, null, gone) catch |e| return r.unsent(&cx, e, field);
+        var reply = (if (r.turn) |t| cortheon.loop.whole(t, r.srv, &cx, &r.plan.input, gone) else chat.run(r.srv, &cx, r.plan.input, null, gone)) catch |e| return r.unsent(&cx, e, field);
         const calls = r.attachCalls(&reply) catch return;
         const o = json.newObject(a) catch return;
         r.wholeBody(o, &reply, calls) catch return;
         r.out.vt.reply(r.out.ctx, 200, .{ .object = o });
+        r.warmNext(&reply, calls);
+    }
+
+    /// The next turn's prompt prefilled in the background, from the reply as its client got it (warm.zig).
+    fn warmNext(r: *Run, reply: *const chat.Reply, calls: ?[]Value) void {
+        if (!r.is_chat) return;
+        const message = json.newObject(r.a) catch return;
+        message.put(r.a, "role", .{ .string = "assistant" }) catch return;
+        message.put(r.a, "content", if (calls != null and reply.content.len == 0) .null else .{ .string = reply.content }) catch return;
+        if (calls) |c| message.put(r.a, "tool_calls", .{ .array = c }) catch return;
+        if (r.turn) |t| t.remember(r.a, r.plan.input, .{ .object = message });
+        warm.reply(r.srv, r.plan.input, .{ .object = message }, reply.thinking, reply.effort, reply.prompt_tokens);
     }
 
     fn wholeBody(r: *Run, o: *json.Object, reply: *const chat.Reply, calls: ?[]Value) Allocator.Error!void {
@@ -469,22 +505,34 @@ const Run = struct {
         if (r.is_chat) {
             const message = try json.newObject(a);
             try message.put(a, "role", .{ .string = "assistant" });
-            const empty_null = r.srv.family != null and reply.content.len == 0; // the family's Python app: ``content or None``
-            const keeps_text = r.srv.config.wire == .spark; // the Spark server keeps a call's prose
-            try message.put(a, "content", if ((calls != null and !keeps_text) or empty_null) .null else .{ .string = reply.content });
+            // the family's wire keeps the fork's parity (a call's prose hidden on the Spark surface, ``content or None``);
+            // the generic path keeps 1.1.0's semantics: prose survives beside calls, null only when there is no text
+            if (r.srv.family != null) {
+                const empty_null = reply.content.len == 0; // the family's Python app: ``content or None``
+                const keeps_text = r.srv.config.wire == .spark; // the Spark server keeps a call's prose
+                try message.put(a, "content", if ((calls != null and !keeps_text) or empty_null) .null else .{ .string = reply.content });
+            } else {
+                try message.put(a, "content", if (calls != null and reply.content.len == 0) .null else .{ .string = reply.content });
+            }
             if (reply.reasoning) |t| if (t.len > 0) {
                 if (r.srv.family) |fam| {
                     const d = try fam.reasoningDelta(a, t);
                     for (d.object.keys(), d.object.values()) |k, v| try message.put(a, k, v);
                 } else try message.put(a, "reasoning_content", .{ .string = t });
             };
+            if (reply.reasoning) |t| if (t.len > 0) try message.put(a, "reasoning_content", .{ .string = t });
             if (calls) |c| try message.put(a, "tool_calls", .{ .array = c });
             try choice.put(a, "message", .{ .object = message });
             try choice.put(a, "finish_reason", .{ .string = reply.finish_reason });
+            if (reply.logprobs) |lp| try choice.put(a, "logprobs", lp);
         } else {
             try choice.put(a, "text", .{ .string = reply.content });
             try choice.put(a, "finish_reason", .{ .string = reply.finish_reason });
-            if (r.srv.config.wire != .spark) try choice.put(a, "logprobs", .null);
+            if (r.srv.config.wire != .spark) {
+                var from: usize = 0;
+                try choice.put(a, "logprobs", if (reply.logprobs) |lp| try @import("logprobs.zig").legacy(a, lp, &from) else .null);
+                if (reply.prompt_logprobs) |p| try choice.put(a, "prompt_logprobs", p);
+            }
         }
         const list = try a.alloc(Value, 1);
         list[0] = .{ .object = choice };
@@ -496,12 +544,28 @@ const Run = struct {
     const StreamSink = struct {
         run: *Run,
         tools: bool,
+        prompt_len: usize,
+        opened: bool = false,
+        pending: std.ArrayList(Value) = .empty, // research progress waits for actual engine admission
+
+        fn begin(ctx: *anyopaque, _: usize) error{Closed}!void {
+            const s: *StreamSink = @ptrCast(@alignCast(ctx));
+            if (s.opened) return;
+            const r = s.run;
+            try r.out.vt.open(r.out.ctx, s.prompt_len);
+            s.opened = true;
+            if (!s.tools and r.is_chat) try r.emit(r.chunk(roleDelta(r.a) catch return error.Closed, null) catch return error.Closed);
+            for (s.pending.items) |delta| try call(ctx, delta);
+            s.pending.clearRetainingCapacity();
+        }
 
         fn call(ctx: *anyopaque, delta: Value) error{Closed}!void {
             const s: *StreamSink = @ptrCast(@alignCast(ctx));
             const r = s.run;
+            if (!s.opened) return s.pending.append(r.a, delta) catch error.Closed;
             if (!s.tools) {
-                if (!r.is_chat and delta != .string) return; // completions stream text only
+                // completions stream text only, with its logprob rows when asked
+                if (!r.is_chat and delta != .string and (delta != .object or delta.object.get("content") == null)) return;
                 return r.emit(r.chunk(delta, null) catch return error.Closed);
             }
             const filtered = r.policyDelta(delta) catch return error.Closed;
@@ -566,14 +630,14 @@ const Run = struct {
         };
         var handed = false; // generate gives the preparing count back from here on
         defer if (!handed) chat.release(r.srv, prepared.preparing);
-        r.out.vt.open(r.out.ctx) catch return;
-        if (!tools and r.is_chat) r.emit(r.chunk(roleDelta(a) catch return, null) catch return) catch return;
-        var sink_state: StreamSink = .{ .run = r, .tools = tools };
+        var sink_state: StreamSink = .{ .run = r, .tools = tools, .prompt_len = prepared.prompt_len };
         handed = true;
         var live = gone;
         live.out = r.out;
         live.every_ns = @intFromFloat(r.srv.config.spark.keepalive_s * std.time.ns_per_s);
-        var reply = chat.generate(r.srv, &cx, prepared, .{ .ctx = &sink_state, .call = StreamSink.call }, live) catch |e| {
+        var reply = chat.generate(r.srv, &cx, prepared, .{ .ctx = &sink_state, .call = StreamSink.call, .begin = StreamSink.begin }, live) catch |e| {
+            // 1.1.0's preflight contract: a stream that never opened fails as its HTTP status, not as an event
+            if (!sink_state.opened) return r.unsent(&cx, e, field);
             switch (e) {
                 error.Cancelled => return,
                 error.Refused => if (cx.kind != .other and cx.kind != .server) {
@@ -595,8 +659,9 @@ const Run = struct {
             r.out.vt.event(r.out.ctx, null) catch {};
             return;
         };
+        var calls: ?[]Value = null;
         if (tools) {
-            const calls = r.attachCalls(&reply) catch return;
+            calls = r.attachCalls(&reply) catch return;
             const tail = r.plan.policy.flush();
             if (tail.len > 0) {
                 r.prose() catch return;
@@ -633,6 +698,7 @@ const Run = struct {
             r.emit(u) catch return;
         }
         r.out.vt.event(r.out.ctx, null) catch {};
+        r.warmNext(&reply, calls);
     }
 };
 

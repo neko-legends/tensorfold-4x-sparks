@@ -11,7 +11,6 @@ pub const Reply = struct {
 };
 
 /// One open connection to fake_serve; reads with a receive timeout the closed probe sets when it runs.
-
 fn hexAt(body: []const u8, at: usize, want: usize) bool {
     if (at + want > body.len) return false;
     for (body[at..][0..want]) |c| {
@@ -188,7 +187,7 @@ fn sumLine(line: []const u8) bool {
     if (!std.mem.startsWith(u8, line, "tensorfold:")) return false;
     const ws = wordAt(line, "tensorfold:".len) orelse return false;
     if (!std.mem.startsWith(u8, line[ws..], "_sum ")) return false;
-    return line[ws + "_sum ".len..].len > 0;
+    return line[ws + "_sum ".len ..].len > 0;
 }
 
 /// `^(tensorfold:\w+_sum) \S+$` to `\1 <sum>`.
@@ -281,11 +280,35 @@ fn latin1(a: std.mem.Allocator, bytes: []const u8) ![]u8 {
 /// wire.normal: ids first-seen to <idN>, stamps and timings replaced, Server and Date dropped.
 pub const Normal = struct { status: []const u8, headers: []const u8, body: []const u8, interim: []const u8 };
 
+/// Validate the native full digest before comparing its legacy fields with the frozen Python wire.
+fn subTokenSha256(a: std.mem.Allocator, body: []const u8) ![]u8 {
+    const short_key = "\"token_sha\": \"";
+    const full_key = "\", \"token_sha256\": \"";
+    var out: std.ArrayList(u8) = .empty;
+    var at: usize = 0;
+    while (std.mem.indexOfPos(u8, body, at, short_key)) |hit| {
+        const begin = hit + short_key.len;
+        if (begin + 12 > body.len) return error.BadTokenDigest;
+        const end = begin + 12;
+        if (!std.mem.startsWith(u8, body[end..], full_key)) return error.MissingFullTokenDigest;
+        const full = end + full_key.len;
+        if (full + 64 >= body.len or body[full + 64] != '"') return error.BadTokenDigest;
+        for (body[full .. full + 64]) |c| if (!(std.ascii.isDigit(c) or (c >= 'a' and c <= 'f')))
+            return error.BadTokenDigest;
+        if (!std.mem.eql(u8, body[begin..end], body[full .. full + 12])) return error.BadTokenDigest;
+        try out.appendSlice(a, body[at..end]);
+        at = full + 64;
+    }
+    try out.appendSlice(a, body[at..]);
+    return out.toOwnedSlice(a);
+}
+
 pub fn normalize(a: std.mem.Allocator, r: *const Reply) !Normal {
     var seen: std.ArrayList([]const u8) = .empty;
     var body = try subStamps(a, r.body);
     body = try subIds(a, body, &seen);
     const varied = findTimes(body) != null or matchBucket(body) or matchSums(body) or matchFootprint(body);
+    body = try subTokenSha256(a, body);
     body = try subTimes(a, body);
     body = try subBucket(a, body);
     body = try subSums(a, body);

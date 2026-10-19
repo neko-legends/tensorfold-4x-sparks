@@ -1,5 +1,6 @@
 //! Host-only contracts exercise strict text configuration, affine six-bit packing and borrowed-view shapes.
 const std = @import("std");
+const platform = @import("sys");
 const posix = std.posix;
 const family = @import("flashnext.zig");
 const st = @import("../../core/safetensors.zig");
@@ -113,14 +114,16 @@ test "FlashNext derived dimensions retain independent HC attention and recurrenc
 test "module quantization preserves false true and dictionary-default override semantics" {
     var c = try family.config.parse(std.testing.allocator, toy);
     defer c.deinit();
-    try std.testing.expect((try c.quantization("language_model.model.layers.0.raw.weight")) == null);
-    const override = (try c.quantization("model.layers.0.override")).?;
+    const widths = @import("widths.zig");
+    try std.testing.expect((try widths.quantization(&c, "language_model.model.layers.0.raw.weight")) == null);
+    const override = (try widths.quantization(&c, "model.layers.0.override")).?;
     try std.testing.expectEqual(@as(u8, 4), override.bits);
     try std.testing.expectEqual(@as(usize, 64), override.group);
-    try std.testing.expectEqual(@as(u8, 6), (try c.quantization("layers.0.inherit")).?.bits);
-    try std.testing.expectEqual(@as(usize, 32), (try c.quantization("unknown.projection")).?.group);
-    try std.testing.expectError(error.UnsupportedFlashAffineKernel, override.checkFlashKernel());
-    try c.global_affine.checkFlashKernel();
+    try std.testing.expectEqual(@as(u8, 6), (try widths.quantization(&c, "layers.0.inherit")).?.bits);
+    try std.testing.expectEqual(@as(usize, 32), (try widths.quantization(&c, "unknown.projection")).?.group);
+    try std.testing.expect(widths.launched(.{ .bits = override.bits, .group = @intCast(override.group) }));
+    try std.testing.expect(widths.launched(.{ .bits = c.global_affine.bits, .group = @intCast(c.global_affine.group) }));
+    try std.testing.expect(!widths.launched(.{ .bits = 7, .group = 64 }) and !widths.launched(.{ .bits = 4, .group = 16 }));
 }
 
 test "malformed FlashNext configuration fields are refused" {
@@ -166,7 +169,7 @@ test "six-bit codes cross word boundaries without changing neighboring codes" {
 }
 
 fn tensor(dtype: st.DType, dimensions: []const usize) st.Entry {
-    var shape: [4]usize = @splat(1);
+    var shape: [st.max_rank]usize = @splat(1);
     @memcpy(shape[0..dimensions.len], dimensions);
     var count: usize = dtype.size();
     for (dimensions) |n| count *= n;
@@ -296,12 +299,12 @@ test "the prompt's checked-in text resolves and patches from another working dir
     const sources = @import("kernel_sources").flashnext_gen;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
-    const old_fd = std.c.open(".", .{}); // O_RDONLY via the flags struct's default
-    defer _ = std.c.close(old_fd);
+    const old_fd = platform.c.open(".", .{}); // O_RDONLY via the flags struct's default
+    defer _ = platform.c.close(old_fd);
     const tmpz = try std.fmt.allocPrintSentinel(std.testing.allocator, ".zig-cache/tmp/{s}", .{tmp.sub_path}, 0);
     defer std.testing.allocator.free(tmpz);
-    try std.testing.expect(std.c.chdir(tmpz) == 0);
-    defer _ = std.c.fchdir(old_fd);
+    try std.testing.expect(platform.c.chdir(tmpz) == 0);
+    defer _ = platform.c.fchdir(old_fd);
     for (table.entries) |e| {
         var text: []const u8 = "";
         for (sources.sources) |s| {

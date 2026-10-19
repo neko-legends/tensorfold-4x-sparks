@@ -3,11 +3,40 @@ const std = @import("std");
 const models = @import("models.zig");
 const info = @import("info.zig");
 const pull = @import("pull.zig");
+// EXLR8 node pulls are 1.1.0's; a build without the exlr8 module (the fork's server binaries) gates them off.
+const exlr8_on = @import("build_options").exlr8;
+const pull_exlr8 = if (exlr8_on) @import("pull_exlr8.zig") else struct {
+    pub const Flags = struct { profile: []const u8 = "", node: []const u8 = "", dir: []const u8 = "" };
+    pub fn parseFlags(args: []const []const u8) !?Flags {
+        _ = args;
+        return null;
+    }
+    pub fn run(a: std.mem.Allocator, io: std.Io, out: anytype, err: anytype, env: anytype, repo: []const u8, o: Flags) !u8 {
+        _ = a; _ = io; _ = out; _ = err; _ = env; _ = repo; _ = o;
+        return 2;
+    }
+};
+// lora merge needs the core module graph; builds without one gate the command off.
+const lora_on = @import("build_options").lora;
+const lora_merge = if (lora_on) @import("core").lora_merge else struct {
+    pub const Args = struct { dense: []const u8, adapter: []const u8, dest: []const u8, shipped: bool = false };
+    pub fn parseArgs(args: []const []const u8) ?Args {
+        _ = args;
+        return null;
+    }
+    pub fn run(gpa: std.mem.Allocator, io: std.Io, out: anytype, err: anytype, dense: []const u8, adapter: []const u8, dest: []const u8, shipped: bool) anyerror!u8 {
+        _ = gpa; _ = io; _ = out; _ = err; _ = dense; _ = adapter; _ = dest; _ = shipped;
+        return 2;
+    }
+};
 
 const usage =
     \\usage: tensorfold models
     \\       tensorfold info MODEL
     \\       tensorfold pull REPO[@REVISION]
+    \\       tensorfold pull REPO[@REVISION] --exlr8 PROFILE --node R/N --dir DIR
+    \\       tensorfold merge MODEL ADAPTER OUT
+    \\       tensorfold merge DENSE ADAPTER OUT --quantize SHIPPED
     \\
 ;
 
@@ -15,7 +44,7 @@ const usage =
 pub fn wants(args: []const []const u8) bool {
     if (args.len == 0) return false;
     const cmd = args[0];
-    return std.mem.eql(u8, cmd, "models") or std.mem.eql(u8, cmd, "info") or std.mem.eql(u8, cmd, "pull");
+    return std.mem.eql(u8, cmd, "models") or std.mem.eql(u8, cmd, "info") or std.mem.eql(u8, cmd, "pull") or std.mem.eql(u8, cmd, "merge");
 }
 
 /// Runs a checkpoint subcommand; `argv` is argv[1..] as in cluster.cli.main.
@@ -23,8 +52,8 @@ pub fn main(init: std.process.Init, argv: []const [:0]const u8) !u8 {
     const a = init.arena.allocator();
     var out_buf: [64 << 10]u8 = undefined;
     var err_buf: [4 << 10]u8 = undefined;
-    var out = std.Io.File.stdout().writer(init.io, &out_buf);
-    var err = std.Io.File.stderr().writer(init.io, &err_buf);
+    var out = std.Io.File.stdout().writerStreaming(init.io, &out_buf); // streaming: positional writes from both would overwrite each other in one redirected file
+    var err = std.Io.File.stderr().writerStreaming(init.io, &err_buf);
     defer out.interface.flush() catch {};
     defer err.interface.flush() catch {};
     const args = try a.alloc([]const u8, argv.len);
@@ -38,11 +67,23 @@ pub fn main(init: std.process.Init, argv: []const [:0]const u8) !u8 {
         return models.run(a, init.io, &out.interface, env, null);
     }
     if (std.mem.eql(u8, args[0], "pull")) {
-        if (args.len != 2) {
+        if (args.len < 2) {
             try err.interface.writeAll(usage);
             return 2;
         }
+        const node = pull_exlr8.parseFlags(args[2..]) catch {
+            try err.interface.writeAll(usage);
+            return 2;
+        };
+        if (node) |o| return pull_exlr8.run(a, init.io, &out.interface, &err.interface, env, args[1], o);
         return pull.run(a, init.io, &out.interface, &err.interface, env, null, args[1]);
+    }
+    if (std.mem.eql(u8, args[0], "merge")) {
+        const m = lora_merge.parseArgs(args[1..]) orelse {
+            try err.interface.writeAll(usage);
+            return 2;
+        };
+        return lora_merge.run(init.gpa, init.io, &out.interface, &err.interface, m.dense, m.adapter, m.dest, m.shipped);
     }
     if (args.len != 2) {
         try err.interface.writeAll(usage);
@@ -54,5 +95,7 @@ pub fn main(init: std.process.Init, argv: []const [:0]const u8) !u8 {
 test "wants only the checkpoint subcommands" {
     try std.testing.expect(wants(&.{"models"}));
     try std.testing.expect(wants(&.{ "info", "Org/Flash" }));
+    try std.testing.expect(wants(&.{ "merge", "model", "adapter", "out" }));
+    try std.testing.expect(wants(&.{ "merge", "dense", "adapter", "out", "--quantize", "shipped" }));
     try std.testing.expect(!wants(&.{"run"}) and !wants(&.{}) and !wants(&.{"serve"}));
 }

@@ -1,6 +1,7 @@
 //! A round's windows (Python `_plan_window`, `_copy_proposal`, `_allocate`): forced, copied or drafted rows.
 const std = @import("std");
 const accept = @import("accept.zig");
+const cut = @import("window_cut.zig");
 const alloc = @import("allocate.zig");
 const be = @import("backend.zig");
 const depth = @import("depth.zig");
@@ -14,7 +15,7 @@ const Stream = @import("stream.zig").Stream;
 const Value = ev.Value;
 const f = ev.f;
 
-pub const Kind = enum { forced, copy, head, fill, none };
+pub const Kind = enum { forced, copy, head, fill, grammar, none };
 
 /// One stream's window as planned, then as allocated (Python's plan lists).
 pub const Plan = struct {
@@ -28,14 +29,28 @@ pub const Plan = struct {
     branch_from: u32 = 0, // the first row of suffix-match branches (0: none; lanes/fill.zig)
     tried: bool = false, // the planner read the head's chain back to graft branches
     lanes: ?*const shape.Shape = null, // the held drafts' tree shape (each lane's depth and rank)
+    masks: []const u32 = &.{}, // structured output: the rows' allowed-token bits (constrain)
+    grammar_from: u32 = 0, // the first row the grammar drafted itself (0: none)
+    recalled: bool = false, // the copy came from Recall's record
+    graft_recalled: []const bool = &.{}, // each row from branch_from: a Recall candidate grafted it
 
     pub fn count(p: Plan) usize {
         return p.held + p.tokens.len;
     }
+
+    /// Whether window row `r` (a graft) is Recall's.
+    pub fn recallRow(p: Plan, r: usize) bool {
+        if (p.branch_from == 0 or r < p.branch_from) return false;
+        const i = r - p.branch_from;
+        return i < p.graft_recalled.len and p.graft_recalled[i];
+    }
 };
 
+/// A copied continuation and its source: the stream's own context, or Recall's record.
+pub const Copy = struct { tokens: []const u32 = &.{}, recalled: bool = false };
+
 /// Forced tokens first, then a copied continuation, then the head's drafts (Python `_plan_window`).
-pub fn plan(e: *Engine, s: *Stream, copied: ?[]const u32) !Plan {
+pub fn plan(e: *Engine, s: *Stream, copied: ?Copy) !Plan {
     const a = e.arena.allocator();
     var p: Plan = .{ .stream = s, .position = s.cache_len, .kind = .none };
     const queued = s.next;
@@ -53,11 +68,12 @@ pub fn plan(e: *Engine, s: *Stream, copied: ?[]const u32) !Plan {
         p.forced = forced;
         p.tokens = forced;
     } else {
-        var copy: []const u32 = &.{};
+        var copy: Copy = .{};
         if (copied) |c| copy = c else if (s.drafts) copy = try copyProposal(e, s);
-        if (copy.len > 0) {
+        if (copy.tokens.len > 0) {
             p.kind = .copy;
-            p.tokens = try a.dupe(u32, copy);
+            p.recalled = copy.recalled;
+            p.tokens = try a.dupe(u32, copy.tokens);
         } else if (s.drafts and queued != null) {
             const q = queued.?;
             if (q.tokens) |t| {
@@ -89,8 +105,8 @@ fn fillLanes(e: *Engine, s: *Stream, p: *Plan) !void {
     const first = p.count();
     const room = @min(@as(usize, e.cfg.fill_lanes) -| (1 + first), s.graft_room orelse std.math.maxInt(u32));
     if (room == 0) return;
-    const found = try fill.suffixCandidates(a, s.context.items, 16, e.cfg.fill_match, room, 8);
-    if (found.len == 0 or (s.graft_hit < e.cfg.fill_floor and s.rounds % 8 != 0)) return;
+    const found = try candidates(e, s, room, s.rounds % 8 == 0);
+    if (found.len == 0) return;
     // the trunk's lanes: the drafts in order for a chain, a tree's rank-0 path from the pending row
     var trunk_lanes: [shape.max_depth * shape.ranks * 4]usize = undefined;
     const levels = if (p.lanes) |l| shape.chainLanes(l.*, &trunk_lanes) else first;
@@ -112,8 +128,29 @@ fn fillLanes(e: *Engine, s: *Stream, p: *Plan) !void {
     p.tokens = if (p.held > 0) b.tokens else try std.mem.concat(a, u32, &.{ p.tokens, b.tokens });
     p.parents = parents;
     p.branch_from = @intCast(1 + first);
+    p.graft_recalled = b.recalled;
     if (p.kind == .none) p.kind = .fill;
 }
+
+/// Graft candidates: the context's while its rows land, then Recall's while its do (both on a probe round); own first.
+pub fn candidates(e: *Engine, s: *Stream, room: usize, probe_round: bool) ![]const fill.Proposal {
+    const a = e.arena.allocator();
+    const live = s.graft_hit >= e.cfg.fill_floor or probe_round;
+    const own: []const fill.Proposal = if (!live) &.{} else try fill.suffixCandidates(
+        a,
+        s.context.items,
+        longest_graft,
+        e.cfg.fill_match,
+        room,
+        8,
+    );
+    const r = s.recall orelse return own;
+    if (s.recall_hit < e.cfg.fill_floor and !probe_round) return own;
+    return fill.merge(a, own, try r.candidates(a, s.context.items, room, @max(2, 8 -| own.len), longest_graft));
+}
+
+/// The longest suffix a graft candidate's weight counts, for the context's matches and Recall's alike.
+const longest_graft = 16;
 
 /// The planned drafts' trunk of `levels` lanes: host drafts as they are, held ones with the head's ranks (null: unread).
 fn headTrunk(e: *Engine, s: *Stream, p: Plan, levels: usize) !?fill.Trunk {
@@ -131,22 +168,28 @@ fn headTrunk(e: *Engine, s: *Stream, p: Plan, levels: usize) !?fill.Trunk {
     return .{ .tokens = chain, .others = others };
 }
 
-/// Copied spans backed by `enter_match` matching tokens (Python `_copy_proposal`); the proposer owns them.
-pub fn copyProposal(e: *Engine, s: *Stream) ![]const u32 {
-    const p = s.proposer orelse return &.{};
-    if (e.cfg.max_copy == 0 or s.force.items.len > 0) return &.{};
-    if (p.vtable.priced) return p.propose(s.context.items, @min(@as(i64, e.cfg.max_copy), s.draftRoom() - 1)) catch &.{};
+/// A copy from the context backed by `enter_match` ids (Python `_copy_proposal`), else Recall's when it should pay.
+pub fn copyProposal(e: *Engine, s: *Stream) !Copy {
+    if (e.cfg.max_copy == 0 or s.force.items.len > 0) return .{};
     const width: u32 = if (e.alone) (s.copy_width orelse e.cfg.first_copy) else e.cfg.first_copy;
-    const copied = p.propose(s.context.items, @min(@as(i64, width), s.draftRoom() - 1)) catch return &.{};
-    if (copied.len < 2 or p.lastMatch() < e.cfg.enter_match) return &.{};
-    return copied;
+    const most = @min(@as(i64, width), s.draftRoom() - 1);
+    if (s.proposer) |p| if (!e.alone or e.cfg.lone_copies) {
+        // a priced proposer's drafts are as it gives them, its none too: no width, length or match gate, no Recall
+        if (p.vtable.priced) return .{ .tokens = p.propose(s.context.items, @min(@as(i64, e.cfg.max_copy), s.draftRoom() - 1)) catch &.{} };
+        const copied = p.propose(s.context.items, most) catch &.{};
+        if (copied.len >= 2 and p.lastMatch() >= e.cfg.enter_match) return .{ .tokens = copied };
+    };
+    const r = s.recall orelse return .{};
+    if (most < 2) return .{};
+    const got = r.propose(s.context.items, @intCast(most), s.rounds);
+    return if (got.len >= 2) .{ .tokens = got, .recalled = true } else .{};
 }
 
 pub fn copyAhead(ptr: *anyopaque, w: *const depth.Who) bool {
     const e: *Engine = @ptrCast(@alignCast(ptr));
     const s: *Stream = @ptrCast(@alignCast(w.stream.?));
     const copied = copyProposal(e, s) catch return false;
-    return copied.len > 0;
+    return copied.tokens.len > 0;
 }
 
 pub fn probe(e: *Engine) depth.Probe {
@@ -154,7 +197,13 @@ pub fn probe(e: *Engine) depth.Probe {
 }
 
 pub fn who(s: *Stream) depth.Who {
-    return .{ .state = &s.depth, .draft_room = s.draftRoom(), .finished = s.finished, .forced = s.force.items.len > 0, .granted = s.granted, .stream = s };
+    return .{ .state = &s.depth, .draft_room = s.draftRoom(), .finished = s.finished, .forced = s.force.items.len > 0, .granted = s.granted, .stream = s, .sampled = s.sampling != null };
+}
+
+/// Whether any of a round's streams draws keyed samples (its rows carry their host work).
+pub fn anySampled(plans: []const Plan) bool {
+    for (plans) |p| if (p.stream.sampling != null) return true;
+    return false;
 }
 
 /// Trim draft prefixes by landing probability to the shared width with the most expected tokens a ms.
@@ -173,25 +222,18 @@ pub fn allocate(e: *Engine, plans: []Plan) !void {
             pr.* = try alloc.chainProbabilities(a, &.{e.cfg.copy_rate}, n);
         } else {
             fx.* = 1;
-            pr.* = try nodeChances(e, p.stream, n);
+            const chances = try nodeChances(e, p.stream, n);
+            const controls = @import("mtp_policy.zig").Controls{ .cap = e.cfg.most_drafts, .floor = e.cfg.draft_confidence };
+            pr.* = if (p.kind == .head and e.cfg.draft_confidence != null) chances[0..controls.prefix(chances)] else chances;
         }
     }
-    const counts = try alloc.allocate(a, fixed, probs, &e.cfg.shared_costs, e.rule.overheadMs(plans.len), @max(plans.len, e.cfg.batch_rows));
-    for (plans, probs, counts) |*p, chances, c| {
+    const untimed: @import("table.zig").Table = .{};
+    const explicit = e.cfg.draft_confidence != null;
+    const counts = try alloc.allocate(a, fixed, probs, if (explicit) &untimed else &e.cfg.shared_costs, if (explicit) 0 else e.rule.overheadMs(plans.len, anySampled(plans)), @max(plans.len, e.cfg.batch_rows));
+    for (plans, counts) |*p, c| {
         if (p.kind == .head) p.stream.granted = c;
-        if (chances.len == 0 or c == chances.len) continue;
-        if (c == 0) {
-            p.kind = .none;
-            p.held = 0;
-            p.tokens = &.{};
-            p.parents = null;
-        } else if (p.parents) |parents| {
-            const tree = try accept.sanitizeTree(a, p.tokens, parents, c);
-            p.tokens = tree.tokens;
-            p.parents = tree.parents;
-        } else if (p.held > 0) {
-            p.held = c;
-        } else p.tokens = p.tokens[0..c];
+        if (p.kind == .forced or p.count() == 0 or c == p.count()) continue;
+        try cut.prefix(a, p, c);
     }
     const rows = try a.alloc(Value, plans.len);
     for (rows, plans) |*r, p| {
@@ -243,7 +285,53 @@ pub fn nodeChances(e: *Engine, s: *Stream, n: usize) ![]const f64 {
             if (try chances(e.backend.ptr, s, out)) return out;
         }
     }
+    if (e.cfg.draft_confidence != null) return error.NoDraftProbabilities;
     return alloc.chainProbabilities(a, try e.rule.rates(who(s)), n);
+}
+
+/// Structured output: the rows an accepted path can use, each row's bits, and the grammar's drafts after a lone chain.
+pub fn constrain(e: *Engine, p: *Plan) !void {
+    const g = p.stream.grammar orelse return;
+    const a = e.arena.allocator();
+    if (p.held > 0) {
+        // the held drafts (a chain or a tree, in window order) come back as host tokens, grafts after them
+        const read = e.backend.vtable.held orelse return error.HeldDraftsUnreadable;
+        const held = try a.alloc(u32, p.held);
+        try read(e.backend.ptr, p.stream, held);
+        p.tokens = try std.mem.concat(a, u32, &.{ held, p.tokens });
+        p.held = 0;
+    }
+    const rows = try a.alloc(u32, 1 + p.tokens.len);
+    rows[0] = p.stream.pending.?;
+    @memcpy(rows[1..], p.tokens);
+    const grows = p.stream.drafts and p.kind != .forced and e.alone;
+    const room = if (grows) @max(rows.len, e.cfg.family_width) else rows.len;
+    const w = try g.window(a, rows, try accept.rowParents(a, rows.len, p.parents), p.kind == .forced, room);
+    p.masks = w.masks;
+    if (w.rows.len == rows.len and w.extra.len == 0) return;
+    if (w.rows.len < rows.len) p.lanes = null; // the tree shape no longer matches the rows
+    const kept = try a.alloc(u32, w.rows.len - 1 + w.extra.len);
+    for (kept[0 .. w.rows.len - 1], w.rows[1..]) |*t, r| t.* = rows[r];
+    @memcpy(kept[w.rows.len - 1 ..], w.extra);
+    p.tokens = kept;
+    if (w.extra.len > 0) p.grammar_from = @intCast(w.rows.len);
+    if (p.parents != null) {
+        // the grammar drafts only past a chain's last kept row (Constraint.chain), so its drafts extend that chain
+        const parents = try a.alloc(i32, kept.len);
+        for (parents, 0..) |*q, i| q.* = if (i + 1 < w.parents.len) w.parents[i + 1] - 1 else @as(i32, @intCast(i)) - 1;
+        p.parents = if (accept.isChain(parents)) null else parents;
+    }
+    if (p.branch_from > 0) {
+        var below: u32 = 0;
+        for (w.rows) |r| below += @intFromBool(r < p.branch_from);
+        if (p.graft_recalled.len > 0) { // the kept rows are in window order: the grafts' sources follow them
+            const flags = try a.alloc(bool, w.rows.len - below);
+            for (flags, w.rows[below..]) |*fl, r| fl.* = p.recallRow(r);
+            p.graft_recalled = flags;
+        }
+        p.branch_from = below;
+    }
+    if (p.kind != .forced and w.rows.len == 1) p.kind = if (w.extra.len > 0) .grammar else .none;
 }
 
 /// The window's rows, parents and keyed positions, ready for the backend.
@@ -254,7 +342,7 @@ pub fn build(e: *Engine, p: Plan, early: bool) !be.Window {
     const ds = try accept.depths(a, parents);
     const positions = try a.alloc(u64, rows);
     for (positions, ds) |*x, d| x.* = p.position + 1 + d;
-    return .{ .stream = p.stream, .pending = p.stream.pending.?, .held = p.held, .tokens = p.tokens, .parents = if (p.parents != null) parents else null, .positions = positions, .early = early };
+    return .{ .stream = p.stream, .pending = p.stream.pending.?, .held = p.held, .tokens = p.tokens, .parents = if (p.parents != null) parents else null, .positions = positions, .early = early, .masks = p.masks };
 }
 
 pub fn rowParents(e: *Engine, w: be.Window) ![]const i32 {

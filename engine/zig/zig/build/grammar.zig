@@ -5,17 +5,30 @@
 const std = @import("std");
 
 const xgr_sources = [_][]const u8{
-    "compiled_grammar.cc",  "config.cc",          "earley_parser.cc",     "fsm.cc",
-    "fsm_builder.cc",       "grammar.cc",         "grammar_builder.cc",   "grammar_compiler.cc",
-    "grammar_functor.cc",   "grammar_matcher.cc", "grammar_parser.cc",    "grammar_printer.cc",
-    "json_schema_converter.cc", "lark_converter.cc", "regex_converter.cc", "structural_tag.cc",
-    "suffix_automata.cc",   "testing.cc",         "tokenizer_info.cc",    "support/logging.cc",
-    "support/recursion_guard.cc", "converter_ext/cohere.cc", "converter_ext/deepseek.cc", "converter_ext/glm.cc",
-    "converter_ext/kimi_k3.cc", "converter_ext/minimax.cc", "converter_ext/minimax_m3.cc", "converter_ext/qwen.cc",
+    "compiled_grammar.cc",        "config.cc",                "earley_parser.cc",            "fsm.cc",
+    "fsm_builder.cc",             "grammar.cc",               "grammar_builder.cc",          "grammar_compiler.cc",
+    "grammar_functor.cc",         "grammar_matcher.cc",       "grammar_parser.cc",           "grammar_printer.cc",
+    "json_schema_converter.cc",   "lark_converter.cc",        "regex_converter.cc",          "structural_tag.cc",
+    "suffix_automata.cc",         "testing.cc",               "tokenizer_info.cc",           "support/logging.cc",
+    "support/recursion_guard.cc", "converter_ext/cohere.cc",  "converter_ext/deepseek.cc",   "converter_ext/glm.cc",
+    "converter_ext/kimi_k3.cc",   "converter_ext/minimax.cc", "converter_ext/minimax_m3.cc", "converter_ext/qwen.cc",
 };
 
 /// xgrammar's static library with the C ABI. Always optimized (the masks are the same bits at any level; a debug
 /// build of the Earley parser is too slow for the tests' fills).
+/// Dist overlay: the fork links xgrammar statically from zig/third_party (no libtfgrammar to bundle), so
+/// `zig build dist -Dxgrammar=DIR` has no overlay; the step refuses instead of shipping without it.
+pub fn overlay(b: *std.Build, target: std.Build.ResolvedTarget, dir: []const u8) ?std.Build.LazyPath {
+    _ = b;
+    _ = target;
+    _ = dir;
+    return null;
+}
+
+/// The xgrammar release the vendored tree tracks; the clone hint `zig build dist` prints without -Dxgrammar.
+pub const pinned = "v0.2.8";
+pub const clone = "git clone --branch " ++ pinned ++ " --recurse-submodules https://github.com/mlc-ai/xgrammar";
+
 pub fn library(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
     const root = "zig/third_party/xgrammar/";
     const m = b.createModule(.{ .target = target, .optimize = .ReleaseFast, .link_libc = true, .link_libcpp = true });

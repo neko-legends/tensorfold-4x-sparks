@@ -6,6 +6,7 @@ const errors = @import("errors.zig");
 const model_text = @import("model_text.zig");
 const chat = @import("chat.zig");
 const compact = @import("compact.zig");
+const prompt_mod = @import("prompt.zig");
 const openai = @import("openai.zig");
 const server_mod = @import("server.zig");
 const Conn = @import("http_conn.zig").Conn;
@@ -14,6 +15,56 @@ const Allocator = std.mem.Allocator;
 
 const gpa = std.testing.allocator;
 const io = std.testing.io;
+
+test "a text-only Flash Next server refuses image parts before prompt rendering" {
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    var cx: errors.Cx = .{ .a = arena.allocator() };
+    const messages = (try json.parse(cx.a,
+        \\[{"role":"user","content":[{"type":"image_url","image_url":{"url":"data:image/png;base64,AA=="}}]}]
+    )).ok;
+    const normalize = @import("messages.zig").normalizeWith;
+    try std.testing.expectError(error.Refused, normalize(&cx, messages, "system", false, .{}));
+    try std.testing.expectEqual(errors.Kind.request, cx.kind);
+    try std.testing.expectEqual(@as(u16, 400), cx.status());
+    try std.testing.expectEqualStrings(
+        "this server accepts text parts only; image, audio and video inputs are unsupported",
+        cx.message,
+    );
+}
+
+test "rewind boundary follows the latest actual user and stops before content" {
+    var eng: Eng = .{ .window = 256, .cache = true };
+    var text: Text = .{};
+    const srv = try start(&eng, &text, null, null, null);
+    defer srv.deinit();
+    var arena: std.heap.ArenaAllocator = .init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var cx: errors.Cx = .{ .a = a };
+    const parsed = try json.parseText(a, "[{\"role\":\"system\",\"content\":\"rules\"},{\"role\":\"user\",\"content\":\"first\"},{\"role\":\"assistant\",\"content\":\"reply\"},{\"role\":\"user\",\"content\":\"Alpha\"}]");
+    const messages = parsed.ok;
+    const rendered = try prompt_mod.prepare(srv, &cx, .{ .messages = messages, .fields = .null }, false, null);
+    const boundary = "system:rules\nuser:first\nassistant:reply\nuser:".len;
+    try std.testing.expectEqual(boundary, rendered.rewind_len);
+
+    const warm_messages = try a.alloc(Value, messages.array.len + 2);
+    @memcpy(warm_messages[0..messages.array.len], messages.array);
+    const suffix = (try json.parseText(a, "[{\"role\":\"assistant\",\"content\":\"done\"},{\"role\":\"user\",\"content\":\"A\"}]")).ok;
+    @memcpy(warm_messages[messages.array.len..], suffix.array);
+    const warm_ids = try prompt_mod.renderIds(srv, &cx, .{ .array = warm_messages }, &.{}, false, null, true);
+    try std.testing.expectEqual(boundary, prompt_mod.rewindLen(srv, &cx, .{ .array = warm_messages }, messages.array.len, &.{}, warm_ids, false, null));
+
+    const no_user = (try json.parseText(a, "[{\"role\":\"system\",\"content\":\"rules\"}]")).ok;
+    try std.testing.expectEqual(@as(usize, 0), prompt_mod.rewindLen(srv, &cx, no_user, no_user.array.len, &.{}, warm_ids, false, null));
+    const raw = try prompt_mod.prepare(srv, &cx, .{ .prompt = .{ .text = "plain" }, .fields = .null }, false, null);
+    try std.testing.expectEqual(@as(usize, 0), raw.rewind_len);
+    var bare: Eng = .{ .window = 256 };
+    const uncached = try start(&bare, &text, null, null, null);
+    defer uncached.deinit();
+    const unprobed = try prompt_mod.prepare(uncached, &cx, .{ .messages = messages, .fields = .null }, false, null);
+    try std.testing.expectEqual(@as(usize, 0), unprobed.rewind_len); // no prompt cache: no probe renders
+}
 
 const Stay = struct {
     pub fn check(_: @This()) bool {
@@ -75,6 +126,7 @@ const Text = struct {
 
 const Eng = struct {
     window: u32,
+    cache: bool = false,
     prompts: std.ArrayList([]u8) = .empty,
     opened: bool = false,
     early: usize = 0,
@@ -86,7 +138,7 @@ const Eng = struct {
 
     fn info(ctx: *anyopaque) api.Info {
         const e: *Eng = @ptrCast(@alignCast(ctx));
-        return .{ .context_window = e.window, .name = "fake" };
+        return .{ .context_window = e.window, .name = "fake", .prompt_cache = e.cache };
     }
 
     fn submit(ctx: *anyopaque, id: api.Id, request: *const api.Request, sink: api.Sink) api.SubmitError!void {
@@ -406,14 +458,16 @@ test "an incremental request summarizes only the new middle and a user edit is t
 const Watch = struct {
     eng: *Eng,
     opened: bool = false,
+    admitted_at_open: usize = 0,
     saw: bool = false,
 
     fn out(w: *Watch) openai.Out {
         return .{ .ctx = w, .vt = &.{ .open = open, .event = event, .reply = reply } };
     }
 
-    fn open(ctx: *anyopaque) error{Closed}!void {
+    fn open(ctx: *anyopaque, _: usize) error{Closed}!void {
         const w: *Watch = @ptrCast(@alignCast(ctx));
+        w.admitted_at_open = w.eng.prompts.items.len;
         w.opened = true;
         w.eng.opened = true;
     }
@@ -434,7 +488,7 @@ const Watch = struct {
     }
 };
 
-test "a stream compacts before it opens" {
+test "a stream compacts and admits its final request before it opens" {
     var eng: Eng = .{ .window = 2000 };
     var text: Text = .{};
     defer freePrompts(&eng);
@@ -451,6 +505,7 @@ test "a stream compacts before it opens" {
     openai.run(srv, a, watch.out(), .{ .conn = &conn }, true, raw);
     try std.testing.expect(watch.opened);
     try std.testing.expect(watch.saw);
-    try std.testing.expect(eng.early >= 1);
-    try std.testing.expect(eng.late >= 1);
+    try std.testing.expect(watch.admitted_at_open >= 2); // compaction and the final reply both admitted
+    try std.testing.expectEqual(watch.admitted_at_open, eng.early);
+    try std.testing.expectEqual(@as(usize, 0), eng.late);
 }

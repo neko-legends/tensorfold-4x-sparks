@@ -3,11 +3,12 @@ const std = @import("std");
 const mtl = @import("metal");
 const cfg = @import("config.zig");
 const fwd = @import("forward.zig");
+const lesson_route = @import("lesson_route.zig");
 
 const opts = mtl.ResourceOptions.shared | mtl.ResourceOptions.untracked;
 
 /// The rows a forward or a stream's window takes at most.
-pub const max_rows = 64;
+pub const max_rows = 128;
 
 /// A stream's replayed rows at most: a window's rows whose Mamba inputs the next forward runs again first.
 pub const replay_rows = 64;
@@ -121,7 +122,9 @@ pub const Cache = struct {
     replay: usize = 0, // rows of the last forward the next one runs first (their inputs at `parity`)
     replay_map: [replay_rows]u8 = std.simd.iota(u8, replay_rows), // each replayed row's saved input row (a tree's path)
     parity: u1 = 0,
-    rid: i32 = -1, // replay id (-1: none, rows are never saved)
+    rid: i32 = -1, // replay id (-1: none, rows are never saved); also the stream's lesson latch slot
+    decide: i64 = lesson_route.none, // the prompt row where the stream's lessons decide (lesson_route)
+    untaught: bool = false, // reads the model as shipped: no learned neuron acts on its rows (a lesson writer's reads)
     pending: ?Pending = null,
     compact: ?Compaction = null, // a kept tree path's cache rows, moved by the stream's next command buffer
     windows: [2]mtl.Buffer, // u32 [max_rows]: a window's ids, the pending token then the held drafts
