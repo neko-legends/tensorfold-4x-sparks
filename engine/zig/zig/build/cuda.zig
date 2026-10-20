@@ -3,32 +3,14 @@
 const std = @import("std");
 const exlr8_build = @import("exlr8.zig");
 
-/// Each .cu in zig/kernels/cuda (`src`, else `name`) with the flags its Python extension passes in `extra_cuda_cflags`.
-const Kernel = struct { name: []const u8, flags: []const []const u8, src: ?[]const u8 = null, arch_specific: bool = false };
-
-/// The torch-op replacements' qualification flags (runs/006): no contraction, no flush to zero.
-const torch_ops = &[_][]const u8{ "-O3", "--fmad=false", "--ftz=false" };
-
-const kernels = [_]Kernel{
-    .{ .name = "gdn", .flags = &.{ "-O3", "--fmad=false" } }, // cuda/kernels/gdn.py, tensorfold_gdn_v2
-    .{ .name = "probe", .flags = &.{"-O3"} },
-    .{ .name = "qmm_group", .flags = &.{"-O3"} }, // cuda/kernels/qmm.py, tensorfold_qmm_v5
-    .{ .name = "qmm_prefill", .flags = &.{"-O3"} },
-    .{ .name = "experts", .flags = &.{"-O3"} }, // cuda/experts.py, tensorfold_experts_v7
-    .{ .name = "experts_prefill", .flags = &.{"-O3"} },
-    .{ .name = "experts_pack", .flags = &.{"-O3"} },
-    .{ .name = "prefill_attention", .flags = &.{ "-O3", "--fmad=false" } }, // tensorfold_prefill_attention_v1
-    .{ .name = "scan_rows", .flags = &.{ "-O3", "--fmad=false" } }, // nemotron_h/cuda/mamba.py
-    .{ .name = "nemotron_ops", .flags = &.{"-O3"} }, // ours: Nemotron's layouts and the serial feed
-    .{ .name = "lane_gemv", .flags = &.{"-O3"} }, // ours: qmm_group's arithmetic, a column tile's K slices in one CTA
-    .{ .name = "sample", .flags = &.{ "-O3", "--fmad=false", "--ftz=false" } }, // ours: the Metal engine's keyed draws
-    .{ .name = "torch_argmax", .src = "torch_ops/argmax", .flags = torch_ops },
-    .{ .name = "torch_topk", .src = "torch_ops/topk", .flags = torch_ops },
-    .{ .name = "torch_pointwise", .src = "torch_ops/pointwise", .flags = torch_ops },
-    .{ .name = "torch_indexing", .src = "torch_ops/indexing", .flags = torch_ops },
-    .{ .name = "torch_movement", .src = "torch_ops/movement", .flags = torch_ops },
-    .{ .name = "torch_nemotron_constants", .src = "torch_ops/nemotron_constants", .flags = torch_ops },
-};
+/// Every .cu in zig/kernels/cuda with the flags its extension passes in `extra_cuda_cflags`:
+/// TensorFold 1.1.0's canonical list. Our fork's imaged set (18) is a strict subset of it with
+/// identical flags, so sourcing it here changes no existing kernel and covers every image
+/// zig/src/cuda/kernels.zig embeds (84) -- the rebase adopted that file but kept the old
+/// inline list here, which is the build failure this replaces.
+const cuda_kernels = @import("cuda_kernels.zig");
+const Kernel = cuda_kernels.Kernel;
+const kernels = cuda_kernels.kernels;
 
 /// DeepSeek-V4.1's kernels (zig/kernels/cuda/deepseek_v41, ported from the Python reference),
 /// each with its extension's `extra_cuda_cflags`; embedded by the `dsv41_kernels` module.
