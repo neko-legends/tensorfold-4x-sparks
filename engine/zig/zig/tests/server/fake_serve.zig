@@ -1,8 +1,20 @@
 //! ``fake_serve serve FIXTURES [flags]``: the scripted engine; TF_FAKE_CONTEXT, TF_FAKE_TOKENIZER, TF_FAKE_SCRIPTS.
 const std = @import("std");
+const builtin = @import("builtin");
 const server = @import("server");
 const FakeText = @import("fake_text.zig").FakeText;
 const ScriptEngine = @import("fake_engine.zig").ScriptEngine;
+
+/// The harness (golden_check) never leaves a server running: on the paths it controls it stops and reaps every child.
+/// This covers the one it cannot: killed outright (SIGKILL, a CI or tool timeout), where no cleanup code runs. The
+/// kernel signals us when the spawning thread dies, so a stray `fake_serve serve` cannot outlive its run on Linux.
+fn dieWithParent() void {
+    if (builtin.os.tag != .linux) return;
+    const linux = std.os.linux;
+    _ = linux.prctl(@intFromEnum(linux.PR.SET_PDEATHSIG), @intFromEnum(std.posix.SIG.KILL), 0, 0, 0);
+    // a parent that died between the spawn and the prctl never set the signal: there is nobody left to stop us
+    if (linux.getppid() == 1) std.process.exit(1);
+}
 
 fn announce(port: u16) void {
     var buf: [32]u8 = undefined;
@@ -11,6 +23,7 @@ fn announce(port: u16) void {
 }
 
 pub fn main(init: std.process.Init) !u8 {
+    dieWithParent();
     const gpa = init.gpa;
     const io = init.io;
     const a = init.arena.allocator();

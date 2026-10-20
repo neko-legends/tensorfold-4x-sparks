@@ -1,5 +1,6 @@
 //! Frozen server goldens for `zig build test-golden`, with the seven differences that are still known.
 const std = @import("std");
+const builtin = @import("builtin");
 const posix = std.posix;
 const Io = std.Io;
 const wire = @import("wire.zig");
@@ -321,12 +322,64 @@ fn runCase(a: std.mem.Allocator, io: Io, golden_dir: []const u8, port: u16, case
     try outcomes.append(a, .{ .group = group, .name = name, .verdict = verdict, .why = try why.toOwnedSlice(a) });
 }
 
+/// How long a stopped server may take before it is killed: a server that ignores the stop must fail the step, not
+/// hang it or outlive it. Longer than the server's own drain deadline (TF_DSV41_DRAIN_S, 20 s), so a stop that
+/// arrives during a legitimate drain is not cut short and reported as a bad exit.
+const stop_grace_ms: u32 = 25_000;
+
+/// Whether `pid` is still running: a zombie (exited, not yet reaped) does not count. Without /proc a signal 0 says
+/// "exists", and a zombie answers like a live process, so the caller's bounded wait still ends in a reap.
+fn alive(a: std.mem.Allocator, io: Io, pid: posix.pid_t) bool {
+    if (builtin.os.tag == .linux) {
+        var name: [64]u8 = undefined;
+        const path = std.fmt.bufPrint(&name, "/proc/{d}/stat", .{pid}) catch return false;
+        const text = Io.Dir.cwd().readFileAlloc(io, path, a, .limited(1024)) catch return false;
+        defer a.free(text);
+        // "pid (comm) S ...": the state is the first field after the last ')', since comm may hold spaces and parens
+        const close = std.mem.lastIndexOfScalar(u8, text, ')') orelse return false;
+        if (close + 2 >= text.len) return false;
+        return text[close + 2] != 'Z' and text[close + 2] != 'X';
+    }
+    return if (posix.kill(pid, 0)) |_| true else |_| false;
+}
+
 const Server = struct {
     child: *std.process.Child,
     port: u16,
     log_path: ?[]const u8 = null,
     key_path: ?[]const u8 = null,
+
+    /// SIGTERM, a bounded drain, SIGKILL, then reap: every server this harness starts is gone when it returns, and a
+    /// server that will not stop shows up as a failed verdict rather than a stray process (or a hung run).
+    fn stop(s: *Server, a: std.mem.Allocator, io: Io) ?std.process.Child.Term {
+        const pid = s.child.id orelse return null;
+        posix.kill(pid, posix.SIG.TERM) catch {};
+        var waited: u32 = 0;
+        while (waited < stop_grace_ms and alive(a, io, pid)) : (waited += 10) std.Io.sleep(io, .fromMilliseconds(10), .awake) catch {};
+        if (alive(a, io, pid)) posix.kill(pid, posix.SIG.KILL) catch {};
+        return s.child.wait(io) catch null;
+    }
 };
+
+/// Every child this run spawned, so no failure path can leave one behind.
+var children: std.ArrayList(*std.process.Child) = .empty;
+
+/// The children this run spawned that were never reaped (a server it started and did not stop).
+fn unreaped() usize {
+    var n: usize = 0;
+    for (children.items) |c| n += @intFromBool(c.id != null);
+    return n;
+}
+
+/// The last resort on any exit, error included: kill and reap whatever is still ours. Cheap and idempotent — a
+/// child that was stopped already has no id.
+fn reapAll(io: Io) void {
+    for (children.items) |c| {
+        const pid = c.id orelse continue;
+        posix.kill(pid, posix.SIG.KILL) catch {};
+        _ = c.wait(io) catch {};
+    }
+}
 
 fn spawnServer(a: std.mem.Allocator, io: Io, binary: []const u8, fixtures: []const u8, args: []const []const u8, env: std.json.ObjectMap, tmp_dir: []const u8, key_content: ?[]const u8) !Server {
     var argv: std.ArrayList([]const u8) = .empty;
@@ -380,7 +433,12 @@ fn spawnServer(a: std.mem.Allocator, io: Io, binary: []const u8, fixtures: []con
     var rbuf: [4096]u8 = undefined;
     var reader = child.stdout.?.reader(io, &rbuf);
     while (true) {
-        const line = reader.interface.takeDelimiterExclusive('\n') catch return error.NoPortLine;
+        const line = reader.interface.takeDelimiterExclusive('\n') catch {
+            // a server that died or never announced itself is ours to clean up: an orphan here would outlive the run
+            if (child.id) |pid| posix.kill(pid, posix.SIG.KILL) catch {};
+            _ = child.wait(io) catch {};
+            return error.NoPortLine;
+        };
         if (std.mem.startsWith(u8, line, "PORT ")) {
             const port = try std.fmt.parseInt(u16, std.mem.trim(u8, line[5..], " \r"), 10);
             return .{ .child = child, .port = port, .log_path = log_path, .key_path = key_path };
@@ -405,19 +463,17 @@ pub fn main(init: std.process.Init) !void {
     const plan = try std.json.parseFromSliceLeaky(std.json.Value, init.arena.allocator(), plan_text, .{});
 
     var server: ?Server = null;
-    defer if (server) |*s| if (s.child.id) |pid| {
-        posix.kill(pid, posix.SIG.TERM) catch {};
-    };
+    // every exit, error included: stop what is running and reap it, so no fake_serve outlives a run
+    defer reapAll(io);
 
     const steps = plan.object.get("steps").?.array.items;
     for (steps) |step| {
         const obj = step.object;
-        if (server) |*s| if (s.child.id) |pid| {
-            posix.kill(pid, posix.SIG.TERM) catch {};
-        };
+        if (server) |*s| _ = s.stop(init.arena.allocator(), io);
         var argv: std.ArrayList([]const u8) = .empty;
         for (obj.get("args").?.array.items) |v| try argv.append(init.arena.allocator(), v.string);
         server = try spawnServer(init.arena.allocator(), io, binary, fixtures, argv.items, obj.get("env").?.object, tmp_dir, if (obj.get("key_file")) |kf| kf.string else null);
+        try children.append(init.arena.allocator(), server.?.child);
         if (obj.get("cases")) |cases| {
             for (cases.array.items) |case| try runCase(init.arena.allocator(), io, golden_dir, server.?.port, case);
         }
@@ -430,8 +486,7 @@ pub fn main(init: std.process.Init) !void {
             } else if (std.mem.eql(u8, kind, "sleep")) {
                 std.Io.sleep(io, .fromMilliseconds(@intFromFloat(t.get("seconds").?.float * 1000.0)), .awake) catch {};
             } else if (std.mem.eql(u8, kind, "sigterm")) {
-                posix.kill(s.child.id.?, posix.SIG.TERM) catch {};
-                const term = s.child.wait(io) catch return error.WaitFailed;
+                const term: std.process.Child.Term = s.stop(init.arena.allocator(), io) orelse return error.WaitFailed;
                 try outcomes.append(gpa, .{
                     .group = "lifecycle",
                     .name = "sigterm-exit-0",
@@ -455,16 +510,18 @@ pub fn main(init: std.process.Init) !void {
                 var fw = file.writerStreaming(io, &wbuf);
                 try fw.interface.writeAll(t.get("content").?.string);
                 try fw.interface.flush();
-                posix.kill(s.child.id.?, posix.SIG.HUP) catch {}; // the server rereads the key file, as the reference does
+                if (s.child.id) |pid| posix.kill(pid, posix.SIG.HUP) catch {}; // the server rereads the key file, as the reference does
             } else if (std.mem.eql(u8, kind, "sighup")) {
-                posix.kill(s.child.id.?, posix.SIG.HUP) catch {};
+                if (s.child.id) |pid| posix.kill(pid, posix.SIG.HUP) catch {};
             } else if (std.mem.eql(u8, kind, "terminate")) {
-                posix.kill(s.child.id.?, posix.SIG.TERM) catch {};
-                _ = s.child.wait(io) catch {};
+                _ = s.stop(init.arena.allocator(), io);
                 server = null;
             } else return error.UnknownStep;
         }
     }
+    // the last step's server: stopped and reaped like every other, before anything is summed up
+    if (server) |*s| _ = s.stop(init.arena.allocator(), io);
+    server = null;
 
     // the verdicts by group, then the total against the frozen answers
     const GroupCounts = struct { name: []const u8, equal: usize = 0, differ: usize = 0, known: usize = 0 };
@@ -508,5 +565,12 @@ pub fn main(init: std.process.Init) !void {
         if (r.verdict == .equal) total += 1;
     }
     std.debug.print("{d}/{d} equal to the frozen Python answers, {d} unexpected differences\n", .{ total, outcomes.items.len, failed });
+    // A leaked test server is a failure, not a line in the log: the totals above stay as they were, and a run that
+    // leaves a fake_serve behind cannot pass.
+    const left = unreaped();
+    if (left != 0) {
+        std.debug.print("lifecycle    servers-reaped: {d} of {d} fake_serve child(ren) left running\n", .{ left, children.items.len });
+        return error.ServerLeftRunning;
+    }
     if (failed != 0) return error.UnexpectedDifferences;
 }
