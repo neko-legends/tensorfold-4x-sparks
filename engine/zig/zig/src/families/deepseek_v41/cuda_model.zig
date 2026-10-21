@@ -264,7 +264,7 @@ pub const Model = struct {
         const topp: ?f64 = if (std.c.getenv("TF_DSV41_EXPERT_TOPP")) |v| try std.fmt.parseFloat(f64, std.mem.span(v)) else null;
         // TF_DSV41_R1=1, or the eight separate R1 knobs (the knob reader's r1)
         const r1 = @import("serve_knobs.zig").r1(&@import("serve_knobs.zig").env);
-        m.f = fwd.Forward.init(gpa, &m.cfg, &m.widths, .{ .world = world, .expert_topp = topp, .r1 = r1, .taps = o.drafts }, &m.runner, comm);
+        m.f = fwd.Forward.init(gpa, &m.cfg, &m.widths, .{ .world = world, .rank = m.tcfg.rank, .expert_topp = topp, .r1 = r1, .taps = o.drafts }, &m.runner, comm);
         try @import("engine_hooks.zig").open(&m.f); // the forward's later-layer hooks and prefill state
         m.f.layers = backbone;
         // the rope tables cover the limit + a prefill segment (the assets' rope.bin)
