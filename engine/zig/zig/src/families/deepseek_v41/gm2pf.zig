@@ -1,24 +1,14 @@
-//! x3gm v2 on the prefill emitter (TF_DSV41_GM_V2, prod: 1): a prefill segment's routed experts through gm2_kernel,
-//! as x3gm._run_v2 (tensorfold-decode1 8474f31, the prod twin) runs a ragged block:
-//! - "1" (`one`): the rotation, then ONE x3gm.plan over the block's picks (no width mask: every pair, bm 64), one
-//!   `gateup2` launch over every width (ticket[0]) and one `down2` over the same plan (ticket[MAX_WIDTHS]; gate/up's
-//!   bm == down's, so Python passes the same tensors), each reading every expert's width from its table;
-//! - "split": the v1 loop's shape (a masked plan and a launch a width present, gate/up then down, tickets j and
-//!   MAX_WIDTHS + j), on gm2_kernel;
-//! - unset / "0" (`off`, the default): the v1 launches block_prefill.zig emits.
-//! The widths tables are x3gm.Ragged.k2g / k2d: int32 [E + 1], each routed expert's gate (= up) / down width, then a
-//! 0 sentinel ("s.L<i>.gm.k2g" / "k2d", filled once by forward_prefill.ready from forms' "s.L<i>.ex.k2_*"). Configs are
-//! x3gm.tuned2 without TF_DSV41_GM_CFG (gate/up 1: two rotated inputs, down 0). gm2_kernel gives every pair the bits
-//! gm_kernel gives it, so off and on leave the same state; only the launch count (2 a layer instead of 2 a width) and
-//! the issue work differ.
+//! x3gm v2 on prefill (TF_DSV41_GM_V2): a segment's routed experts through gm2_kernel, same bits as gm_kernel.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
+const calls = @import("block_calls.zig");
+const knob_types = @import("knob_types.zig");
 const block = @import("block.zig");
 const E = block.Emitter;
 const Arg = calls.Arg;
 
-pub const Mode = enum { off, one, split };
+pub const Mode = knob_types.GmMode;
 
 /// x3gm.MAX_WIDTHS: the ticket's down half starts there
 pub const max_widths: i64 = 7;
@@ -29,7 +19,7 @@ pub const cfg_gu: i64 = 1;
 /// TF_DSV41_GM_GU2: gate / up at x3gm.cu's GU2 (128-member passes, kernels_exl3.gu2_cfg) over a plan of bm2
 pub const cfg_gu2: i64 = 2;
 pub const bm2: i64 = 128;
-/// GU2 runs where passes fill: a 4,096-row segment's block (~64 members an expert; T2-0 measured it there)
+/// GU2 runs where passes fill: a 4,096-row segment's block (~64 members an expert)
 pub const gu2_rows: i64 = 4096;
 
 fn gu2On(e: *const E, r: Routed) bool {
@@ -48,12 +38,11 @@ pub fn mode(get: Get) !Mode {
     if (raw.len == 0 or std.mem.eql(u8, raw, "0")) return .off;
     if (std.mem.eql(u8, raw, "1")) return .one;
     if (std.mem.eql(u8, raw, "split")) return .split;
-    std.log.warn("TF_DSV41_GM_V2={s}: expected 0, 1 or split", .{raw});
+    if (!quiet) std.log.warn("TF_DSV41_GM_V2={s}: expected 0, 1 or split", .{raw});
     return error.BadKnob;
 }
 
-/// The mode a capture's prefill ran (its launches, not meta.json's env: the pre-v2 twins ignored TF_DSV41_GM_V2=1):
-/// no `gateup2` is off, one a rotation is `one`, more is `split`. `names` yields each launch's name.
+/// The mode a capture's prefill ran, read from its launches: no `gateup2` is off, one a rotation `one`, more `split`.
 pub fn ofLaunches(names: anytype) Mode {
     var rot: usize = 0;
     var gu2: usize = 0;
@@ -103,8 +92,7 @@ pub fn emit(e: *E, m: Mode, r: Routed) !void {
     if (m == .one) {
         const p = try planOf(e, r, "g", 0, 0, false, tmax, bm);
         if (gu2On(e, r)) {
-            // TF_DSV41_GM_GU2: gate / up at 128-member passes over its own plan (the same order: a stable sort by
-            // expert, whatever the pass size, so Xd's rows are where down's 64-member plan reads them)
+            // TF_DSV41_GM_GU2: 128-member passes over their own plan (same stable expert order as down's plan)
             const h = try planOf(e, r, "h", 0, 0, false, @divFloor(r.P, bm2) + r.Et + 1, bm2);
             try gateupCfg(e, r, tab, k2g, h, 0, cfg_gu2);
         } else try gateup(e, r, tab, k2g, p, 0);
@@ -122,8 +110,7 @@ pub fn emit(e: *E, m: Mode, r: Routed) !void {
     }
 }
 
-/// x3gm.plan's five tensors of one launch (glue gm_plan; k2 0: every pick, x3gm._run_v2's one plan; else
-/// Ragged.picks' mask of that width first).
+/// x3gm.plan's five tensors of one launch (k2 0: every pick in one plan; else that width's picks first).
 fn planOf(e: *E, r: Routed, tag: []const u8, j: i64, k2: i64, dn: bool, tmax: i64, pass: i64) ![5]Arg {
     const p = [5]Arg{
         try e.buf("L.gm.{s}{d}.order", .{ tag, j }, .i32, &.{r.P}),
@@ -140,38 +127,37 @@ fn ticketAt(e: *E, r: Routed, i: i64) !Arg {
     return e.view(r.ticket.t.role, .i32, &.{1}, &.{1}, i * 4);
 }
 
-/// x3gm.cpp gateup2(xg, xu, tg, tu, k2e, order, pe, poff, pcnt, npass, ticket, svh_g, svh_u, suh_d, xd, K, N, shx,
-/// cfg, use_ticket, limit, tables)
+/// x3gm.cpp gateup2 (inputs, tables, plan, ticket, scales, xd, K, N, shx, cfg, use_ticket, limit, tables)
 fn gateup(e: *E, r: Routed, tab: [3]Arg, k2g: Arg, p: [5]Arg, j: i64) !void {
     return gateupCfg(e, r, tab, k2g, p, j, cfg_gu);
 }
 
 fn gateupCfg(e: *E, r: Routed, tab: [3]Arg, k2g: Arg, p: [5]Arg, j: i64, cfg: i64) !void {
     try e.ext("tf_dsv41_x3gm_v1.gateup2", &.{
-        r.xg,                                                         r.xu,
-        tab[0],                                                       tab[1],
-        k2g,                                                          p[0],
-        p[1],                                                         p[2],
-        p[3],                                                         p[4],
-        try ticketAt(e, r, j),                                        try e.weight("{s}.w1.svh", .{r.pre}, .f16, &.{ r.Et, r.I }),
+        r.xg,                                                        r.xu,
+        tab[0],                                                      tab[1],
+        k2g,                                                         p[0],
+        p[1],                                                        p[2],
+        p[3],                                                        p[4],
+        try ticketAt(e, r, j),                                       try e.weight("{s}.w1.svh", .{r.pre}, .f16, &.{ r.Et, r.I }),
         try e.weight("{s}.w3.svh", .{r.pre}, .f16, &.{ r.Et, r.I }), try e.weight("{s}.w2.suh", .{r.pre}, .f16, &.{ r.Et, r.I }),
-        r.xd,                                                         .{ .i = r.D },
-        .{ .i = r.I },                                                .{ .b = false },
-        .{ .i = cfg },                                                .{ .b = true },
-        .{ .f = r.limit },                                            .{ .b = true },
+        r.xd,                                                        .{ .i = r.D },
+        .{ .i = r.I },                                               .{ .b = false },
+        .{ .i = cfg },                                               .{ .b = true },
+        .{ .f = r.limit },                                           .{ .b = true },
     });
 }
 
 /// x3gm.cpp down2(xd, td, k2e, order, pe, poff, pcnt, npass, ticket, svh_d, y, K, N, cfg, use_ticket, tables)
 fn down(e: *E, r: Routed, td: Arg, k2d: Arg, p: [5]Arg, j: i64) !void {
     try e.ext("tf_dsv41_x3gm_v1.down2", &.{
-        r.xd,                                 td,
-        k2d,                                  p[0],
-        p[1],                                 p[2],
-        p[3],                                 p[4],
-        try ticketAt(e, r, max_widths + j),   try e.weight("{s}.w2.svh", .{r.pre}, .f16, &.{ r.Et, r.D }),
-        r.y,                                  .{ .i = r.I },
-        .{ .i = r.D },                        .{ .i = cfg_dn },
-        .{ .b = true },                       .{ .b = true },
+        r.xd,                               td,
+        k2d,                                p[0],
+        p[1],                               p[2],
+        p[3],                               p[4],
+        try ticketAt(e, r, max_widths + j), try e.weight("{s}.w2.svh", .{r.pre}, .f16, &.{ r.Et, r.D }),
+        r.y,                                .{ .i = r.I },
+        .{ .i = r.D },                      .{ .i = cfg_dn },
+        .{ .b = true },                     .{ .b = true },
     });
 }

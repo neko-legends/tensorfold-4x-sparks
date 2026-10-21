@@ -1,18 +1,4 @@
-//! TF_DSV41_PHASES: where every millisecond of a serving round goes, by Python phases.py's names, so a Zig report and
-//! Python's (m2bench's `phases`, TF_DSV41_PHASES=1 / sync) line up name by name (tools/zig/dsv41_perf/gap.py).
-//!
-//! - `0` (default): off; a timer is one null check.
-//! - `1`: host wall time of each phase (what the round thread spends, its waits for the GPU included).
-//! - `sync`: the stream synchronized at both ends of every phase, so each phase owns its GPU work and the top-level
-//!   phases add up to the round; it removes the overlap it measures (attribution, not throughput).
-//!
-//! Phases nest: `window` > `forward` > `graph.stage` (> `engram.wait`) / `graph.replay` / `graph.capture`, and
-//! `window` > `candidates` (the choices' reads). Top level: `prefill`, `draft` (ingest), `draft.pass`, `window`,
-//! `commit`. `rounds` counts verify windows and `tokens` the committed tokens, for per-round and per-token figures.
-//! `host`: the time between one top-level phase's end and the next one's start (the lanes' own work, the token events,
-//! the plan link, everything no phase covers), so the top-level phases plus `host` add up to the decode rounds; a gap
-//! of `idle_ns` or more is the engine waiting for a request and is not counted.
-//! TF_DSV41_PHASES_OUT=<file>: the report as JSON (Python's shape), rewritten every 64 rounds and at close.
+//! TF_DSV41_PHASES (0 | 1 | sync, _OUT=<file>): where every millisecond of a serving round goes, by named phase.
 
 const std = @import("std");
 
@@ -31,9 +17,9 @@ pub const Name = enum {
     commit,
     /// the speculative pass's launch after a window (TF_DSV41_SPEC_DRAFT; its collect is `draft.pass`)
     spec,
-    /// host time between top-level phases (not a phase of Python's: its report has no name for it)
+    /// host time between top-level phases (the lanes' own work, token events, plan link)
     host,
-    /// inside `draft.pass` (dspark_dev.zig, TF_DSV41_DRAFT_GRAPHS): the host waiting for the device pass and its copy
+    /// inside `draft.pass` (TF_DSV41_DRAFT_GRAPHS): the host waiting for the device pass and its copy
     @"draft.wait",
     /// inside `draft.pass`: the host's chain (Markov bias, choice, confidences) over the gathered candidates
     @"draft.chain",
@@ -51,7 +37,7 @@ pub const Mode = enum { off, wall, sync };
 /// The stream the `sync` mode waits for.
 pub const Sync = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque) anyerror!void };
 
-/// Counters beside the phases (an object without "ms", so gap.py's phase filter skips it): written into the report.
+/// Counters beside the phases (an object without "ms", so phase filters skip it): written into the report.
 pub const Extra = struct { ctx: *anyopaque, write: *const fn (ctx: *anyopaque, w: *std.Io.Writer) anyerror!void };
 
 pub const Phases = struct {
@@ -102,18 +88,18 @@ pub const Phases = struct {
     }
 
     pub fn add(p: *Phases, name: Name, ns: u64) void {
-        p.ns[@intFromEnum(name)] += ns;
-        p.n[@intFromEnum(name)] += 1;
+        p.ns[@backingInt(name)] += ns;
+        p.n[@backingInt(name)] += 1;
     }
 
-    /// The report: Python's {name: {ms, n, ms_avg}} plus wall_ms, mode, rounds, tokens.
+    /// The report: {name: {ms, n, ms_avg}} plus wall_ms, mode, rounds, tokens.
     pub fn write(p: *const Phases, w: *std.Io.Writer) !void {
         const wall = @as(f64, @floatFromInt(nowNs() - p.t0)) / 1e6;
         try w.print("{{\"mode\": \"{s}\", \"wall_ms\": {d:.2}, \"rounds\": {d}, \"tokens\": {d}", .{ if (p.mode == .sync) "sync" else "1", wall, p.rounds, p.tokens });
         for (0..count) |i| {
             if (p.n[i] == 0) continue;
             const ms = @as(f64, @floatFromInt(p.ns[i])) / 1e6;
-            try w.print(", \"{s}\": {{\"ms\": {d:.2}, \"n\": {d}, \"ms_avg\": {d:.3}}}", .{ @tagName(@as(Name, @enumFromInt(i))), ms, p.n[i], ms / @as(f64, @floatFromInt(p.n[i])) });
+            try w.print(", \"{s}\": {{\"ms\": {d:.2}, \"n\": {d}, \"ms_avg\": {d:.3}}}", .{ @tagName(@as(Name, @fromBackingInt(@intCast(i)))), ms, p.n[i], ms / @as(f64, @floatFromInt(p.n[i])) });
         }
         if (p.extra) |x| try x.write(x.ctx, w);
         try w.writeAll("}\n");
@@ -170,7 +156,7 @@ pub fn nowNs() u64 {
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
 }
 
-test "phases: Python's names and report shape; sync mode syncs at both ends" {
+test "phases: the reference engine's names and report shape; sync mode syncs at both ends" {
     const Count = struct {
         n: u32 = 0,
         fn run(ctx: *anyopaque) anyerror!void {
@@ -194,10 +180,10 @@ test "phases: Python's names and report shape; sync mode syncs at both ends" {
         const n = start(&p, .forward);
         n.stop();
     }
-    try std.testing.expectEqual(@as(u64, 1), p.n[@intFromEnum(Name.host)]);
+    try std.testing.expectEqual(@as(u64, 1), p.n[@backingInt(Name.host)]);
     p.last_end = nowNs() - idle_ns; // an idle gap: not counted
     start(&p, .commit).stop();
-    try std.testing.expectEqual(@as(u64, 1), p.n[@intFromEnum(Name.host)]);
+    try std.testing.expectEqual(@as(u64, 1), p.n[@backingInt(Name.host)]);
     p.add(.@"engram.wait", 1_500_000);
     p.add(.@"engram.wait", 500_000);
     p.rounds = 2;

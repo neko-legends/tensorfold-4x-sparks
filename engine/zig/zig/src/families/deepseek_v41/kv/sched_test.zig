@@ -1,11 +1,4 @@
-//! The prefill scheduler against prod: sched_golden.json is prod's own batcher (Python 8474f31 batch.Batcher `_plan`,
-//! `_sample`'s damaged-entry reset, the fair share, G19's adaptive rows, the memory floor) planning rounds over prod's
-//! KV pool, session store and NVMe tier on the CPU (tools/zig/dsv41_sched/golden.py), each round's execution emulated
-//! as rounds.Executor runs it. This test plans the same rounds with the Zig planner (sched.zig) over the Zig store, pool
-//! and tier, executes them the same way, and every round must decide as prod did: admissions (FIFO, foreground first,
-//! the long-prefill stagger, the floor's and the pool's waits, the damaged entry), the pieces planned and run, the
-//! prompt snapshots, the finals, the windows, the requests that ended, the adaptive rows, the fair share's debt, the
-//! counters, the queue, the pool's unreserved pages and both tiers' entries.
+//! The prefill scheduler against sched_golden.json: the Zig planner, store, pool and tier decide every round alike.
 
 const std = @import("std");
 const testing = std.testing;
@@ -121,7 +114,7 @@ const World = struct {
     store: Store,
     root: []const u8,
     slots: [4]*Slot = undefined,
-    /// each slot's request (job id) and a release prod's next round runs (rounds.py `_finish`)
+    /// each slot's request (job id) and a release the next round runs
     owner: [4]?u32 = @splat(null),
     releasing: [4]bool = @splat(false),
     /// each request's decode position and reply tokens
@@ -179,7 +172,6 @@ const World = struct {
             const size = (try f.stat(testing.io)).size;
             var junk: [32]u8 = @splat(0xff);
             try f.writePositionalAll(testing.io, &junk, size / 2);
-
         }
     }
 
@@ -194,7 +186,7 @@ const World = struct {
 };
 
 fn expectIds(label: []const u8, round: u32, want: []const u32, got: []const u32) !void {
-    errdefer std.debug.print("round {d} {s}: prod {any}, ours {any}\n", .{ round, label, want, got });
+    errdefer std.debug.print("round {d} {s}: reference {any}, ours {any}\n", .{ round, label, want, got });
     try testing.expectEqualSlices(u32, want, got);
 }
 
@@ -204,7 +196,8 @@ fn sortedIds(a: std.mem.Allocator, l: []const u32) ![]u32 {
     return x;
 }
 
-test "the round planner decides as prod's batcher: admissions, waits, pieces, snapshots, finals, damaged entries, rows" {
+test "the round planner decides as the reference batcher: admissions, waits, pieces, snapshots, finals, damaged entries, rows" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = testing.allocator;
     var parsed = try std.json.parseFromSlice(Golden, gpa, golden_json, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
@@ -278,7 +271,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
                 w.releasing[s] = true;
             }
         }
-        // the admission pass, decided whole before any of it runs (batch.py `_admit`)
+        // the admission pass, decided whole before any of it runs
         const Adm = struct { id: u32, slot: usize, adm: sched.Admission };
         var adms: std.ArrayList(Adm) = .empty;
         var round = p.beginAdmit();
@@ -342,7 +335,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
                     }
                 }
             }
-            errdefer std.debug.print("round {d} admit {d}: tier {s} cached {d} need {d} damaged {}; prod {d} {s} {d} {d} {}\n", .{ r, x.id, tier, if (x.adm.hit) |h| h.pos else 0, x.adm.need, bad, want.id, want.tier, want.cached, want.need, want.damaged });
+            errdefer std.debug.print("round {d} admit {d}: tier {s} cached {d} need {d} damaged {}; reference {d} {s} {d} {d} {}\n", .{ r, x.id, tier, if (x.adm.hit) |h| h.pos else 0, x.adm.need, bad, want.id, want.tier, want.cached, want.need, want.damaged });
             try testing.expectEqual(want.id, x.id);
             try testing.expectEqualStrings(want.tier, tier);
             try testing.expectEqual(want.cached, if (x.adm.hit) |h| h.pos else 0);
@@ -350,7 +343,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
             try testing.expectEqual(want.damaged, bad);
             try testing.expectEqual(x.adm.need, s.quota.?);
         }
-        // the pieces (batch.py `_pieces`), run unless their entry was damaged, each snapshot right after its piece
+        // the pieces, run unless their entry was damaged, each snapshot right after its piece
         try p.plan(mi, &pieces, &finals);
         var planned: std.ArrayList([3]u64) = .empty;
         var ran: std.ArrayList([3]u64) = .empty;
@@ -373,7 +366,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
             }
         }
         {
-            errdefer std.debug.print("round {d} pieces: prod {any} (ran {any}), ours {any} (ran {any})\n", .{ r, rd.pieces, rd.ran, planned.items, ran.items });
+            errdefer std.debug.print("round {d} pieces: reference {any} (ran {any}), ours {any} (ran {any})\n", .{ r, rd.pieces, rd.ran, planned.items, ran.items });
             try testing.expectEqual(rd.pieces.len, planned.items.len);
             for (rd.pieces, planned.items) |x, y| try testing.expectEqualSlices(u64, &x, &y);
             try testing.expectEqual(rd.ran.len, ran.items.len);
@@ -407,7 +400,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
             const s = w.slotOf(id).?;
             p.ended(id);
             w.owner[s] = null;
-            w.releasing[s] = true; // rounds.py `_finish` at the next round's start
+            w.releasing[s] = true; // released at the next round's start
         }
         const piece_s = @as(f64, @floatFromInt(rows)) / 8192.0;
         try testing.expectEqual(rd.piece_s, piece_s);
@@ -415,7 +408,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
         {
             const ram_l = try w.lengths(false);
             const disk_l = try w.lengths(true);
-            errdefer std.debug.print("round {d}: rows {?d} (prod {?d}), debt {d} (prod {d}), fair rounds {d} (prod {d}), queue {any} (prod {any}), available {d} (prod {d}), RAM {any} (prod {any}), NVMe {any} (prod {any})\n", .{ r, p.rows_now, rd.rows, p.fair.debt, rd.debt, p.fair.rounds, rd.fair_rounds, queue.items, rd.queue, w.pool.available(), rd.available, ram_l, rd.ram, disk_l, rd.disk });
+            errdefer std.debug.print("round {d}: rows {?d} (reference {?d}), debt {d} (reference {d}), fair rounds {d} (reference {d}), queue {any} (reference {any}), available {d} (reference {d}), RAM {any} (reference {any}), NVMe {any} (reference {any})\n", .{ r, p.rows_now, rd.rows, p.fair.debt, rd.debt, p.fair.rounds, rd.fair_rounds, queue.items, rd.queue, w.pool.available(), rd.available, ram_l, rd.ram, disk_l, rd.disk });
             try testing.expectEqual(rd.rows, p.rows_now);
             try testing.expectEqual(rd.debt, p.fair.debt);
             try testing.expectEqual(rd.fair_rounds, p.fair.rounds);
@@ -425,7 +418,7 @@ test "the round planner decides as prod's batcher: admissions, waits, pieces, sn
             try testing.expectEqualSlices(u64, rd.disk, disk_l);
         }
     }
-    // prod's counters over the whole run
+    // the golden's counters over the whole run
     const c = p.counts;
     const want = g.counts.map;
     try testing.expectEqual(want.get("long_waits") orelse 0, c.long_waits);

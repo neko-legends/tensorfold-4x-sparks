@@ -1,4 +1,4 @@
-//! The NCCL backend: one communicator a rank, every collective one enqueue on the caller's stream; `abort` is ncclCommAbort.
+//! The NCCL backend: one communicator a rank, every collective one enqueue on the caller's stream.
 const std = @import("std");
 const cuda = @import("cuda");
 const collective = @import("collective.zig");
@@ -34,6 +34,8 @@ pub const Nccl = struct {
     comm: nccl.Comm,
     me: u32,
     size: u32,
+    borrowed: ?*cuda.tp_group.Group = null,
+    on_failure: ?*const fn ([]const u8) void = null,
     aborted: std.atomic.Value(bool) = .init(false),
     /// The barrier's one-float buffers and its own stream (host path only).
     scratch: cuda.DeviceBuffer,
@@ -50,11 +52,20 @@ pub const Nccl = struct {
         return .{ .lib = lib, .d = d, .comm = comm, .me = rank, .size = world, .scratch = scratch, .stream = try cuda.Stream.init(d, true) };
     }
 
+    /// Shares the released two-rank communicator; only this adapter's scratch and stream are owned here.
+    pub fn borrow(g: *cuda.tp_group.Group, d: *const cuda.Driver) !Nccl {
+        if (g.world != 2 or g.rank >= g.world or g.aborted.load(.acquire)) return error.Invalid;
+        var scratch = try cuda.DeviceBuffer.alloc(d, 4 * (g.world + 1));
+        errdefer scratch.free();
+        try scratch.fill8(0, null);
+        return .{ .lib = &g.lib, .d = d, .comm = g.comm, .me = @intCast(g.rank), .size = @intCast(g.world), .scratch = scratch, .stream = try cuda.Stream.init(d, true), .borrowed = g };
+    }
+
     pub fn deinit(n: *Nccl) void {
         _ = n.stream.synchronize() catch {};
         n.stream.deinit();
         n.scratch.free();
-        if (!n.aborted.load(.acquire)) _ = n.lib.api.ncclCommDestroy(n.comm);
+        if (n.borrowed == null and !n.aborted.load(.acquire)) _ = n.lib.api.ncclCommDestroy(n.comm);
     }
 
     pub fn iface(n: *Nccl) collective.Collective {
@@ -91,13 +102,18 @@ pub const Nccl = struct {
     fn call(n: *Nccl, r: nccl.Result, what: []const u8) Error!void {
         if (r == 0) return;
         if (n.aborted.load(.acquire)) return error.Aborted;
-        n.lib.check(r, what) catch return error.BackendFailed;
+        n.lib.check(r, what) catch {
+            if (n.on_failure) |notify| notify(what);
+            return error.BackendFailed;
+        };
     }
 
     fn live(n: *Nccl) Error!void {
+        if (n.borrowed) |g| if (g.aborted.load(.acquire)) return error.Aborted;
         if (n.aborted.load(.acquire)) return error.Aborted;
     }
 
+    /// NCCL adds in its ring's order: the rank-order sum `all_reduce` promises holds at two ranks, not past them.
     pub fn allReduce(ptr: *anyopaque, s: DevicePtr, r: DevicePtr, count: usize, t: DType, op: Op, stream: collective.Stream) Error!void {
         const n = self_(ptr);
         try n.live();
@@ -165,6 +181,7 @@ pub const Nccl = struct {
         try n.call(n.lib.api.ncclCommGetAsyncError(n.comm, &r), "ncclCommGetAsyncError");
         if (r != 0 and r != nccl.in_progress) {
             n.lib.check(r, "NCCL async error") catch {};
+            if (n.on_failure) |notify| notify("NCCL async error");
             return error.PeerFailed;
         }
     }
@@ -172,6 +189,6 @@ pub const Nccl = struct {
     fn abort(ptr: *anyopaque) void {
         const n = self_(ptr);
         if (n.aborted.swap(true, .acq_rel)) return;
-        _ = n.lib.api.ncclCommAbort(n.comm);
+        if (n.borrowed) |g| g.abort() else _ = n.lib.api.ncclCommAbort(n.comm);
     }
 };

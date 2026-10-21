@@ -1,28 +1,9 @@
-//! TF_DSV41_BRANCHES (branches.py, prod: 1 with TF_DSV41_BRANCHES_PRIO=side): a decode window's attention sublayer as
-//! two branches. The emitter (`block.Emitter.attention`) issues the sublayer in `branches.plan`'s order already (the
-//! captures were taken with the knob on: e4's folded copies, the split q group); with the knob it also tags each call
-//! with its stream and the plan's fork / join points (`calls.Call.side / fork / join`), and the runner (`run.zig`)
-//! issues the tagged calls on a side stream, a glue step's launches included (the runner's stream is the side's while
-//! it runs; the ext launchers take no scratch, so nothing else is shared).
-//!
-//! TF_DSV41_MHC_DEFER (mhc_cuda.defer, prod: 1 with R1) lives here too: R1's mHC coefficient launch goes to a stream
-//! of its own, forked after its boundary, and the next mHC call (the coefficients' reader, mhc.await_coefs) joins it. The launches, their arguments and their order are unchanged, so the bits are
-//! (every value is made by the same kernel from the same inputs; `hazards` checks the plan's stream ordering on the
-//! real programs).
-//!
-//! Index layers: fork, side ix_wp (`_plain`), main x group (+ `_rms2`), fork, side [compressor] ix_wq_b rope_qi select,
-//! main wq_b, L2PF o, RoPE q, SWA store, join, attention core. Other layers: x group, `_rms2`, fork, side SWA store
-//! (R1: its kv_norm with it), main wq_b, L2PF o, RoPE q, join, attention core.
-//!
-//! Knobs: TF_DSV41_BRANCHES 0 | 1 (on, streams) | serial (e4 alone: the Zig emitter's order without a side stream, i.e.
-//! off here); TF_DSV41_BRANCHES_ROWS (64: wider windows stay on one stream); TF_DSV41_BRANCHES_PRIO main | side |
-//! equal (Python's: the side stream at the device's greatest priority for `side`; `main` raises the main stream, which
-//! is the model's own here, so it runs as `equal` with a warning). As in Python, the graphs are instantiated without
-//! node priorities, so the priority acts on eager windows only.
+//! TF_DSV41_BRANCHES / TF_DSV41_MHC_DEFER: a decode window's attention sublayer and mHC coefs on side streams.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const cuda = @import("cuda");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const run = @import("run.zig");
 const fwd = @import("forward.zig");
 
@@ -90,14 +71,13 @@ fn sideWithMarks(d: *const cuda.Driver, prio: cuda.Stream.Priority) !run.Runner.
     return s;
 }
 
-/// TF_DSV41_MHC_DEFER (with R1): on unless unset / 0.
+/// TF_DSV41_MHC_DEFER : on unless unset / 0.
 pub fn mhcDefer() bool {
     const v = get("TF_DSV41_MHC_DEFER") orelse return false;
     return !(std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false"));
 }
 
-/// TF_DSV41_MHC_DEFER_AT (ours, with MHC_DEFER): `exchange` issues each deferred coefficient launch at the next
-/// exchange (calls.holdDeferred); unset / empty / 0 / off: right after its site, as prod. Another value is refused.
+/// TF_DSV41_MHC_DEFER_AT: `exchange` holds each deferred coef launch to the next exchange; unset / 0 / off: after site.
 pub fn deferAt(v: ?[]const u8) !bool {
     const t = std.mem.trim(u8, v orelse return false, " \t\r\n");
     if (t.len == 0 or std.mem.eql(u8, t, "0") or std.ascii.eqlIgnoreCase(t, "off")) return false;
@@ -111,9 +91,7 @@ pub fn coefLate() bool {
     return !(std.mem.eql(u8, v, "0") or std.ascii.eqlIgnoreCase(v, "off") or std.ascii.eqlIgnoreCase(v, "false"));
 }
 
-/// TF_DSV41_MHC_DEFER_AT_ROWS (ours, with MHC_DEFER_AT): the hold only in programs of at most this many rows (1-64:
-/// one stream's windows hold, a 4-stream round's 17-32-row windows keep the launch after its site); unset / empty / 0:
-/// every program. Another value is refused.
+/// TF_DSV41_MHC_DEFER_AT_ROWS: hold only in programs of at most this many rows (1-64); unset / 0: every program.
 pub fn deferAtRows(v: ?[]const u8) !i64 {
     const t = std.mem.trim(u8, v orelse return 0, " \t\r\n");
     if (t.len == 0) return 0;
@@ -122,8 +100,18 @@ pub fn deferAtRows(v: ?[]const u8) !i64 {
     return n;
 }
 
-/// With TF_DSV41_BRANCHES and / or TF_DSV41_MHC_DEFER (R1) on: the emitter's options, the side streams (before any
-/// capture), the runner pointed at them. Null when both are off.
+/// The forward's side streams released (Forward.deinit through forward_hooks.Branches).
+fn closeFn(f: *fwd.Forward) void {
+    const b: *Branches = @ptrCast(@alignCast(f.branches.?));
+    f.runner.br = null;
+    f.runner.dfr = null;
+    b.deinit();
+    f.gpa.destroy(b);
+}
+
+pub const hooks_table: @import("forward_hooks.zig").Branches = .{ .close = closeFn };
+
+/// With TF_DSV41_BRANCHES and / or TF_DSV41_MHC_DEFER on: emitter options, side streams, runner; null when both off.
 pub fn install(gpa: std.mem.Allocator, f: *fwd.Forward, rank: u32) !?*Branches {
     const s = try settings();
     const dfr = mhcDefer() and f.opts.r1;
@@ -148,7 +136,7 @@ pub fn install(gpa: std.mem.Allocator, f: *fwd.Forward, rank: u32) !?*Branches {
         r.dfr = &b.deferred.?;
     }
     if (rank == 0) {
-        if (s.on and s.prio == .main) log.warn("branches: TF_DSV41_BRANCHES_PRIO=main raises the main stream, the model's own here: run as equal", .{});
+        if (s.on and s.prio == .main) if (!quiet) log.warn("branches: TF_DSV41_BRANCHES_PRIO=main raises the main stream, the model's own here: run as equal", .{});
         if (s.on) log.info("branches: the indexer / compressor on a side stream (priority {s}), windows <= {d} rows", .{ if (s.prio == .side) "highest" else "default", s.rows });
         if (dfr) log.info("mhc defer: R1's coefficient launches on their own stream, issued {s}, joined by the next mHC call", .{if (!f.opts.mhc_defer_hold) "after their site" else if (f.opts.mhc_defer_hold_rows > 0) "at the next exchange in windows of at most TF_DSV41_MHC_DEFER_AT_ROWS rows" else "at the next exchange (TF_DSV41_MHC_DEFER_AT)"});
         if (dfr and coefLate()) log.info("coef late: each deferred coefficient launch issued just before its sublayer's exchange", .{});
@@ -158,12 +146,7 @@ pub fn install(gpa: std.mem.Allocator, f: *fwd.Forward, rank: u32) !?*Branches {
 
 // -- the plan's ordering on a window program ----------------------------------------------------------------------
 
-/// Roles both streams touch inside one fork region of `cs` (calls after a fork on the side, calls on main from the
-/// fork until the join), with branches.check's ordering: a fork orders the side after everything main issued, a
-/// join orders main after everything the side issued. Weights are left out (read only). Also checks the marks'
-/// structure: a side call only inside an open fork, a join only after a fork, no fork open at the end. A `wait` m
-/// (TF_DSV41_PF_OVERLAP_SITE) orders main after the side calls up to mark m only: a role only those touched is no
-/// longer the side's; a wait needs its mark recorded in the open fork.
+/// Roles both streams touch inside one fork region of `cs`, weights left out; also checks the fork / join marks.
 pub fn shared(a: std.mem.Allocator, cs: []const calls.Call) ![]const []const u8 {
     var main_t: std.StringHashMapUnmanaged(void) = .empty;
     var side_t: std.StringHashMapUnmanaged(u32) = .empty; // role -> the last side call touching it (1, 2, ...)
@@ -204,8 +187,7 @@ pub fn shared(a: std.mem.Allocator, cs: []const calls.Call) ![]const []const u8 
     return out.keys();
 }
 
-/// Roles the deferred coefficient launches share with the main stream's calls before their join (MHC_DEFER), and the
-/// marks' structure: a join only after a deferred launch, none open at the end.
+/// Roles the deferred coefficient launches share with main before their join (MHC_DEFER); checks the marks' structure.
 pub fn sharedDeferred(a: std.mem.Allocator, cs: []const calls.Call) ![]const []const u8 {
     var main_t: std.StringHashMapUnmanaged(void) = .empty;
     var side_t: std.StringHashMapUnmanaged(void) = .empty;

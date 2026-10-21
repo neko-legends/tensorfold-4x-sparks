@@ -7,7 +7,7 @@
 //! a 2,048-row block's X / Y (P x D, P = rows x topk) does at TP=2 (I 1,152: 8 I > D) but not at TP=4 (8 I <= D).
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const buffers = @import("buffers.zig");

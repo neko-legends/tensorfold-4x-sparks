@@ -148,3 +148,6 @@ test "expert tables: addresses, K2s and stacked scales in order, the width range
     try testing.expect(t.k2_lo == 4 and t.k2_hi == 10);
     try testing.expectError(error.ExpertShapesDiffer, tables(a, &.{ .{ .trellis = 1, .k2 = 4, .suh = &s1, .svh = &v1 }, .{ .trellis = 2, .k2 = 4, .suh = s2[0..2], .svh = &v2 } }));
 }
+
+/// This file's own bytes (prepared.zig's fingerprint of the host forms' source).
+pub const source_bytes = @embedFile("prepare.zig");

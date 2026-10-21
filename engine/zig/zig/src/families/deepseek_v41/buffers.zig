@@ -1,12 +1,9 @@
-//! M2's buffer plan: every role a window's calls name, sized by the largest view any call takes of it (offset + the
-//! extent its shape and strides reach), over every row bucket the forward captures. Persistent roles ("s.") become
-//! allocations of their own; window and layer roles ("w.", "L.") one arena, each role at its own aligned offset, so a
-//! window never allocates.
+//! The buffer plan: every role a window's calls name, sized by its largest view, over every row bucket.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 
-pub const Scope = enum { persistent, window, layer };
+pub const Scope = enum { persistent, window, layer }; // "s." own allocation; "w."/"L." one arena
 
 pub fn scopeOf(role: []const u8) Scope {
     if (std.mem.startsWith(u8, role, "s.")) return .persistent;
@@ -47,6 +44,8 @@ pub fn unboundMessage(buf: []u8, t: calls.Tensor) []const u8 {
 pub const Plan = struct {
     a: std.mem.Allocator,
     sizes: std.StringArrayHashMapUnmanaged(u64) = .empty,
+    /// the weights the programs read by name (forms_inplace.zig leaves those in place)
+    weights: std.StringArrayHashMapUnmanaged(void) = .empty,
 
     fn note(p: *Plan, x: calls.Arg) !void {
         switch (x) {
@@ -61,6 +60,10 @@ pub const Plan = struct {
                         g.value_ptr.* = 0;
                     }
                     g.value_ptr.* = @max(g.value_ptr.*, n);
+                },
+                .weight => |w| {
+                    const g = try p.weights.getOrPut(p.a, w);
+                    if (!g.found_existing) g.key_ptr.* = try p.a.dupe(u8, w);
                 },
                 else => {},
             },
@@ -79,7 +82,7 @@ pub const Plan = struct {
     pub fn totals(p: *const Plan) Totals {
         var t: Totals = .{};
         for (p.sizes.keys(), p.sizes.values()) |k, v| {
-            const s = @intFromEnum(scopeOf(k));
+            const s = @backingInt(scopeOf(k));
             t.roles[s] += 1;
             t.bytes[s] += std.mem.alignForward(u64, v, 256);
         }

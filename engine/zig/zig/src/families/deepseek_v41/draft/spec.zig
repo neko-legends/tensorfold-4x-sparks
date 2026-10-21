@@ -1,37 +1,11 @@
-//! The next round's DSpark pass started right after a verify window (Python spec.py, TF_DSV41_SPEC_DRAFT=1, default
-//! off), so the GPU drafts while the host commits, emits and plans.
-//!
-//! Python computes each window's accepted count, bonus token and next start on the device, because its host has not
-//! sampled yet. Here the window's choices are already on the host when `Target.window` returns, so the speculation's
-//! (accepted, bonus, start) are the round's own, not a guess; what can still differ is what the lane core does with
-//! them (a stop string or the length cut a path, a stream ends, a shared round drafts other slots, the depth asks
-//! nothing). The decisions are Python's:
-//!
-//! - **launch** (after a window): the previous speculation, if unused, is dropped; the round's DSpark windows whose
-//!   slot is `wanted` (decayed hit rate `decay` over `min_rate`, or a probe every `probe` skips) get their committed
-//!   rows ingested now (rows 0..accepted at the window's start: what the commit would ingest) and the pass started at
-//!   (bonus, start + accepted + 1) through `Pass.begin` (the GPU pass runs behind the host) or `Pass.propose`.
-//! - **ingested** (the commit): true when the kept path is the speculated one, so the commit's ingest is skipped;
-//!   otherwise the commit ingests as before and rewrites every row the speculation wrote at a wrong position (rows
-//!   past the commit lie past every later pass's context).
-//! - **take** (the next draft): the speculated proposals when the round drafts exactly the speculated slots at the
-//!   speculated (anchor, start) and keyed parameters with every commit matched, else null and the pass runs as before.
-//!
-//! Exactness: a used speculation is the pass the round would have run on the same rings, and drafts only propose.
-//! Rounds Python does not speculate are not speculated here either: tree rounds, and rounds with a top-p-without-top-k
-//! (nucleus) row unless TF_DSV41_SPEC_NUCLEUS=1 (Python's statistics exchange; here the host already holds the
-//! choices, so the knob only decides which rounds speculate). Every rank runs the same pass operations in the same
-//! order: the leader decides, the followers run what the plan link brings.
-//!
-//! Several slots: the decisions are per slot and one pass serves every speculated slot (`Pass.begin` with several
-//! asks), so a multi-slot pass that implements `begin` / `collect` gets the overlap as it is.
+//! The next round's DSpark pass started after a verify window (TF_DSV41_SPEC_DRAFT=1): GPU drafts while host commits.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
 const iface = @import("iface.zig");
 const dspark = @import("dspark.zig");
 
-pub const decay: f64 = 0.8; // typed: 1 - decay rounds in f64 as Python's does
+pub const decay: f64 = 0.8; // typed: 1 - decay rounds in f64
 pub const min_rate: f64 = 0.3;
 pub const probe = 8;
 
@@ -43,7 +17,7 @@ pub const Settings = struct {
         return parse(env("TF_DSV41_SPEC_DRAFT"), env("TF_DSV41_SPEC_NUCLEUS"));
     }
 
-    /// Python's spec.enabled / nucleus_enabled: 0 | 1 | on | off | true | false (case-insensitive), empty is 0.
+    /// The knob values: 0 | 1 | on | off | true | false (case-insensitive), empty is 0.
     pub fn parse(spec: ?[]const u8, nucleus: ?[]const u8) !Settings {
         return .{ .on = try flag(spec), .nucleus = try flag(nucleus) };
     }
@@ -64,13 +38,13 @@ pub const Settings = struct {
     }
 };
 
-/// nucleus.spec: T > 0, top_k 0 and 0 < top_p < 1 (Python's nucleus rows).
+/// A nucleus row: T > 0, top_k 0 and 0 < top_p < 1.
 pub fn isNucleus(s: ?lanes.Sampling) bool {
     const x = s orelse return false;
     return x.temperature > 0.0 and x.top_k == 0 and x.top_p > 0.0 and x.top_p < 1.0;
 }
 
-/// Why a speculation was dropped (Python's miss.<why>; "variant" has no twin: one head).
+/// Why a speculation was dropped.
 pub const Why = enum { reset, unused, slots, commit, pending, inputs };
 
 pub const Stats = struct {
@@ -202,15 +176,14 @@ pub const Spec = struct {
         if (s.live) s.drop(.unused);
     }
 
-    /// Whether the round's windows may speculate at all (Python: not tree rounds; nucleus rows only with the knob).
+    /// Whether the round's windows may speculate at all (not tree rounds; nucleus rows only with the knob).
     pub fn roundAllowed(s: *const Spec, tree_round: bool, any_nucleus: bool) bool {
         return !tree_round and (!any_nucleus or s.settings.nucleus);
     }
 
     // -- launch (after the window) -----------------------------------------------------------------------------------
 
-    /// Drops an unused speculation, then takes the wanted candidates as the new one; its asks (launch order), empty
-    /// when none is wanted. The caller ingests each ask's rows 0..accepted, then `run`s the pass.
+    /// Drops an unused speculation, takes the wanted candidates; returns their asks (caller ingests, then `run`s).
     pub fn launch(s: *Spec, cands: []const Candidate) []const iface.Ask {
         if (s.live) s.drop(.unused);
         for (cands) |c| {
@@ -240,8 +213,7 @@ pub const Spec = struct {
         };
     }
 
-    /// The pass over the launched asks: begun on the device when the pass can (collected by `settle`), else run now.
-    /// `trees`: gather candidates and base logits too (lanes' siblings read them).
+    /// The pass over the launched asks: begun on device if possible (`settle` collects), else now; `trees`: gather too.
     pub fn run(s: *Spec, pass: iface.Pass, trees: bool) !void {
         if (!s.live) return;
         s.trees = trees;
@@ -256,14 +228,13 @@ pub const Spec = struct {
         try pass.propose(s.asks[0..s.n], props[0..s.n]);
     }
 
-    /// Collects a begun pass (before any other pass, target or ingest work: its collectives pair up in this order on
-    /// every rank). Its proposals stay for `take`.
+    /// Collects a begun pass before other pass, target or ingest work (collective order); proposals stay for `take`.
     pub fn settle(s: *Spec, pass: iface.Pass) !void {
         if (!s.begun) return;
-        s.begun = false;
         var props: [64]iface.Proposal = undefined;
         s.proposals(props[0..s.n], s.trees);
         try pass.vtable.collect.?(pass.ptr, props[0..s.n]);
+        s.begun = false;
     }
 
     // -- consumers (the next round) ----------------------------------------------------------------------------------
@@ -282,8 +253,7 @@ pub const Spec = struct {
         return ok;
     }
 
-    /// At the draft: the speculated proposals into `out` (the caller's ask order) and true, or false (run the pass).
-    /// Either way the speculation ends here.
+    /// At the draft: the speculated proposals into `out` (caller's ask order) and true, or false; the speculation ends.
     pub fn take(s: *Spec, asks: []const iface.Ask, out: []iface.Proposal) bool {
         if (!s.live) return false;
         const why: ?Why = check: {
@@ -318,7 +288,7 @@ pub const Spec = struct {
         return true;
     }
 
-    /// Python's describe(): "speculative DSpark passes L launched, H used, M dropped (why n, ...)".
+    /// "speculative DSpark passes L launched, H used, M dropped (why n, ...)".
     pub fn describe(s: *const Spec, buf: []u8) []const u8 {
         var w = std.Io.Writer.fixed(buf);
         const st = s.stats;

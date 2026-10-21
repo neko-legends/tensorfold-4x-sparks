@@ -1,27 +1,18 @@
-//! One rank of the whole model for serving (M4 on the GPU): the backbone, the head and (with drafts) DSpark loaded at
-//! TP=N from the pack, the forward over the tp runtime's session (rank 0 leads, the others follow its plan ops), the
-//! GPU target and DSpark's pass. The gates' drivers (m2b.zig) load the same way from a reference's state; a served
-//! slot starts empty and prefills through the target.
-//!
-//! The assets a host builds once next to the pack (TF_DSV41_ASSETS):
-//! - `rope.bin`: the rope tables (tools/zig/dsv41_rope_tables.py, torch's cos / sin on that host);
-//! - `engram-host.bin`: Engram's token map and hash multipliers (tools/zig/dsv41_engram_host.py);
-//! - `aot/`: the Triton kernels by variant (any M1 capture's or M2b reference's AOT set on that GPU, merged with a
-//!   set P capture's for DSpark: tools/zig/dsv41_aot_merge.py).
-//! The kernel knobs: TF_DSV41_EXPERT_TOPP (prod 0.85; unset: off), TF_DSV41_R1=1 (prod-perf1's decode path).
-//! M5 (kv_state.zig): TF_DSV41_POOL_TOKENS puts the KV families in the paged pool (its measured boot check first),
-//! TF_DSV41_KV_SPLIT=1 shards the comp rows over the ranks; every rank must set the same.
+//! Backend-neutral checkpoint owners. CUDA rank slicing is an explicit capability adapter.
+pub const Config = @import("config.zig").Config;
+pub const Plan = @import("plan.zig").CheckpointPlan;
+pub const CudaRankPlan = @import("plan.zig").Plan;
+pub const Image = @import("named.zig").Named;
 
 const std = @import("std");
 const cuda = @import("cuda");
 const dk = @import("dsv41_kernels");
 const tp = @import("tp");
-const Config = @import("config.zig").Config;
 const Pack = @import("pack.zig").Pack;
 const vision_rows = @import("vision_rows.zig");
 const plan = @import("plan.zig");
 const named = @import("named.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const prepared = @import("prepared.zig");
 const buffers = @import("buffers.zig");
 const forms = @import("forms.zig");
@@ -32,7 +23,7 @@ const m2a = @import("m2a.zig");
 const target_mod = @import("target.zig");
 const dspark_emit = @import("dspark_emit.zig");
 const dspark_gpu = @import("dspark_gpu.zig");
-const kvs = @import("kv_state.zig");
+const kvs = @import("cuda_kv.zig");
 const sg = @import("sessions_gpu.zig");
 const slots_mod = @import("slots.zig");
 const batch = @import("batch.zig");
@@ -128,6 +119,8 @@ pub const Model = struct {
     grammar: ?*grammar_gpu.Masks = null,
     /// TF_DSV41_PREFILL_PIPE (pipe_load.zig): the plan of this rank's stage copies (the line itself is the forward's)
     pipe_copies: ?plan.Plan = null,
+    /// the boot check on the boot's own figures (cuda_kv.bootCheck; checked once the pool is up)
+    boot_check: ?kvs.Boot = null,
 
     /// The served engine's DSpark pass: several slots' (slot_pass), else the one-slot pass; null without drafts.
     pub fn draftPass(m: *Model) ?iface.Pass {
@@ -213,7 +206,10 @@ pub const Model = struct {
             var tag_buf: [16]u8 = undefined;
             const tag = try std.fmt.bufPrint(&tag_buf, "L{d}", .{i});
             const t0 = std.Io.Clock.awake.now(io).toNanoseconds();
-            if (cache == null or !try cache.?.get(&b, tag)) {
+            var schema: named.Builder = .{ .gpa = gpa, .io = io, .pack = &m.pack, .metadata_only = true };
+            defer schema.deinit();
+            if (cache != null) try schema.layer(l, m.cfg.o_groups, m.tcfg.rank, world);
+            if (cache == null or !try cache.?.get(&b, tag, schema.out.items)) {
                 try b.layer(l, m.cfg.o_groups, m.tcfg.rank, world);
                 if (cache) |*c| c.put(&b, tag) catch |e| std.log.warn("dsv41 prepared: {s} not written ({t})", .{ tag, e });
             }
@@ -231,7 +227,13 @@ pub const Model = struct {
             var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &m.pack };
             defer b.deinit();
             const t0 = std.Io.Clock.awake.now(io).toNanoseconds();
-            if (cache == null or !try cache.?.get(&b, "top")) {
+            var schema: named.Builder = .{ .gpa = gpa, .io = io, .pack = &m.pack, .metadata_only = true };
+            defer schema.deinit();
+            if (cache != null) {
+                try schema.top(&m.pl);
+                try schema.dspark(&m.pl);
+            }
+            if (cache == null or !try cache.?.get(&b, "top", schema.out.items)) {
                 try b.top(&m.pl);
                 try b.dspark(&m.pl);
                 if (cache) |*c| c.put(&b, "top") catch |e| std.log.warn("dsv41 prepared: top not written ({t})", .{e});
@@ -258,7 +260,7 @@ pub const Model = struct {
         m.runner = .{ .gpa = gpa, .d = &m.driver, .stream = m.stream, .kernels = &m.kernels, .triton = &m.aot, .weights = &m.weights };
         // TF_DSV41_PROFILE=<file>: the served engine's eager windows and prefill segments timed (profile.zig), the JSON
         // written at close (before, only tf-dsv41-m1's gates set it: a served run wrote nothing)
-        m.runner.prof = try @import("profile.zig").Profile.fromEnv(gpa, &m.driver);
+        m.runner.prof = if (try @import("profile.zig").Profile.fromEnv(gpa, &m.driver)) |p| p.timer() else null;
         const topp: ?f64 = if (std.c.getenv("TF_DSV41_EXPERT_TOPP")) |v| try std.fmt.parseFloat(f64, std.mem.span(v)) else null;
         // TF_DSV41_R1=1, or prod.env's eight R1 knobs by their Python names (prod_knobs.r1)
         const r1 = @import("prod_knobs.zig").r1(&@import("prod_knobs.zig").env);
@@ -286,7 +288,7 @@ pub const Model = struct {
             if (m.f.prefill_state.pipe) |ln| ko.resident += try pipe_run.residentBytes(&m.f, ln);
             // TF_DSV41_PF_4K / _PF_TBO: the prefill workspace a long prompt allocates, priced on top of the worst point
             if (o.own_prefill) ko.workspace = try @import("forward_prefill.zig").workspaceBytes(&m.f, @intCast(m.f.opts.prefill_rows));
-            try kvs.bootCheck(&m.ctx, &m.cfg, ko, m.tcfg.rank, world);
+            m.boot_check = try kvs.bootCheck(&m.ctx, &m.cfg, ko, m.tcfg.rank, world);
             m.f.kv = try kvs.Kv.init(gpa, &m.driver, &m.ctx, &m.cfg, ko, &m.runner, comm);
             m.f.opts.pool = m.f.kv.?.options();
         }
@@ -395,6 +397,7 @@ pub const Model = struct {
             m.grammar = try grammar_gpu.Masks.init(gpa, io, &m.f, tok_dir, m.slots, 64);
         }
         try m.driver.check(m.driver.api.cuCtxSynchronize(), "cuCtxSynchronize");
+        if (m.boot_check) |b| try kvs.afterBoot(b);
         try comm.barrier();
     }
 
@@ -455,8 +458,8 @@ pub const Model = struct {
         if (m.sampler) |x| x.deinit();
         vision_rows.close(&m.f);
         if (m.grammar) |x| x.deinit();
-        if (m.sessions) |x| x.deinit();
-        if (m.f.kv) |k| k.deinit();
+        if (m.sessions) |x| x.close() catch {};
+        if (m.f.kv) |k| k.close() catch {};
         m.f.deinit();
         if (m.l2pf) |p| {
             m.runner.l2pf = null;

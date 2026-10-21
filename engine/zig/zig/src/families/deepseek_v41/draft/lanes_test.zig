@@ -1,5 +1,4 @@
-//! The lane engine on the CPU twin with DeepSeek's backend and depth: drafted == serial (greedy and keyed sampling),
-//! shared rounds == alone, trees, zero depth and joint depth, every round checked against the twin's serial decode.
+//! The lane engine on the CPU twin with DeepSeek's backend: drafted == serial across sampling, sharing, trees, depths.
 const std = @import("std");
 const lanes = @import("lanes");
 const twin = @import("twin.zig");
@@ -12,14 +11,14 @@ const gpa = std.testing.allocator;
 
 const Case = struct { prompt: []const u32, max_new: u32 = 60, sampling: ?lanes.Sampling = null, drafts: bool = true, copies: bool = false };
 
-const Setup = struct { siblings: u32 = 0, joint: u2 = 1, skip: bool = true, costs: Prices = .prod, slots: u32 = 4, dims: twin.Dims = .{}, depth: depth.Settings = .{}, spec: bool = false };
+const Setup = struct { siblings: u32 = 0, joint: u2 = 1, skip: bool = true, costs: Prices = .served, slots: u32 = 4, dims: twin.Dims = .{}, depth: depth.Settings = .{}, spec: bool = false };
 
-const Prices = enum { prod, flat, cheap };
+const Prices = enum { served, flat, cheap };
 
-/// The G15 boot's table (GB10, TP=2): rows 1-16 measured, the wide buckets 24/32/48/64, the pass and slot ms.
-pub fn prodCosts(alloc: std.mem.Allocator) !costs_mod.Costs {
+/// A measured TP=2 cost table: rows 1-16, the wide buckets 24/32/48/64, the pass and slot ms.
+pub fn servedCosts(alloc: std.mem.Allocator) !costs_mod.Costs {
     const rows = [_]f64{ 21.954, 26.573, 31.977, 36.158, 40.852, 44.776, 47.237, 51.089, 57.951, 59.663, 60.793, 62.458, 69.962, 70.85, 70.971, 72.362 };
-    const slot: f64 = 0.83; // the log's bucket values had the slot overhead taken out: put it back as calib.py timed them
+    const slot: f64 = 0.83; // the buckets were logged without the slot overhead: put back
     const wide = [_]costs_mod.Point{ .{ .rows = 24, .ms = @as(f64, 100.2) + slot }, .{ .rows = 32, .ms = @as(f64, 115.2) + slot }, .{ .rows = 48, .ms = @as(f64, 147.1) + 2 * slot }, .{ .rows = 64, .ms = @as(f64, 196.3) + 3 * slot } };
     return costs_mod.measured(alloc, &rows, &wide, 3.61, 0.83);
 }
@@ -49,7 +48,7 @@ fn run(cases: []const Case, setup: Setup) !Run {
     const d = try twin.Drafter.init(gpa, t, setup.slots + 1);
     defer d.deinit();
     var c = switch (setup.costs) {
-        .prod => try prodCosts(gpa),
+        .served => try servedCosts(gpa),
         .flat => try costs_mod.defaults(gpa, 64),
         .cheap => cheap: { // rows nearly free: every draft pays, so windows fill
             const v = try gpa.alloc(f64, 64);
@@ -226,8 +225,7 @@ test "shared forwards past 32 rows (Python's 64) keep every stream serial" {
 }
 
 test "the speculative pass runs on chain rounds (held drafts read back as host tokens) and changes no draft" {
-    // the lane core hands a chain's held drafts back as host tokens (Backend.tree): those windows are DSpark rounds,
-    // so the next pass is speculated after nearly every one, and the drafts, windows and tokens are spec-off's
+    // chain held drafts come back as host tokens, so those windows are DSpark rounds and nearly all are speculated
     for ([_]?lanes.Sampling{ null, warm }) |smp| {
         const cases = [_]Case{.{ .prompt = &p1, .sampling = smp, .max_new = 120 }};
         const off = try run(&cases, .{ .slots = 1 });
@@ -241,7 +239,25 @@ test "the speculative pass runs on chain rounds (held drafts read back as host t
         try std.testing.expectEqualSlices(u64, &off.kept, &on.kept);
         const st = on.spec;
         try std.testing.expect(st.launched > 0 and st.hit > 0);
-        // 120 tokens in rounds of up to 6: dozens of chain rounds, each speculated (before the fix: 1, the first)
+        // 120 tokens in rounds of up to 6: dozens of chain rounds, each speculated
         try std.testing.expect(st.launched >= 20 and st.hit + st.missed() == st.launched);
+    }
+}
+test "Draft state: every draft depth preserves plain output and concurrent equals solo for greedy and keyed draws" {
+    const dims: twin.Dims = .{ .block = 15, .bigram = 10, .head = 0.08 };
+    for (0..16) |cap| {
+        for ([_]?lanes.Sampling{ null, hot }) |sampling| {
+            const cases = [_]Case{ .{ .prompt = &p1, .sampling = sampling, .max_new = 36 }, .{ .prompt = &p2, .sampling = sampling, .max_new = 36 } };
+            const setup: Setup = .{ .dims = dims, .costs = .cheap, .depth = .{ .cap = cap, .skip = false } };
+            const both = try run(&cases, setup);
+            defer both.deinit();
+            try expectSerial(&cases, both, dims);
+            for (cases, 0..) |cs, i| {
+                const one = try run(&.{cs}, setup);
+                defer one.deinit();
+                try std.testing.expectEqualSlices(u32, one.out[0], both.out[i]);
+            }
+            if (cap > 0) try std.testing.expect(both.drafted > 0);
+        }
     }
 }

@@ -1,19 +1,14 @@
-//! Engram's host side (Python engram_host.py): the table layout (prime bucket sizes and row offsets of every layer,
-//! order and head), the n-gram hashes of a window's tokens, the heads a rank owns, and M2a's synthetic rows. The token
-//! map and the hash multipliers come precomputed per pack (tools/zig/dsv41_engram_host.py: the tokenizer normalizer
-//! and numpy's PCG64 are not worth porting); everything else is computed here as Python computes it (int64 wrapping
-//! products, XOR, floored modulo).
+//! Engram's host side: table layout, n-gram hashes of a window's tokens, a rank's heads, and the synthetic index rows.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 
 pub const dead_id: i64 = -1;
 pub const max_layers = 4;
 pub const max_ngram = 8;
 pub const max_cols = 64;
 
-/// Where a window's table rows come from (docs/DEEPSEEK-V41-CUDA.md 4b, `EngramSource`): the local NVMe shards
-/// (engram_rows.zig) or a remote table service; none: M2a's index rows (the gates' references). Every source gives
-/// the table's bytes, so the forward's bits do not depend on which one serves them.
+/// Where a window's table rows come from (local NVMe shards or a remote service); every source gives the same bytes.
 pub const Source = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -33,6 +28,7 @@ pub const Host = struct {
     /// token id -> compressed id
     token_map: []const u32,
     pad_id: i64,
+    map_bytes: ?[]const u8 = null,
     mult: [max_layers][max_ngram]i64 = undefined,
     primes: [max_layers][max_cols]i64 = undefined,
     offsets: [max_layers][max_cols]i64 = undefined,
@@ -41,7 +37,7 @@ pub const Host = struct {
         return (h.max_ngram - 1) * h.heads;
     }
 
-    /// Prime bucket sizes: for each layer and order the next unused primes above `vocab_size - 1` (Python's order).
+    /// Prime bucket sizes: for each layer and order the next unused primes above `vocab_size - 1` (reference order).
     pub fn layout(h: *Host, vocab_size: u64) void {
         var seen: [max_layers * max_cols]i64 = undefined;
         var nseen: usize = 0;
@@ -66,8 +62,7 @@ pub const Host = struct {
         }
     }
 
-    /// Table rows [t][layers][cols] of `ids` with `lookback` (the ids just before, oldest first; fewer than
-    /// max_ngram - 1: the sequence starts there). Ids past the map are image positions (dead).
+    /// Table rows [t][layers][cols] of `ids` after `lookback` (oldest first; short: sequence start); past map: dead.
     pub fn hash(h: *const Host, ids: []const u32, lookback: []const u32, out: []i64) void {
         const nb = lookback.len;
         const L = h.layer_ids.len;
@@ -75,24 +70,26 @@ pub const Host = struct {
         std.debug.assert(out.len == ids.len * L * C);
         for (0..ids.len) |t| for (0..L) |li| {
             var blocked = false;
-            var rolling: i64 = 0;
-            for (0..h.max_ngram) |s| {
-                const j = @as(i64, @intCast(t + nb)) - @as(i64, @intCast(s));
+            var tokens: [max_ngram]u32 = undefined;
+            for (0..h.max_ngram) |shift| {
+                const j = @as(i64, @intCast(t + nb)) - @as(i64, @intCast(shift));
                 const before = j < 0;
-                const v: i64 = if (before) h.pad_id else h.src(if (j < @as(i64, @intCast(nb))) lookback[@intCast(j)] else ids[@as(usize, @intCast(j)) - nb]);
+                const v: i64 = if (before) h.pad_id else h.src(if (j < @as(i64, @intCast(nb)))
+                    lookback[@intCast(j)]
+                else
+                    ids[@as(usize, @intCast(j)) - nb]);
                 blocked = blocked or before or v == dead_id;
-                const value = if (blocked) h.pad_id else v;
-                rolling ^= value *% h.mult[li][s];
-                if (s == 0) continue;
-                for (0..h.heads) |hh| {
-                    const c = (s - 1) * h.heads + hh;
-                    out[(t * L + li) * C + c] = @mod(rolling, h.primes[li][c]) + h.offsets[li][c];
-                }
+                tokens[shift] = @intCast(if (blocked) h.pad_id else v);
             }
+            @import("engram_hash.zig").hashValues(tokens[0..h.max_ngram], h.mult[li][0..h.max_ngram], h.primes[li][0..C], h.offsets[li][0..C], h.heads, out[(t * L + li) * C ..][0..C]);
         };
     }
 
     fn src(h: *const Host, id: u32) i64 {
+        if (h.map_bytes) |bytes| {
+            if (id >= bytes.len / 4) return dead_id;
+            return std.mem.readInt(u32, bytes[@as(usize, id) * 4 ..][0..4], .little);
+        }
         return if (id >= h.token_map.len) dead_id else h.token_map[id];
     }
 
@@ -106,6 +103,7 @@ pub const Host = struct {
 
     /// This rank's heads' global rows of Engram layer `layer` for a window's `ids` after `lookback`: idx [n][heads].
     pub fn shardIndex(h: *const Host, a: std.mem.Allocator, ids: []const u32, lookback: []const u32, layer: u32, rank: u32, world: u32) ![]i64 {
+        if (world == 0 or rank >= world) return error.BadEngramHost;
         const li = std.mem.indexOfScalar(u32, h.layer_ids, layer) orelse return error.NotEngram;
         const L = h.layer_ids.len;
         const C = h.cols();
@@ -118,8 +116,7 @@ pub const Host = struct {
         return idx;
     }
 
-    /// The window's rows of Engram layer `layer`, this rank's heads, bf16 [ids.len, heads x dim] into `out`: from
-    /// `src`, or M2a's index rows without one.
+    /// Engram layer `layer`'s window rows, this rank's heads, bf16 [ids.len, heads x dim]: from `source` or index rows.
     pub fn windowRows(h: *const Host, a: std.mem.Allocator, source: ?Source, ids: []const u32, lookback: []const u32, layer: u32, rank: u32, world: u32, dim: usize, out: []u16) !void {
         const idx = try h.shardIndex(a, ids, lookback, layer, rank, world);
         defer a.free(idx);
@@ -128,43 +125,65 @@ pub const Host = struct {
         return s.vtable.rows(s.ptr, li, idx, dim, out);
     }
 
-    /// R3: starts the reads of a coming window's rows (`ids` after `lookback`) on every Engram layer; a wrong guess
-    /// only costs a read at the window (the rows are the table's either way). Errors are logged, never raised.
+    /// Starts reading a coming window's rows on every Engram layer; a wrong guess costs a read; errors only logged.
     pub fn prefetch(h: *const Host, a: std.mem.Allocator, source: ?Source, ids: []const u32, lookback: []const u32, rank: u32, world: u32) void {
         const s = source orelse return;
         for (h.layer_ids, 0..) |layer, li| {
             const idx = h.shardIndex(a, ids, lookback, layer, rank, world) catch return;
             defer a.free(idx);
-            s.vtable.issue(s.ptr, li, idx) catch |e| std.log.scoped(.dsv41).warn("engram: prefetch of layer {d} failed ({t})", .{ layer, e });
+            s.vtable.issue(s.ptr, li, idx) catch |e| if (!quiet) std.log.scoped(.dsv41).warn("engram: prefetch of layer {d} failed ({t})", .{ layer, e });
         }
     }
 
-    /// Loads tools/zig/dsv41_engram_host.py's file (the map borrowed from `bytes`, which must outlive the host).
+    pub fn fromTokenMap(map: @import("engram_hash.zig").TokenMap, layer_buf: []u32) !Host {
+        const hash_api = @import("engram_hash.zig");
+        if (layer_buf.len < hash_api.layers.len) return error.BadEngramHost;
+        var h: Host = .{ .layer_ids = layer_buf[0..hash_api.layers.len], .max_ngram = hash_api.order, .heads = hash_api.heads, .token_map = &.{}, .map_bytes = map.bytes, .pad_id = hash_api.pad_id };
+        for (hash_api.layers, 0..) |meta, i| {
+            layer_buf[i] = meta.layer_id;
+            for (meta.multipliers, 0..) |v, j| h.mult[i][j] = @intCast(v);
+            for (meta.primes, 0..) |v, j| h.primes[i][j] = v;
+            for (meta.offsets, 0..) |v, j| h.offsets[i][j] = v;
+        }
+        return h;
+    }
+
+    /// Loads recipe/dsv41_engram_host.py's file (the map borrowed from `bytes`, which must outlive the host).
     pub fn load(bytes: []const u8, heads: u32, pad_token: u32, vocab_size: u64, layer_buf: []u32) !Host {
+        if (heads != 8 or pad_token != 2 or vocab_size != 16000000) return error.BadEngramHost;
+        return fromTokenMap(try @import("engram_hash.zig").TokenMap.parse(bytes), layer_buf);
+    }
+
+    // Legacy fixture adapter only. Production load requires the pinned canonical map above.
+    pub fn loadLegacyFixture(bytes: []const u8, heads: u32, pad_token: u32, vocab_size: u64, layer_buf: []u32) !Host {
         if (bytes.len < 24 or !std.mem.eql(u8, bytes[0..8], "DSV41EH1")) return error.BadEngramHost;
         const L = std.mem.readInt(u32, bytes[8..12], .little);
         const M = std.mem.readInt(u32, bytes[12..16], .little);
         const V = std.mem.readInt(u32, bytes[16..20], .little);
-        if (L > max_layers or M > max_ngram or (M - 1) * heads > max_cols or L > layer_buf.len) return error.BadEngramHost;
+        if (L == 0 or L > max_layers or M < 2 or M > max_ngram or heads == 0 or heads > max_cols / (M - 1) or L > layer_buf.len or pad_token >= V or vocab_size < 2 or vocab_size > 16000000) return error.BadEngramHost;
+        const expected = 24 + 4 * @as(usize, L) + 8 * @as(usize, L) * M + 4 * @as(usize, V);
+        if (bytes.len != expected) return error.BadEngramHost;
         var at: usize = 24;
         for (0..L) |i| layer_buf[i] = std.mem.readInt(u32, bytes[at + 4 * i ..][0..4], .little);
         at += 4 * L;
         var h: Host = .{ .layer_ids = layer_buf[0..L], .max_ngram = M, .heads = heads, .token_map = &.{}, .pad_id = 0 };
         for (0..L) |li| for (0..M) |s| {
             h.mult[li][s] = std.mem.readInt(i64, bytes[at..][0..8], .little);
+            if (h.mult[li][s] <= 0) return error.BadEngramHost;
             at += 8;
         };
         if (bytes.len - at < 4 * @as(usize, V)) return error.BadEngramHost;
-        h.token_map = @alignCast(std.mem.bytesAsSlice(u32, bytes[at..][0 .. 4 * V]));
-        h.pad_id = h.token_map[pad_token];
+        h.map_bytes = bytes[at..];
+        for (0..V) |id| {
+            if (std.mem.readInt(u32, bytes[at + 4 * id ..][0..4], .little) >= 99092) return error.BadEngramHost;
+        }
+        h.pad_id = h.src(pad_token);
         h.layout(vocab_size);
         return h;
     }
 };
 
-/// The committed ids just before position `start` (Engram's lookback, the last `keep_n`) when the next window will
-/// start there: the slot's `tail` (committed up to `pos`), then the leading rows of the window in flight at `pos`
-/// (`pending`, not kept yet) that a start past it implies were kept. Null: `start` is not reachable from this state.
+/// The committed ids before `start` (last `keep_n`): the tail, then kept leading rows of `pending`; null: unreachable.
 pub fn lookbackAt(tail: []const u32, pos: u64, pending: ?[]const u32, start: u64, keep_n: usize, buf: []u32) ?[]const u32 {
     if (start < pos) return null;
     const k: usize = @intCast(start - pos);
@@ -177,8 +196,7 @@ pub fn lookbackAt(tail: []const u32, pos: u64, pending: ?[]const u32, start: u64
     return buf[m - n .. m];
 }
 
-/// A slot's Engram tail after keeping `ids` (Batch.keep's row-mode commit): the last `keep_n` of tail + ids, into
-/// `tail`; its new length.
+/// A slot's Engram tail after keeping `ids`: the last `keep_n` of tail + ids, into `tail`; returns its new length.
 pub fn tailAfter(tail: []u32, len: usize, keep_n: usize, ids: []const u32) usize {
     var all: [2 * max_ngram + 64]u32 = undefined;
     const old = tail[0..len];
@@ -192,8 +210,7 @@ pub fn tailAfter(tail: []u32, len: usize, keep_n: usize, ids: []const u32) usize
 }
 
 test "an Engram warm's lookback at a draft before its window's keep is the window's tail after it" {
-    // TF_DSV41_ENGRAM_WARM: Batch.warmEngram asks at (start = pos + kept), the pending window still in flight; the
-    // next window's own round job (Batch.stageEngram) reads after the slot's tail once the keep ran
+    // TF_DSV41_ENGRAM_WARM: warmEngram asks at pos + kept, pending window in flight; stageEngram reads after the keep
     var prng = std.Random.DefaultPrng.init(56);
     const rnd = prng.random();
     for (0..500) |_| {
@@ -218,7 +235,7 @@ test "an Engram warm's lookback at a draft before its window's keep is the windo
     }
 }
 
-/// Python engram_host._is_prime: small primes, then Miller-Rabin with bases 2, 7, 61 (exact below 4.7e9).
+/// Small primes, then Miller-Rabin with bases 2, 7, 61 (exact below 4.7e9).
 pub fn isPrime(n: u64) bool {
     if (n < 2) return false;
     for ([_]u64{ 2, 3, 5, 7, 11, 13, 17, 19, 23, 29, 31, 37 }) |p| if (n % p == 0) return n == p;
@@ -253,8 +270,7 @@ fn powMod(b0: u64, e0: u64, m: u64) u64 {
     return @intCast(r);
 }
 
-/// M2a's synthetic rows (dsv41_m1_capture.IndexRows): row i, value j = (((i * 2654435761 + j * 40503) % 511) - 255) / 1024,
-/// fp32 then bf16 (exact: multiples of 1/1024 within 8 bits), into `out` [rows.len][dim] as bf16 bits.
+/// Synthetic rows: row i, value j = (((i * 2654435761 + j * 40503) % 511) - 255) / 1024, exact in bf16, into `out`.
 pub fn indexRows(rows: []const i64, dim: usize, out: []u16) void {
     for (rows, 0..) |i, r| for (0..dim) |j| {
         const v = @mod(i *% 2654435761 +% @as(i64, @intCast(j)) * 40503, 511) - 255;
@@ -265,7 +281,7 @@ pub fn indexRows(rows: []const i64, dim: usize, out: []u16) void {
 
 const testing = std.testing;
 
-test "the n-gram hashes: Python's NgramHasher on the release config and tokenizer (fixtures/engram-hash-ref.bin)" {
+test "the n-gram hashes: the reference NgramHasher on the release config and tokenizer (fixtures/engram-hash-ref.bin)" {
     const a = testing.allocator;
     const fx: []const u8 = @embedFile("fixtures/engram-hash-ref.bin");
     const L = std.mem.readInt(u32, fx[8..12], .little);
@@ -290,8 +306,8 @@ test "the n-gram hashes: Python's NgramHasher on the release config and tokenize
     defer a.free(bytes);
     @memcpy(bytes, file.items);
     var ids_buf: [max_layers]u32 = undefined;
-    const h = try Host.load(bytes, 8, 2, 16_000_000, &ids_buf);
-    // Python's EngramLayout: the first and last primes, the last head's offset
+    const h = try Host.loadLegacyFixture(bytes, 8, 2, 16_000_000, &ids_buf);
+    // the reference layout: the first and last primes, the last head's offset
     try testing.expectEqual(@as(i64, 16_000_057), h.primes[0][0]);
     try testing.expectEqual(@as(i64, 16_000_889), h.primes[1][23]);
     try testing.expectEqual(@as(i64, 368_005_705), h.offsets[0][23]);

@@ -1,4 +1,4 @@
-//! Latency and bandwidth of each backend's collectives, eager and graphed (GPU events); RESULT lines are JSON, busbw as nccl-tests.
+//! Latency and bandwidth of each backend's collectives, eager and graphed; RESULT lines are JSON, busbw as nccl-tests.
 const std = @import("std");
 const cuda = @import("cuda");
 const tp = @import("tp");

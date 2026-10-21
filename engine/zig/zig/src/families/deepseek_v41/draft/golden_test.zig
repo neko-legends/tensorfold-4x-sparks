@@ -1,6 +1,4 @@
-//! The Python reference's own decisions replayed (fixtures/golden.json, from tools/golden.py on dsv41-quant-e2):
-//! the depth's choices, joint depths, trees, calibration and rates after every round, bit for bit, so both ranks of
-//! a Zig engine choose what the Python engine chose from the same inputs.
+//! Reference decisions replayed (fixtures/golden.json): depth, joint, trees, calibration, rates, bit for bit.
 const std = @import("std");
 const Value = std.json.Value;
 const costs_mod = @import("costs.zig");
@@ -45,7 +43,7 @@ fn costs(a: std.mem.Allocator, root: Value) !costs_mod.Costs {
 test "the cost table equals calib.py's from the same timings" {
     var parsed = try std.json.parseFromSlice(Value, gpa, golden, .{});
     defer parsed.deinit();
-    var mine = try @import("lanes_test.zig").prodCosts(gpa);
+    var mine = try @import("lanes_test.zig").servedCosts(gpa);
     defer mine.deinit(gpa);
     const want = try costs(parsed.arena.allocator(), parsed.value);
     try std.testing.expectEqualSlices(f64, want.verify, mine.verify);

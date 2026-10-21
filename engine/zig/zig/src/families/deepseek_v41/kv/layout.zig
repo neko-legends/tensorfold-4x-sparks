@@ -1,10 +1,4 @@
-//! DeepSeek-V4.1's paged cache families (pool.py families): a compressed-KV family and an index-key family per KV source layer.
-//!
-//! | family     | layers               | rows a token | row bytes                                   |
-//! | comp.L     | 2, 8, 14 (ratio 2), 20 | 1 / ratio  | 584 FP8 (448 e4m3 + 64 bf16 RoPE + 8 scales), 384 FP4 |
-//! | index_k.L  | the same four        | 1 / ratio    | 132 FP8 + scale (prod), 256 bf16            |
-//!
-//! 1,790 B a token a rank replicated (prod: FP8 KV, FP8 index keys), 1,060 with split KV over two ranks (the comp rows sharded).
+//! DeepSeek-V4.1's paged cache families: comp.L (compressed KV) and index_k.L (index keys) per KV source layer.
 
 const std = @import("std");
 const sessions = @import("sessions");
@@ -124,7 +118,7 @@ test "the release's families: 1,790 B a token replicated, 1,060 split, the FP4 a
     try std.testing.expectApproxEqAbs(@as(f64, 1060), s.bytesPerToken(2), 1e-9);
     try std.testing.expectApproxEqAbs(@as(f64, 1790), s.bytesPerToken(1), 1e-9);
     var f4 = try Layout.fromConfig(Release{}, .{ .kv = .fp4, .split = true });
-    try std.testing.expectApproxEqAbs(@as(f64, 810), f4.bytesPerToken(2), 1e-9); // LONG-CONTEXT.md 7.5: A + FP4 comp
+    try std.testing.expectApproxEqAbs(@as(f64, 810), f4.bytesPerToken(2), 1e-9); // A + FP4 comp
     var bf = try Layout.fromConfig(Release{}, .{ .index = .bf16 });
     try std.testing.expectApproxEqAbs(@as(f64, 2100), bf.bytesPerToken(1), 1e-9);
     try std.testing.expectEqual(@as(?u32, 6), l.compOf(20));

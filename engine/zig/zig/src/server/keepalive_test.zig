@@ -1,8 +1,6 @@
 //! A silent stream keeps its client: keepalives on both routes before the first token; a failed one ends the request.
 const std = @import("std");
-const serve_mod = @import("dsv41_serve");
-const deepseek = @import("deepseek.zig");
-const spark = @import("spark.zig");
+const server = @import("server.zig");
 const d = @import("drain_test.zig");
 const testing = std.testing;
 
@@ -16,7 +14,7 @@ fn leave(a: std.mem.Allocator, io: std.Io, port: u16, body: []const u8, slow: *d
     const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(port) };
     const stream = try addr.connect(io, .{ .mode = .stream });
     defer stream.close(io);
-    const head = try std.fmt.allocPrint(a, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+    const head = try std.fmt.allocPrint(a, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
     var wbuf: [4096]u8 = undefined;
     var w = std.Io.net.Stream.Writer.init(stream, io, &wbuf);
     try w.interface.writeAll(head);
@@ -29,27 +27,22 @@ fn leave(a: std.mem.Allocator, io: std.Io, port: u16, body: []const u8, slow: *d
 }
 
 test "a silent engine's stream gets keepalives before its first token (chat: SSE comments, messages: ping events)" {
-    try testing.expect((spark.Settings{}).keepalive_s > 0 and (spark.Settings{}).keepalive_s <= 15);
+    const period = comptime std.meta.fieldInfo(server.Config, .sse_keepalive_s).attrs.defaultValue(f64).?;
+    try testing.expect(period > 0 and period <= 15);
     const gpa = testing.allocator;
     const io = testing.io;
-    const tok = try serve_mod.tokenizer.Tokenizer.parse(gpa, serve_mod.fixtures.mini_tokenizer);
-    defer tok.deinit();
-    const eos = tok.tokenId("<｜end▁of▁sentence｜>").?;
-    const ds = try deepseek.DeepSeek.init(gpa, tok, .{ .eos = &.{eos} });
-    defer ds.deinit(false);
+    var tt: d.TestText = .{};
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
     try env.put("TENSORFOLD_NO_LIVE", "1");
-    try env.put("TF_DSV41_DRAIN_S", "5");
-    try env.put("TF_DSV41_SSE_KEEPALIVE_S", "0.1");
-    // only a failed write ends a request, so the keepalive's own write is what notices a client gone
-    try env.put("GLM53_TF_DISCONNECT", "0");
-    var slow: d.Slow = .{ .gpa = gpa, .io = io, .tok = tok, .eos = eos };
+    try env.put("TF_DRAIN_S", "5");
+    try env.put("TF_SSE_KEEPALIVE_S", "0.1");
+    var slow: d.Slow = .{ .gpa = gpa, .io = io };
     var x: d.Served = .{};
-    const t = try d.start(gpa, io, &env, &slow, ds, &x);
+    const t = try d.start(gpa, io, &env, &slow, &tt, &x);
     const port = d.listen_port.load(.acquire);
 
     const chat = try d.request(a, io, port, "POST", "/v1/chat/completions", try d.chatBody(a, "@wait", true));
@@ -68,7 +61,7 @@ test "a silent engine's stream gets keepalives before its first token (chat: SSE
     const delta = std.mem.indexOf(u8, msg.body, "event: content_block_delta") orelse return error.NoDelta;
     try testing.expect(start < ping and ping < delta);
 
-    // a client that leaves a silent stream: the next keepalive fails to write and the engine's request is cancelled
+    // a client that leaves a silent stream: the request is cancelled (the disconnect poll or a failed keepalive)
     var idle: u32 = 0;
     while (slow.active.load(.acquire) > 0 and idle < 300) : (idle += 1) std.Io.sleep(io, .fromMilliseconds(10), .awake) catch {};
     try leave(a, io, port, try d.chatBody(a, "@hang", true), &slow);

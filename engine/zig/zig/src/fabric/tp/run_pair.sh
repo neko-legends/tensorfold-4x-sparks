@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# WORLD ranks of tf-tp-test on one host with WORLD GPUs (rank r on GPU r; two by default), as the single-GPU gate runs them.
+# WORLD ranks of tf-tp-test on one host with WORLD GPUs (rank r on GPU r; two by default; up to sixteen), as the
+# single-GPU gate runs them.
 #   [WORLD=2] [SUITES="mailbox nccl"] [FAILFAST="nccl mailbox"] run_pair.sh BIN OUTDIR
 # RoCE's GPU path on one host without RDMA: SUITES=roce FAILFAST=roce TF_TP_ROCE_WIRE=shm (the proxy copies through
 # shared memory instead of RDMA writes; the kernel, doorbell, flags and proxy loop are the real ones), any WORLD.
@@ -24,16 +25,10 @@ pair() { # NAME BACKEND ARGS...: every rank, logs OUT/NAME.rR.log ending with an
     done
     wait
 }
-for backend in ${SUITES:-mailbox nccl}; do
-    pair "suite-$backend" "$backend" suite
-done
-: > "$OUT/failfast.txt"
-for backend in ${FAILFAST:-nccl mailbox}; do
-    for mode in fatal kill; do
-        for ((victim = 0; victim < WORLD; victim++)); do
-            name=ff-$backend-$mode-$victim
-            pair "$name" "$backend" failfast "$victim" "$mode"
-            python3 - "$OUT" "$name" "$victim" "$WORLD" >> "$OUT/failfast.txt" <<'EOF'
+# ffsum OUT NAME VICTIM: a fail-fast run's verdict line (exit codes, exit times after the injection), any WORLD
+ffsum() {
+    [ -f "$1/$2.r0.log" ] || { echo "ffsum: $1/$2.r0.log missing" >&2; return 1; }
+    python3 - "$1" "$2" "$3" "$WORLD" <<'EOF'
 import re, sys
 out, name, victim, world = sys.argv[1], sys.argv[2], int(sys.argv[3]), int(sys.argv[4])
 logs = [open(f"{out}/{name}.r{r}.log").read() for r in range(world)]
@@ -48,6 +43,17 @@ want = [137 if (r == victim and "kill" in name) else 70 for r in range(world)]
 ok = rcs == want and all(dt[r] < 3.0 for r in range(world) if r != victim)
 print(f"{name}: {'PASS' if ok else 'FAIL'} rc {rcs} (want {want}), exit after injection: " + ", ".join(f"rank{r} {dt[r]:.3f} s" for r in range(world)))
 EOF
+}
+for backend in ${SUITES:-mailbox nccl}; do
+    pair "suite-$backend" "$backend" suite
+done
+: > "$OUT/failfast.txt"
+for backend in ${FAILFAST:-nccl mailbox}; do
+    for mode in fatal kill; do
+        for ((victim = 0; victim < WORLD; victim++)); do
+            name=ff-$backend-$mode-$victim
+            pair "$name" "$backend" failfast "$victim" "$mode"
+            ffsum "$OUT" "$name" "$victim" >> "$OUT/failfast.txt"
         done
     done
 done

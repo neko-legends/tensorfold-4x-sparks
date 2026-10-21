@@ -1,7 +1,7 @@
-//! The keyed sampler's device steps on one stream (sampling_pipe.Device): topk_keys.cu (`dsv41_kernels`) for each
-//! row's candidates, sampling.cu for their packed rows and the nucleus statistics.
+//! The keyed sampler's device steps on one stream: topk_keys.cu candidates, sampling.cu packed rows and statistics.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const cuda = @import("cuda");
 const dk = @import("dsv41_kernels");
 const pipe = @import("sampling_pipe.zig");
@@ -13,8 +13,7 @@ pub const Gpu = struct {
     kernels: *const dk.Kernels,
     fns: dk.sampling.Functions,
     bufs: [8]?cuda.DeviceBuffer = @splat(null),
-    /// the nucleus statistics over every SM (sampling.cu's split launches) when the fatbin has them, unless
-    /// TF_DSV41_SAMP_STATS=row (stats_kernel: one CTA a row, ~0.4 ms a call on GB10)
+    /// nucleus statistics over every SM when the fatbin has them, unless TF_DSV41_SAMP_STATS=row (one CTA a row)
     split: bool,
 
     pub fn init(d: *const cuda.Driver, stream: cuda.Stream, kernels: *const dk.Kernels) !Gpu {
@@ -22,7 +21,7 @@ pub const Gpu = struct {
         const row = try rowStats();
         const log = std.log.scoped(.dsv41);
         if (fns.split_missing) |m| {
-            log.warn("sampling: nucleus statistics one CTA a row: the sampling fatbin's {s} did not resolve ({t}); rebuild dsv41_sampling.fatbin from sampling.cu at 2e777c10 or later", .{ m.symbol, m.err });
+            if (!quiet) log.warn("sampling: nucleus statistics one CTA a row: the sampling fatbin's {s} did not resolve ({t}); rebuild dsv41_sampling.fatbin from this tree's sampling.cu", .{ m.symbol, m.err });
         } else if (row) {
             log.info("sampling: nucleus statistics one CTA a row (TF_DSV41_SAMP_STATS=row)", .{});
         } else log.info("sampling: nucleus statistics split over every SM ({d} columns a CTA)", .{dk.sampling.Functions.chunk});

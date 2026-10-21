@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const check = @import("m1_check.zig");
 const rowmode = @import("rowmode.zig");

@@ -10,7 +10,7 @@
 //! The call-by-call check against Python's paged / split captures is `check` on an M1_PAGED / M1_SPLIT capture.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const block_prefill = @import("block_prefill.zig");
 const buffers = @import("buffers.zig");

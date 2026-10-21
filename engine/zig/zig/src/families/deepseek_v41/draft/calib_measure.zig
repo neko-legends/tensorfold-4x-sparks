@@ -1,11 +1,4 @@
-//! TF_DSV41_CALIB=measure's host side: Python prod's boot calibration (tensorfold-decode1 8474f31
-//! deepseek_v41/cuda/calib.py `measure`, `method`, `statistic`, `fit`, `monotone`, `table_of`, `split`, `extend`,
-//! `wide_buckets`) without the GPU. `Plan` lists the timed runs in Python's order (rows 1..cycle as warmed interleaved
-//! cycles, the rest of rows 1..8 a row at a time, rows 9..16 one warm-up + DEEP_REPS, the 2-slot 4 + 4 window, the wide
-//! buckets split over SLOT_ROWS-row slots, rows 1..recheck again, the DSpark pass); `Plan.build` turns every rank's
-//! samples (ms, one a run, warm-ups included and skipped) into the `Costs` Python's `measure` returns: each rank's
-//! statistic a row (the lower of sweep and recheck), the per-entry maximum over ranks of the microsecond ints
-//! (`gather_max`), `table_of`, the per-slot overhead and the wide points extended. calib_gpu.zig runs the plan.
+//! TF_DSV41_CALIB=measure host side: the boot calibration run plan, its samples -> `Costs`; calib_gpu.zig runs it.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const costs_mod = @import("costs.zig");
@@ -17,13 +10,13 @@ pub const light_reps = 3; // REPS: the wide buckets and the DSpark pass, after o
 pub const cut = 7; // CUT: slot i's text is the calibration text less its last CUT x i tokens
 pub const slot_rows = costs_mod.slot_rows; // SLOT_ROWS
 pub const wide = costs_mod.wide; // WIDE
-pub const deep_from = 8; // glm5_next.spark.calib.DEEP_FROM (the `fit` shape)
+pub const deep_from = 8; // rows past this fit a line of their own (the `fit` shape)
 pub const max_samples = 64; // a statistic's runs at most (REPS / DEEP_REPS <= 50)
 
 pub const Shape = enum { raw, fit };
 pub const Stat = enum { median, min };
 
-/// calib.method(): the timing method (TF_DSV41_CALIB_SHAPE / _REPS / _WARM / _STAT / _RECHECK / _CYCLE / _DEEP_REPS).
+/// The timing method (TF_DSV41_CALIB_SHAPE / _REPS / _WARM / _STAT / _RECHECK / _CYCLE / _DEEP_REPS).
 pub const Method = struct {
     reps: u32 = 5,
     warm: u32 = 3,
@@ -34,7 +27,7 @@ pub const Method = struct {
     deep: u32 = 5,
 };
 
-/// Python's DEFAULTS by shape (raw: G15; fit: G14, VERSION 3), then the explicit knobs, each range-checked.
+/// The defaults by shape (raw: G15; fit: G14, VERSION 3), then the explicit knobs, each range-checked.
 pub fn method(get: *const fn ([*:0]const u8) ?[]const u8) !Method {
     const shape_s = trimmed(get("TF_DSV41_CALIB_SHAPE")) orelse "raw";
     const shape: Shape = if (std.ascii.eqlIgnoreCase(shape_s, "raw")) .raw else if (std.ascii.eqlIgnoreCase(shape_s, "fit")) .fit else return error.CalibShape;
@@ -63,7 +56,7 @@ fn trimmed(v: ?[]const u8) ?[]const u8 {
     return if (t.len == 0) null else t;
 }
 
-/// calib.statistic: the median (the mean of the middle two when even) or the minimum of a window's timed runs.
+/// The median (the mean of the middle two when even) or the minimum of a window's timed runs.
 pub fn statistic(samples: []const f64, stat: Stat) !f64 {
     if (samples.len == 0) return error.NoRuns;
     if (samples.len > max_samples) return error.TooManyRuns;
@@ -76,14 +69,14 @@ pub fn statistic(samples: []const f64, stat: Stat) !f64 {
     return if (xs.len % 2 == 1) xs[m] else (xs[m - 1] + xs[m]) / 2.0;
 }
 
-/// statistics.median of a slice (sorted in place).
+/// The median of a slice (sorted in place).
 fn median(xs: []f64) f64 {
     std.mem.sort(f64, xs, {}, std.sort.asc(f64));
     const m = xs.len / 2;
     return if (xs.len % 2 == 1) xs[m] else (xs[m - 1] + xs[m]) / 2.0;
 }
 
-/// glm5_next.spark.calib.fit_line: the median of pairwise slopes, then the median intercept.
+/// The median of pairwise slopes, then the median intercept.
 pub fn fitLine(gpa: Allocator, rows: []const f64, ys: []const f64) !struct { base: f64, slope: f64 } {
     var slopes: std.ArrayList(f64) = .empty;
     defer slopes.deinit(gpa);
@@ -95,8 +88,7 @@ pub fn fitLine(gpa: Allocator, rows: []const f64, ys: []const f64) !struct { bas
     return .{ .base = median(bases), .slope = slope };
 }
 
-/// calib.fit (VERSION 3's table): 1 row as measured, 2..8 on their fitted line, 9+ on a line of their own through
-/// the 8-row value, non-decreasing.
+/// VERSION 3's table: 1 row as measured, 2..8 on a fitted line, 9+ on their own line from the 8-row value, monotone.
 pub fn fit(gpa: Allocator, v: []const f64) ![]f64 {
     if (v.len < 3) return gpa.dupe(f64, v);
     const first = @min(v.len, deep_from);
@@ -124,7 +116,7 @@ pub fn fit(gpa: Allocator, v: []const f64) ![]f64 {
     return out;
 }
 
-/// calib.table_of: `raw` = monotone, `fit` = fit.
+/// `raw` = monotone, `fit` = fit.
 pub fn tableOf(gpa: Allocator, times: []const f64, shape: Shape) ![]f64 {
     if (shape == .fit) return fit(gpa, times);
     const t = try gpa.dupe(f64, times);
@@ -133,13 +125,13 @@ pub fn tableOf(gpa: Allocator, times: []const f64, shape: Shape) ![]f64 {
     return t;
 }
 
-/// calib.split: `total` rows over `out.len` slots, as even as can be (the first slots one more).
+/// `total` rows over `out.len` slots, as even as can be (the first slots one more).
 pub fn split(total: u32, out: []u32) void {
     const n: u32 = @intCast(out.len);
     for (out, 0..) |*o, i| o.* = total / n + @intFromBool(i < total % n);
 }
 
-/// calib.wide_buckets: the wide buckets `slots` slots can time (at most SLOT_ROWS rows a slot), past `rows`.
+/// The wide buckets `slots` slots can time (at most SLOT_ROWS rows a slot), past `rows`.
 pub fn wideBuckets(slots: u32, rows_cap: u64, rows: u32, out: *[wide.len]u32) []u32 {
     var n: usize = 0;
     const top = @min(rows_cap, @as(u64, slot_rows) * @max(1, slots));
@@ -168,10 +160,10 @@ pub const Run = struct {
     }
 };
 
-/// The measurement's runs in Python's order (calib.measure).
+/// The measurement's timed runs, in the reference order.
 pub const Plan = struct {
     rows: u32,
-    /// the slots the windows use (calib.measure's `n`)
+    /// the slots the windows use
     n: u32,
     wide_buf: [wide.len]u32 = undefined,
     nwide: u32 = 0,
@@ -181,8 +173,7 @@ pub const Plan = struct {
     m: Method,
     runs: std.ArrayList(Run) = .empty,
 
-    /// `slots`: the engine's slots (Python's shape slots); `rows_cap`: joint.rows_cap (TF_DSV41_GRAPH_ROWS_MAX, 64);
-    /// `rows`: the widest one-slot window (MAX_ROWS, 16); `draft`: the engine has a DSpark pass.
+    /// `slots`: engine slots; `rows_cap`: TF_DSV41_GRAPH_ROWS_MAX (64); `rows`: widest window (16); `draft`: DSpark.
     pub fn init(gpa: Allocator, slots: u32, rows_cap: u64, rows: u32, m: Method, draft: bool) !Plan {
         if (rows == 0 or rows > max_rows) return error.BadRows;
         var p: Plan = .{ .rows = rows, .n = 1, .per_slot = false, .draft = draft, .m = m };
@@ -227,8 +218,7 @@ pub const Plan = struct {
         return 1 + p.rows + p.nwide + @intFromBool(p.per_slot);
     }
 
-    /// calib.measure's `block`: rows 1..min(cycle, hi) as interleaved cycles (`warm` discarded, `reps` timed), the
-    /// other rows up to `hi` a row at a time with the same plan.
+    /// Rows 1..min(cycle, hi) as interleaved cycles (`warm` dropped, `reps` timed), the rest up to `hi` row by row.
     fn block(p: *Plan, gpa: Allocator, hi: u32, recheck: bool) !void {
         const cyc = @min(p.m.cycle, hi);
         for (0..p.m.warm + p.m.reps) |k| {
@@ -254,8 +244,7 @@ pub const Plan = struct {
         }
     }
 
-    /// One rank's kept values [draft, rows 1..rows (the lower of sweep and recheck), shared...] in ms from its
-    /// samples (one a run, in `runs` order; warm-ups skipped). No DSpark pass: draft 0 (Python's draft = 0.0).
+    /// One rank's kept ms [draft, rows 1..rows (lower of sweep, recheck), shared...] from `runs`-order samples.
     pub fn values(p: *const Plan, samples: []const f64, out: []f64) !void {
         if (samples.len != p.runs.items.len or out.len != p.entries()) return error.BadSamples;
         var buf: [max_samples]f64 = undefined;
@@ -281,9 +270,7 @@ pub const Plan = struct {
         return try statistic(buf[0..n], p.m.stat);
     }
 
-    /// The table every rank holds: each rank's values as microsecond ints (Python round, half to even), the maximum
-    /// over ranks a entry (`gather_max`), then table_of, Costs.slot from the 4 + 4 window against the 8-row entry, the
-    /// wide buckets less the further slots' overhead, extended. `ranks[r]`: rank r's `values`.
+    /// The shared table: per-rank microsecond ints, max over ranks, table_of, Costs.slot, wide buckets, extended.
     pub fn build(p: *const Plan, gpa: Allocator, ranks: []const []const f64) !Costs {
         const e = p.entries();
         const both = try gpa.alloc(f64, e);
@@ -310,8 +297,7 @@ pub const Plan = struct {
     }
 };
 
-/// glm5_next.spark.calib.TEXT: the calibration text (prose, a numbered explanation and code), tokenized by the
-/// checkpoint's tokenizer.json (calib_gpu.zig), the first PROMPT_MAX ids.
+/// The calibration text (prose, a numbered explanation and code); calib_gpu.zig tokenizes it, first PROMPT_MAX ids.
 pub const text =
     \\The committee met on Tuesday to review the quarterly results. Revenue grew by eleven percent, driven mostly
     \\by the new subscription plans, while operating costs stayed flat. Two questions remained open: whether to expand
@@ -335,8 +321,7 @@ pub const text =
 ;
 pub const prompt_max = 256;
 
-/// glm5_next.spark.calib.prompt_ids after the tokenizer: the ids below `vocab`, the first PROMPT_MAX, or
-/// `fallback_ids` when fewer than 16 remain. `ids` is filtered in place; the result is a slice of it or of `fb`.
+/// Ids below `vocab` (filtered in place), the first PROMPT_MAX, or `fallbackIds` into `fb` when fewer than 16 remain.
 pub fn promptIds(ids: []u32, vocab: u32, fb: *[64]u32) []const u32 {
     var n: usize = 0;
     for (ids) |t| if (t < vocab and n < prompt_max) {
@@ -347,14 +332,14 @@ pub fn promptIds(ids: []u32, vocab: u32, fb: *[64]u32) []const u32 {
     return fallbackIds(vocab, fb);
 }
 
-/// glm5_next.spark.calib.fallback_ids(vocab, 64): ids spread over the vocabulary by a fixed rule.
+/// 64 ids spread over the vocabulary by a fixed rule.
 pub fn fallbackIds(vocab: u32, out: *[64]u32) []const u32 {
     const m: u64 = @intCast(@max(@as(i64, vocab) - 2, 1));
     for (out, 0..) |*o, i| o.* = @intCast((7919 * (@as(u64, i) + 1) + 104729) % m + 1);
     return out;
 }
 
-/// calib.measure's texts: slot i's prompt is `prompt` less its last CUT x i tokens (when more than 8 remain).
+/// Slot i's prompt is `prompt` less its last CUT x i tokens (when more than 8 remain).
 pub fn cutOf(prompt_len: usize, i: u32) usize {
     const c = @as(usize, cut) * i;
     return if (prompt_len > c + 8) prompt_len - c else prompt_len;

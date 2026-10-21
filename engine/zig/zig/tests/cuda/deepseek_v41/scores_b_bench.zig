@@ -1,16 +1,4 @@
-//! The row-bounded index scores (scores_b.py's `_scores_b`, TF_DSV41_INDEX_BOUND) against the served `_scores`
-//! (csa2/index.py, dense: GATHER off) at prod's indexer shapes (H 32, D 128, BP 64; ratio 2 / PSH 7 and ratio 1 /
-//! PSH 8: the variants prod's fill holds), on synthetic data: random bf16 queries and head weights, random e4m3 key
-//! rows (NaN codes avoided) with scale 0.0625, per-slot page tables over one shared key pool.
-//!
-//! Cases: a row window of 24 rows in row mode (ROWS: q = POS[r], keys through slot SL[r]'s page table) mixing 20 rows
-//! of three short slots (positions ~4K) with 4 rows of a 154K slot, NK the long slot's keys - the mix a 131K stream
-//! beside short streams runs, every short row scoring the long bucket today; the same 24 rows all long; and a one-slot
-//! window (ROWS off) of 16 rows at 150K. Each kernel runs once into its own poisoned OUT, the whole [rows, NK] fp32
-//! output is compared bit for bit, then each is timed with events (2 warm-ups, the median of `reps`). The kernels come
-//! from a Triton AOT set (aot.json + cubins/); a variant missing from it is SKIPPED (never PASS).
-//!
-//!   tf-dsv41-test scores-b <aot dir> [--reps 20]
+//! Row-bounded index scores (TF_DSV41_INDEX_BOUND) against the dense `_scores`: bit-exact, then timed (scores-b <aot>).
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -22,8 +10,7 @@ const Gpu = check.Gpu;
 const H = 32;
 const D = 128;
 const BP = 64;
-/// graphs.Settings.bucket: a served window's keys end at a multiple of it (Triton's div16 specialization of NK, the
-/// strides and PTS: the served variants)
+/// graphs.Settings.bucket: a served window's keys end at a multiple of it (the served variants' div16 NK / strides).
 const bucket: i64 = 2048;
 const LONG: i64 = 154_183; // the bench's 131K prompt (long-131072: 154,183 prompt tokens)
 
@@ -82,21 +69,21 @@ const Bufs = struct { qi: u64, w: u64, ik: u64, pos: u64, sl: u64, pt: u64, pts:
 fn launch(set: *const aot.Set, stream: cuda.Stream, a: std.mem.Allocator, bounded: bool, b: Bufs, s: Shape, c: Case, nk: i64, out: u64) !void {
     var args: std.ArrayList(aot.Arg) = .empty;
     try args.appendSlice(a, &.{
-        aot.ptr("QI", "*bf16", b.qi),       aot.ptr("W", "*bf16", b.w),
-        aot.int("w_stride", H),             aot.ptr("IK", "*u8", b.ik),
-        aot.ptr("OUT", "*fp32", out),       aot.ptr("POS", if (c.rows_mode) "*i64" else "*i32", b.pos),
-        aot.ptr("KEYS", "*fp32", out),      aot.int("k_stride", @intCast(nk)),
-        aot.int("NK", @intCast(nk)),        aot.int("o_stride", @intCast(nk)),
-        aot.ptr("PT", "*i32", b.pt),        aot.int("PTS", @intCast(b.pts)),
+        aot.ptr("QI", "*bf16", b.qi),  aot.ptr("W", "*bf16", b.w),
+        aot.int("w_stride", H),        aot.ptr("IK", "*u8", b.ik),
+        aot.ptr("OUT", "*fp32", out),  aot.ptr("POS", if (c.rows_mode) "*i64" else "*i32", b.pos),
+        aot.ptr("KEYS", "*fp32", out), aot.int("k_stride", @intCast(nk)),
+        aot.int("NK", @intCast(nk)),   aot.int("o_stride", @intCast(nk)),
+        aot.ptr("PT", "*i32", b.pt),   aot.int("PTS", @intCast(b.pts)),
     });
     if (c.rows_mode) try args.append(a, aot.ptr("SL", "*i64", b.sl));
     var consts: std.ArrayList(aot.Const) = .empty;
     try consts.appendSlice(a, &.{
-        aot.ci("RATIO", s.ratio),                               aot.ci("H", H),
-        aot.ci("D", D),                                         aot.ci("BP", BP),
-        aot.cf("WS", @floatCast(1.0 / @sqrt(@as(f64, H)))),     aot.cf("SCALE", @floatCast(1.0 / @sqrt(@as(f64, D)))),
-        aot.ci("GATHER", 0),                                    aot.ci("PSH", s.psh),
-        aot.ci("KFP8", 1),                                      aot.ci("ROWS", @intFromBool(c.rows_mode)),
+        aot.ci("RATIO", s.ratio),                           aot.ci("H", H),
+        aot.ci("D", D),                                     aot.ci("BP", BP),
+        aot.cf("WS", @floatCast(1.0 / @sqrt(@as(f64, H)))), aot.cf("SCALE", @floatCast(1.0 / @sqrt(@as(f64, D)))),
+        aot.ci("GATHER", 0),                                aot.ci("PSH", s.psh),
+        aot.ci("KFP8", 1),                                  aot.ci("ROWS", @intFromBool(c.rows_mode)),
         aot.ci("CBS", 0),
     });
     const grid = [3]u32{ @intCast(c.rows.len), @intCast(@divFloor(nk + BP - 1, BP)), 1 };
@@ -136,7 +123,7 @@ pub fn run(gpu: Gpu, rest: []const [:0]const u8) !void {
     for (wh) |*v| v.* = @truncate(@as(u32, @bitCast(2.0 * rng.unit() - 1.0)) >> 16);
     var w = try cuda.DeviceBuffer.fromHost(d, std.mem.sliceAsBytes(wh));
     defer w.free();
-    // one key pool, sized for the most keys (ratio 1 at LONG + 64), FP8 rows: D e4m3 bytes (no NaN), then the fp32 scale
+    // one key pool sized for ratio 1 at LONG + 64; FP8 rows: D e4m3 bytes (no NaN), then the fp32 scale
     const pool_pages: usize = ((@as(usize, @intCast(LONG)) + 64) >> 7) + 2;
     const key_rows: usize = pool_pages << 7;
     const ikh = try gpa.alloc(u8, key_rows * (D + 4));
@@ -159,8 +146,7 @@ pub fn run(gpu: Gpu, rest: []const [:0]const u8) !void {
     for (shapes) |s| for (cases) |c| {
         _ = arena_state.reset(.retain_capacity);
         const a = arena_state.allocator();
-        // page tables: 4 slots, each a permutation-free offset into the pool (slot k starts k x 7 pages in), PTS pages a slot
-        // a slot's page-table row: the served pool's pages a slot are a multiple of 16 (PTS, div16 in every served variant)
+        // page tables: 4 slots, slot k starts k x 7 pages in; pages a slot a multiple of 16 as in every served variant
         const pages_a_slot: usize = std.mem.alignForward(usize, (@as(usize, @intCast(@divFloor(std.mem.alignForward(i64, LONG + 64, bucket), s.ratio))) >> s.psh) + 2, 16);
         const pool_pages_s = key_rows >> s.psh;
         const pth = try a.alloc(i32, 4 * pages_a_slot);
@@ -171,8 +157,7 @@ pub fn run(gpu: Gpu, rest: []const [:0]const u8) !void {
         defer pt.free();
         var last: i64 = 0;
         for (c.rows) |r| last = @max(last, r[1]);
-        // the served window's NK: its context bucket's end (a 2,048-token step) over the ratio (a multiple of 16, as
-        // every served row-mode variant's NK / strides); rows past their own visible keys are -inf in both kernels
+        // NK: the context bucket's end over the ratio; rows past their own visible keys are -inf in both kernels
         const nk = @divFloor(std.mem.alignForward(i64, last + 1, bucket), s.ratio);
         const R = c.rows.len;
         var pos = try cuda.DeviceBuffer.alloc(d, 8 * R);

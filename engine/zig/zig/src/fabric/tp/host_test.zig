@@ -155,7 +155,7 @@ const VarGather = struct {
             for (0..world) |r| {
                 const len: usize = @intCast(lens[r]);
                 try std.testing.expectEqualSlices(u8, ins[r][0..len], out[r * stride ..][0..len]);
-                // past a length: the transport's choice (here: untouched, or the whole stride where device lengths are refused)
+                // past a length: the transport's choice (untouched here, or the whole stride where lengths are refused)
                 const past = out[r * stride + len .. (r + 1) * stride];
                 if (whole) try std.testing.expectEqualSlices(u8, ins[r][len..], past) else for (past) |x| try std.testing.expectEqual(@as(u8, 0xEE), x);
             }

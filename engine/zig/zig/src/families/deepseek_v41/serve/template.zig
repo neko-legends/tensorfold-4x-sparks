@@ -1,15 +1,4 @@
-//! DeepSeek-V4.1's chat encoding: OpenAI-shaped messages to the prompt text, as the Python engine's
-//! ``encoding.encode`` renders it (DeepSeek's ``encode_messages`` plus TensorFold's serving rules) and as the release
-//! ``chat_template.jinja`` renders the conversations it accepts.
-//!
-//! The format: ``<｜begin▁of▁sentence｜>``, a ``<｜System｜>`` lead with ``Reasoning Effort: N (range 1-100, ...)`` in
-//! thinking mode, ``<｜User｜>`` turns (tool results merged into them as ``<tool_result>`` blocks in call order),
-//! ``<｜Assistant｜>`` + ``<think>`` (thinking) or ``</think>`` (chat), assistant turns as ``reasoning</think>content``
-//! + ``\n\n<｜DSML｜ calls>`` blocks + ``<｜end▁of▁sentence｜>``. Reasoning before the last user turn is dropped unless
-//! the conversation has tools (``drop_thinking``). Serving rules: tools and ``response_format`` join the first system
-//! message (an empty one is added); ``content`` as text parts, ``null`` or other JSON; tool-call ``arguments`` as JSON
-//! strings; ``reasoning`` for ``reasoning_content``; image parts through ``Options.image`` (else refused); a typed
-//! ``<｜deepseek_image｜>`` is escaped to plain text everywhere.
+//! DeepSeek-V4.1 chat encoding: OpenAI-shaped messages to prompt text, as the release chat template + serving rules.
 const std = @import("std");
 const json = @import("json");
 const Value = json.Value;
@@ -30,8 +19,7 @@ pub const IMAGE = "<｜deepseek_image｜>";
 /// A zero-width space after ``<``: the same text, ordinary BPE tokens, never the image id.
 pub const IMAGE_ESCAPED = "<\u{200b}｜deepseek_image｜>";
 
-/// ``reasoning_effort`` names as the Python app reads them (``app.py`` ``FIELD_EFFORTS``; the prompt must be the
-/// one prod renders): none / minimal turn thinking off. The release chat_template.jinja maps medium to 62 instead.
+/// ``reasoning_effort`` names as the server reads them: none / minimal turn thinking off (the jinja maps medium to 62).
 pub const efforts = [_]struct { []const u8, ?u8 }{ .{ "none", null }, .{ "minimal", null }, .{ "low", 50 }, .{ "medium", 75 }, .{ "high", 75 }, .{ "xhigh", 100 }, .{ "max", 100 } };
 pub const default_budget: u8 = 75;
 
@@ -60,8 +48,7 @@ pub const Options = struct {
 /// A refusal's message (HTTP 400), set when ``render`` returns error.Refused.
 pub const Problem = struct { message: []const u8 = "" };
 
-/// A ``reasoning_effort`` value (``app._level``): null for one the app refuses, ``.{null}`` (thinking off) for
-/// none / minimal, else the 1-100 budget. Names are read stripped and lower-cased; digits only, as ``str.isdigit``.
+/// A ``reasoning_effort`` value: null if refused, ``.{null}`` for none / minimal, else 1-100 (names trimmed, lower).
 pub fn effortOf(s: []const u8) ??u8 {
     var buf: [16]u8 = undefined;
     const trimmed = std.mem.trim(u8, s, " \t\n\r");
@@ -120,12 +107,12 @@ const R = struct {
     }
 };
 
-/// ``json.dumps(v, ensure_ascii=False)``.
+/// JSON text of ``v`` without ASCII escaping.
 pub fn dumps(a: Allocator, v: Value) Allocator.Error![]u8 {
     return json.stringify(a, v, .{ .ascii = false }) catch error.OutOfMemory;
 }
 
-/// Python's ``str(x)`` for the scalars a text part may hold; null for containers.
+/// The text form of the scalars a text part may hold; null for containers.
 fn scalarText(a: Allocator, v: Value) Allocator.Error!?[]const u8 {
     return switch (v) {
         .string => |s| s,
@@ -180,7 +167,7 @@ fn text(r: *R, content: ?Value, where: []const u8, index: usize, image: ?ImageHo
     }
 }
 
-/// ``_tool_name``: ``namespace::name`` from a namespace (string or {"name"}) and a name that may carry its own.
+/// ``namespace::name`` from a namespace (string or {"name"}) and a name that may carry its own.
 fn qualifiedName(a: Allocator, fn_obj: Value, namespace: ?Value) Allocator.Error!?[]const u8 {
     const raw = fn_obj.get("name") orelse return null;
     const name = try scalarText(a, raw) orelse try dumps(a, raw);
@@ -201,7 +188,7 @@ fn qualifiedName(a: Allocator, fn_obj: Value, namespace: ?Value) Allocator.Error
     return bare;
 }
 
-/// ``tool_functions``: the function definitions the system block lists, names qualified, in their own key order.
+/// The function definitions the system block lists, names qualified, in their own key order.
 fn toolFunction(r: *R, tool: Value) Error!Value {
     if (tool != .object) return r.refuse("tools must be a list of objects", .{});
     const inner = tool.get("function");
@@ -239,7 +226,7 @@ fn renderTools(r: *R, tools: []const Value) Error!void {
     try r.put(tools_tail);
 }
 
-/// ``arguments_dict``: a dict as given; a JSON string (even double-encoded) read; anything else ``{"arguments": raw}``.
+/// Tool-call arguments: a dict as given; a JSON string (even double-encoded) read; else ``{"arguments": raw}``.
 fn argumentsOf(a: Allocator, raw: ?Value) Allocator.Error!*json.Object {
     var v = raw orelse Value.null;
     for (0..2) |_| {
@@ -293,7 +280,7 @@ fn callId(c: Value) []const u8 {
     return "";
 }
 
-/// ``normalize`` then ``_merge_tools``: roles checked, contents as text, tool results merged into user turns.
+/// Roles checked, contents as text, tool results merged into user turns.
 fn messagesOf(r: *R, messages: Value, o: Options) Error![]Msg {
     if (messages != .array or messages.array.len == 0) return r.refuse("messages must be a non-empty list", .{});
     var list: std.ArrayList(Msg) = .empty;
@@ -364,7 +351,7 @@ fn messagesOf(r: *R, messages: Value, o: Options) Error![]Msg {
             fn lt(_: void, x: Block, y: Block) bool {
                 return x.rank < y.rank;
             }
-        }.lt); // stable, as Python's sorted
+        }.lt); // stable sort
         var k: usize = 0;
         for (m.blocks.items) |*b| if (b.tool) {
             b.* = tools.items[k];
@@ -450,7 +437,7 @@ pub fn escapeImage(a: Allocator, s: []u8) Allocator.Error![]u8 {
     return std.mem.replaceOwned(u8, a, s, IMAGE, IMAGE_ESCAPED);
 }
 
-/// What follows a prompt's last user turn (``generation_prefix``).
+/// What follows a prompt's last user turn.
 pub fn generationPrefix(thinking: bool) []const u8 {
     return if (thinking) ASSISTANT ++ THINK_OPEN else ASSISTANT ++ THINK_END;
 }

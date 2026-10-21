@@ -1,31 +1,31 @@
-//! M2's forward: a slot's decode windows over the whole model, block.zig's program (launches + glue) run by run.zig
-//! on this rank, the exchanges over the TP Collective. One slot: contiguous state (the gates' reference), or the paged
-//! KV pool with split KV and sessions (M5, `kv`: kv_state.zig);
-//! the window's calls are emitted once a row bucket and reused (the same launches every window of that size: graphs
-//! capture them in R4). Glue steps whose kernel is not in dsv41_kernels yet fail with GlueNotBuilt (named), so a run
-//! says exactly what is missing.
+//! The decode forward: a slot's windows over the whole model, block.zig's program run by run.zig, TP exchanges.
 
 const std = @import("std");
 const cuda = @import("cuda");
 const tp = @import("tp");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const buffers = @import("buffers.zig");
 const run = @import("run.zig");
 const Config = @import("config.zig").Config;
 const eh = @import("engram_host.zig");
-const vision_rows = @import("vision_rows.zig");
 const graphs = @import("graphs.zig");
 const round_graph = @import("round_graph.zig");
 const pf = @import("forward_prefill.zig");
-const kvs = @import("kv_state.zig");
-const er = @import("engram_rows.zig");
 const egate = @import("engram_gate.zig");
-const kops = @import("dsv41_kernels").ops;
 const greedy_host = @import("greedy.zig");
+const hooks = @import("forward_hooks.zig");
+const ft = @import("forward_types.zig");
+const kvs = @import("cuda_kv.zig");
+const er = @import("engram_rows.zig");
+pub const kops = @import("dsv41_kernels").ops;
 const ph = @import("phases.zig");
 const hs = @import("host_stage.zig");
-const ced = @import("ced.zig");
+const fwd_sample = @import("forward_sample.zig");
+const fwd_follow = @import("forward_follow.zig");
+const fwd_glue = @import("forward_glue.zig");
+const fwd_engram = @import("forward_engram.zig");
+const fwd_graph = @import("forward_graph.zig");
 
 pub const Error = error{ GlueNotBuilt, BadWindow };
 
@@ -38,7 +38,7 @@ pub const Slot = struct {
     /// the window in flight: its first position, its rows
     pending: ?struct { start: u64, n: u32 } = null,
     /// CED replay (TF_DSV41_PREFILL=replay): the positions and ids of the stash ring "s.ced.*" (ced.zig)
-    ced: ced.Stash = .{},
+    ced: ft.Stash = .{},
 };
 
 pub const Forward = struct {
@@ -52,15 +52,16 @@ pub const Forward = struct {
     arena: std.heap.ArenaAllocator,
     programs: std.AutoHashMapUnmanaged(u32, []const calls.Call) = .empty,
     slot: Slot = .{},
+    transaction: @import("cuda_transaction.zig").Transaction = .{},
     /// pinned staging of the window's token ids, and their device copy (int64, the embedding step reads them)
     ids_stage: hs.Stage = .{},
+    uploads: hs.Stage = .{},
+    init_owners: std.ArrayList(@import("construction.zig").Owner) = .empty,
     dev_ids: ?cuda.DeviceBuffer = null,
-    /// Engram's hasher (tools/zig/dsv41_engram_host.py's tables) and the rows' source; M2a: the synthetic rows
+    /// Engram's hasher (recipe/dsv41_engram_host.py's tables) and the rows' source; none: the synthetic rows
     engram: ?*const eh.Host = null,
     gathered: ?cuda.DeviceBuffer = null,
-    /// Engram's own pinned staging, one a layer of the table (the ids' staging may still be in flight: one buffer a
-    /// producer; a prompt segment's layer-14 rows are written while its layer-1 copy may still be queued)
-    rows_stage: [eh.max_layers]hs.Stage = @splat(.{}),
+    rows_stage: [eh.max_layers]hs.Stage = @splat(.{}), // Engram's own pinned staging, one a layer (copies may overlap)
     /// a bf16 [rows, hidden] send buffer for the exchanges whose partial is not bf16 already (embedding, MoE)
     send: ?cuda.DeviceBuffer = null,
     /// the window's token ids (the embedding step reads them; window() copies them into ids_own)
@@ -69,89 +70,72 @@ pub const Forward = struct {
     images: bool = false,
     /// TF_DSV41_BIAS_VL loaded (every rank): image rows route with gate.bias_vl ("L<i>.moe.bias_vl")
     image_bias: bool = false,
-    vision: ?*vision_rows.Rows = null,
+    vision: ?*anyopaque = null, // vision_rows.Rows
     ids_own: std.ArrayList(u32) = .empty,
-    /// the backbone layers the forward runs (all of them unless a gate runs a prefix: M2a's 0-24)
+    /// the backbone layers the forward runs (all of them unless a gate runs a prefix)
     layers: ?[]const u32 = null,
     /// TP: rank 0 leads (sends each forward operation to the others over the plan link); the others `follow`
     link: ?*tp.planlink.PlanLink = null,
     /// a follower's drafter (the leader's lanes ask its pass; every rank runs it)
     drafter: ?Drafter = null,
-    /// M2a: each block's traced streams (block.Options.trace) as SHA-256 hex by layer, for the last window
+    /// each block's traced streams (block.Options.trace) as SHA-256 hex by layer, for the last window
     trace: ?*std.AutoArrayHashMapUnmanaged(u32, [64]u8) = null,
     /// the largest row bucket plan() sized the buffers for (a graphed window never has more rows)
     planned_rows: u32 = 0,
-    /// R4: decode windows through CUDA graphs (graphs.zig), TF_DSV41_GRAPHS=1 on every rank; null until the first
-    /// window reads the knob, then off (eager, the gated path) unless it is set
-    graphed: ?*Graphed = null,
+    graphed: ?*Graphed = null, // decode windows through CUDA graphs (TF_DSV41_GRAPHS=1); null until the knob is read
     graphs_read: bool = false,
-    /// the graphs' default when TF_DSV41_GRAPHS is unset (model.zig: on for M4's served model; the gates' drivers: off)
+    /// the graphs' default when TF_DSV41_GRAPHS is unset (model.zig: on for the served model; the gates' drivers: off)
     graphs_default: bool = false,
-    /// R3: Engram's local shards (TF_DSV41_ENGRAM_DIR, engram_rows.zig), opened on first use; unset: M2a's index rows
+    /// Engram's local shards (TF_DSV41_ENGRAM_DIR, engram_rows.zig), opened on first use; unset: synthetic index rows
     engram_rows: ?*er.Rows = null,
     engram_opened: bool = false,
-    /// R3's read-ahead at the DSpark pass (TF_DSV41_ENGRAM_PREFETCH=0: rows read when the window needs them; same bits)
-    engram_prefetch: bool = false,
-    /// TF_DSV41_ENGRAM_GATE (engram_gate.zig): opened with the table; `gated`: the window being issued armed it, so its
-    /// engram_rows steps launch the gate kernel instead of copying staged rows
-    gate: ?*egate.Gate = null,
-    gated: bool = false,
+    /// Engram read-ahead at the DSpark pass (TF_DSV41_ENGRAM_PREFETCH=0: rows read when the window needs them)
+    engram_prefetch: bool = true,
+    gate: ?*anyopaque = null, // TF_DSV41_ENGRAM_GATE: opened with the table (engram_gate.Gate)
+    gated: bool = false, // the window being issued armed the gate: its engram_rows steps launch the gate kernel
     /// TF_DSV41_ROUND_GRAPH's `gate`: recorded after each gated window, the gate's arm waits for it (not the stream)
     gated_end: ?cuda.Event = null,
     /// TF_DSV41_BRANCHES / TF_DSV41_MHC_DEFER (branches.zig): the runner's side streams, owned here
-    branches: ?*@import("branches.zig").Branches = null,
+    branches: ?*anyopaque = null, // branches.Branches
     /// TF_DSV41_PHASES (phases.zig): the window path's timers
     phases: ?*ph.Phases = null,
     /// greedy's pinned logits / pairs staging and device pairs, kept across windows
     pick_host: ?cuda.HostBuffer = null,
     pick_dev: ?cuda.DeviceBuffer = null,
-    /// TF_DSV41_GREEDY_GPU=1 (Python's cand_gather): each rank's best column on the GPU (topk_keys, k 1), only the
-    /// (value, column) pairs copied back; null: not read yet
-    greedy_gpu: ?bool = null,
+    greedy_gpu: ?bool = null, // TF_DSV41_GREEDY_GPU=1: each rank's best column on GPU, pairs copied back; null: unread
     greedy_dev: ?cuda.DeviceBuffer = null,
     /// the last GPU pick on the device (`pickDevice`), null when it was merged on the host
     pick_last: ?PickDevice = null,
-    /// TF_DSV41_DRAFT_GRAPHS with TF_DSV41_SPEC_DRAFT (dspark_gpu.zig): enqueued after the device pick; `pick_done`
-    /// the copy back's event the host waits on then
-    after_pick: ?AfterPick = null,
+    after_pick: ?AfterPick = null, // TF_DSV41_DRAFT_GRAPHS + TF_DSV41_SPEC_DRAFT: enqueued after the device pick
     after_sample: ?AfterSample = null,
-    pick_done: ?cuda.Event = null,
-    /// the prefill's state (forward_prefill.zig)
+    pick_done: ?cuda.Event = null, // the pick's copy-back event the host waits on
+    /// the prefill's state (forward_prefill.State, forward_prefill.st), made at engine open
     prefill_state: pf.State = .{},
     /// rows of "w.logits" the last prefill left (its last segment's, or its tail's): greedy takes out[0..last_rows]
     last_rows: u32 = 0,
     /// rank 0 inside a prefill: its windows and keeps are the followers' own (they got the whole prompt), not sent
     quiet: bool = false,
-    /// M5: the KV families in the paged pool (null: the slot's contiguous buffers); opts.pool is its emitter view
+    /// the KV families in the paged pool (null: the slot's contiguous buffers); opts.pool is its emitter view
     kv: ?*kvs.Kv = null,
-    /// M5: the session store (sessions_gpu.zig): the ids each keep commits, and the operations a follower runs
+    /// the session store (sessions_gpu.zig): the ids each keep commits, and the operations a follower runs
     sess: ?Sess = null,
-    /// a workstream's plan-link operations (docs 0a's ranges; slots.zig 16-19), run by a follower in the leader's order
+    /// a workstream's plan-link operations (slots.zig 16-19), run by a follower in the leader's order
     ext: ?Ext = null,
     /// rank 0's clean stop of every rank (model.zig: the TP session's announceStop), run by `stop`
     on_stop: ?struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque) void } = null,
-    /// several live slots (slots.zig): a multi-segment prefill run's slot switch, on this rank only (every rank runs the
-    /// same run); null: one slot, no runs
-    pf_switch: ?PfSwitch = null,
-    /// with `pf_switch`: the CED stash ring made the current slot's before a stash step reads or writes it (slots.zig
-    /// swaps it lazily: a run's slot switches leave it where it is)
-    pf_stash: ?PfStash = null,
+    pf_switch: ?PfSwitch = null, // several live slots: a multi-segment prefill run's slot switch; null: one slot
+    pf_stash: ?PfStash = null, // the CED stash ring made the current slot's before a stash step (swapped lazily)
     /// the multi-segment prefill run in flight (forward_prefill.promptMulti; its glue reads it), null outside one
-    multi: ?*pf.Multi = null,
+    multi: ?*ft.Multi = null,
     /// the keyed sampler (sampling_gpu.zig): a follower runs rank 0's sampled choices too (their gathers pair up)
     sampler: ?Sampler = null,
-    /// structured output (grammar_gpu.zig, TF_DSV41_GRAMMAR=1): staged grammar masks applied to "w.logits" before a
-    /// pick reads them; a follower runs rank 0's op_grammar messages
-    grammar: ?Grammar = null,
-    /// TF_DSV41_CALIB=measure (calib_gpu.zig): a follower's clock at each op_calib_mark (after a device sync), until the
-    /// leader's op_calib_gather pairs them up into this rank's samples
-    calib_marks: std.ArrayList(u64) = .empty,
+    grammar: ?Grammar = null, // TF_DSV41_GRAMMAR=1: grammar masks applied to "w.logits" before a pick
+    calib_marks: std.ArrayList(u64) = .empty, // TF_DSV41_CALIB=measure: a follower's clock at each op_calib_mark
 
     pub fn init(gpa: std.mem.Allocator, cfg: *const Config, widths: *const block.Widths, opts: block.Options, runner: *run.Runner, comm: tp.collective.Collective) Forward {
-        // the emitters' uneven shards (block.Options.expertWidth / vocabShard) are this communicator's rank's
-        var o = opts;
-        o.rank = @intCast(comm.rank());
-        return .{ .gpa = gpa, .cfg = cfg, .widths = widths, .opts = o, .runner = runner, .comm = comm, .arena = std.heap.ArenaAllocator.init(gpa) };
+        // rank and world ride the options (model.zig sets them from the same communicator): the emitters' uneven
+        // shards (block.Options.expertWidth / vocabShard) are that rank's, and a test may pass no communicator
+        return .{ .gpa = gpa, .cfg = cfg, .widths = widths, .opts = opts, .runner = runner, .comm = comm, .arena = std.heap.ArenaAllocator.init(gpa) };
     }
 
     /// This rank's head columns: [lo, lo + len) of the vocabulary on whole 128-blocks (shard.zig; uneven at TP=4), and
@@ -160,26 +144,46 @@ pub const Forward = struct {
         return block.shard.checked(f.cfg.vocab, @intCast(f.comm.world()), @intCast(f.comm.rank()));
     }
 
+    pub fn upload(f: *Forward, destination: u64, bytes: []const u8) !void {
+        const owned = try f.uploads.take(f.runner.d, bytes.len);
+        @memcpy(owned, bytes);
+        try f.uploads.copyTo(.{ .d = f.runner.d, .ptr = destination, .len = bytes.len }, 0, f.runner.stream);
+        try f.uploads.wait();
+    }
+    pub fn drain(f: *Forward) !void {
+        if (f.init_owners.items.len > 0) try f.runner.d.synchronize();
+        try f.runner.stream.synchronize();
+        try f.ids_stage.wait();
+        try f.uploads.wait();
+        for (&f.rows_stage) |*x| try x.wait();
+        if (f.graphed) |g| try g.drain();
+    }
+    pub fn close(f: *Forward) !void {
+        try f.drain();
+        f.deinitAfterDrain();
+    }
+    /// The fork's plain teardown for the debug drivers (m1/m2a/m2b): a failed drain is the process exit's problem.
     pub fn deinit(f: *Forward) void {
+        f.close() catch {};
+    }
+    pub fn deinitAfterDrain(f: *Forward) void {
+        @import("construction.zig").deinit(f);
+        f.ids_stage.close() catch unreachable;
+        f.uploads.close() catch unreachable;
+        for (&f.rows_stage) |*x| x.close() catch unreachable;
+        f.transaction.deinit(f.gpa);
         if (f.graphed) |g| {
-            g.deinit();
+            g.deinitAfterDrain();
             f.gpa.destroy(g);
         }
-        f.ids_stage.deinit();
         if (f.dev_ids) |*b| b.free();
         if (f.send) |*b| b.free();
         if (f.gathered) |*b| b.free();
-        for (&f.rows_stage) |*x| x.deinit();
-        f.prefill_state.deinit(f.gpa);
+        if (hooks.set.prefill != null) hooks.set.prefill.?.deinit(f);
         f.calib_marks.deinit(f.gpa);
-        if (f.gate) |x| x.close();
+        if (f.gate) |x| hooks.set.gate.?.close(x);
         if (f.engram_rows) |x| x.close();
-        if (f.branches) |b| {
-            f.runner.br = null;
-            f.runner.dfr = null;
-            b.deinit();
-            f.gpa.destroy(b);
-        }
+        if (f.branches != null) hooks.set.branches.?.close(f);
         if (f.pick_host) |*b| b.free();
         if (f.pick_dev) |*b| b.free();
         if (f.greedy_dev) |*b| b.free();
@@ -206,8 +210,7 @@ pub const Forward = struct {
         return p;
     }
 
-    /// The calls of an `n`-row window at the slot's last position: the largest every role gets (the buffer plan sizes
-    /// from it). A window's own calls depend on its position (the indexer's key count), so window() emits them anew.
+    /// The calls of an `n`-row window at the slot's last position (the largest every role gets; plans size from it).
     pub fn program(f: *Forward, n: u32) ![]const calls.Call {
         if (f.programs.get(n)) |cs| return cs;
         const a = f.arena.allocator();
@@ -217,16 +220,15 @@ pub const Forward = struct {
         return cs;
     }
 
-    /// Adds the prefill program's roles (block_prefill.zig, segments of up to `rows` rows) to `p`, before bind.
-    /// Shared roles take the larger size; the decode roles stay.
+    /// Adds the prefill program's roles (segments of up to `rows` rows) to `p` before bind; shared roles: the larger.
     pub fn planPrefill(f: *Forward, p: *buffers.Plan, rows: u32) !void {
-        return pf.plan(f, p, rows);
+        return (try hooks.prefill()).plan(f, p, rows);
     }
 
-    /// The next prompt piece's ids, read ahead behind the coming `prefill` call's last segment (forward_prefill's
-    /// `next`; TF_DSV41_PREFETCH_AHEAD): every rank, [op, ids...]. I/O only: a wrong guess costs a read, never a bit.
+    /// The next prompt piece's ids for the Engram read-ahead (TF_DSV41_PREFETCH_AHEAD), every rank; I/O only.
     pub fn prefillAhead(f: *Forward, next: []const u32) !void {
-        if (!f.prefill_state.ahead or next.len == 0) return;
+        const ahead = (try hooks.prefill()).ahead(f) orelse return;
+        if (next.len == 0) return;
         if (f.leads()) {
             const msg = try f.gpa.alloc(i64, 1 + next.len);
             defer f.gpa.free(msg);
@@ -234,13 +236,11 @@ pub const Forward = struct {
             for (next, msg[1..]) |t, *y| y.* = t;
             try f.link.?.send(msg);
         }
-        f.prefill_state.next.clearRetainingCapacity();
-        try f.prefill_state.next.appendSlice(f.gpa, next);
+        ahead.clearRetainingCapacity();
+        try ahead.appendSlice(f.gpa, next);
     }
 
-    /// The prompt `ids` from the slot's position (forward_prefill.zig): segments of opts.prefill_rows rows, each run
-    /// then kept whole; a tail of at most 16 rows as decode windows. After it the position has moved by ids.len,
-    /// nothing is pending, and "w.logits" holds `last_rows` rows (the caller's greedy(out[0..last_rows]), last row).
+    /// The prompt `ids` from the slot's position: segments kept whole, a tail of at most 16 rows as decode windows.
     pub fn prefill(f: *Forward, ids: []const u32) !void {
         if (f.slot.pending != null) return error.BadWindow;
         if (ids.len == 0) return;
@@ -262,19 +262,20 @@ pub const Forward = struct {
         }
         f.quiet = true;
         defer f.quiet = false;
-        return pf.prompt(f, ids);
+        return (try hooks.prefill()).prompt(f, ids);
     }
 
     /// One decode window: `ids` at the slot's position. This rank's logits stay in the runner's "w.logits".
     pub fn window(f: *Forward, ids_in: []const u32) !void {
-        // the forward's own copy: keep() reads the ids (Engram's tail) after the caller's slice may be gone (lanes
-        // hands a stack row or a scratch arena reset before the keep)
+        // the forward's own copy: keep() reads the ids (Engram's tail) after the caller's slice may be gone
         if (ids_in.ptr != f.ids_own.items.ptr) {
             f.ids_own.clearRetainingCapacity();
             try f.ids_own.appendSlice(f.gpa, ids_in);
         }
         const ids = f.ids_own.items;
         if (ids.len == 0 or f.slot.pending != null) return error.BadWindow;
+        // no embed of a window fills image rows (graphed: never; eager: no keep or bias), so image ids fail here
+        if (hooks.set.vision) |v| try v.checkWindow(ids);
         // the pool's pages for the window's positions, their table entries up before the launches (every rank alike)
         if (f.kv) |kx| try kx.reserve(f.slot.pos + ids.len);
         if (f.leads()) {
@@ -291,6 +292,7 @@ pub const Forward = struct {
         const tf = ph.start(f.phases, .forward);
         defer tf.stop();
         f.runner.rows = @intCast(ids.len); // l2pf: wider windows skip the prefetch sites
+        try f.transaction.begin(f, @intCast(ids.len));
         if (try f.graphedWindow(ids)) return f.gatedEnd();
         // the gate (its worker reads every layer at once) or every layer's reads in flight while the calls are emitted
         f.gated = try f.armEngram(&.{.{ .ids = ids, .tail = f.slot.tail[0..f.slot.tail_len] }}, @intCast(ids.len));
@@ -405,40 +407,24 @@ pub const Forward = struct {
         }
     }
 
-    /// The GPU pick's device scratch: [n] fp32 values, [n] int64 columns, [n] int64 window ids, [n + 3] int64 out.
-    fn greedyScratch(f: *Forward, r: *run.Runner, n: usize) !u64 {
-        const bytes = std.mem.alignForward(usize, 4 * n, 16) + 8 * n + 8 * n + 8 * (n + 3);
-        if (f.greedy_dev == null or f.greedy_dev.?.len < bytes) {
-            if (f.greedy_dev) |*b| b.free();
-            f.greedy_dev = null;
-            f.greedy_dev = try cuda.DeviceBuffer.alloc(r.d, @max(bytes, 4096));
-        }
-        return f.greedy_dev.?.ptr;
-    }
-
-    /// The last window's pick on the device (TF_DSV41_GREEDY_GPU with glue.cu's pick kernels), for work that starts
-    /// on the GPU before the host has the tokens (the DSpark pass's device start): `out` int64 [n + 3] = each row's
-    /// pick, then (a chain window, `chain`) the accepted drafts, the bonus token (= out[accepted]) and the next
-    /// position (window start + accepted + 1), valid in stream order after `greedy` returns until the next pick.
-    /// `start`: the window's first position; `host`: the pinned copy of `out`, valid once `greedy` returned
+    /// The last window's pick on the device: `out` int64 [n + 3] = picks, then (chain) accepted, bonus, next position.
     pub const PickDevice = struct { out: u64, n: u32, chain: bool, start: u64 = 0, host: ?[*]const i64 = null };
 
-    /// Work enqueued from the device pick (dspark_gpu.zig's speculative pass), on every rank, after the pick's copy back
-    /// and before the host waits for it.
+    /// Work enqueued from the device pick, on every rank, after the pick's copy back and before the host waits for it.
     pub const AfterPick = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque, pick: PickDevice) anyerror!void };
 
-    /// Work enqueued from a sampled call's device choices (sampling_gpu.zig: vsample.choose, every rank), rows
-    /// [row0, row0 + n) of "w.logits" chosen into `chosen` int64 [n], before the host waits for the candidates.
+    /// Work enqueued from sampled device choices (rows [row0, row0 + n) into `chosen` int64 [n]), every rank.
     pub const AfterSample = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque, row0: u32, n: u32, chosen: u64) anyerror!void };
 
     pub fn pickDevice(f: *const Forward) ?PickDevice {
         return f.pick_last;
     }
 
-    /// Commits the pending window's first row + `accepted` drafts (Python's Forward.keep).
+    /// Commits the pending window's first row + `accepted` drafts.
     pub fn keep(f: *Forward, accepted: u32) !void {
         const p = f.slot.pending orelse return error.BadWindow;
         if (accepted >= p.n) return error.BadWindow;
+        if (f.sess) |x| if (x.reserve) |reserve| try reserve(x.ptr, f.ids[0 .. accepted + 1]);
         try f.engramCheck(); // a gated window whose rows failed: its picks are not committed
         if (f.leads()) try f.link.?.send(&.{ op_keep, accepted });
         // the ratio-2 KV sources' carry: fp32 of the accepted row of the window's compressor projection
@@ -452,6 +438,7 @@ pub const Forward = struct {
             const dst = r.addressOf(try std.fmt.bufPrint(&nb, "s.L{d}.carry", .{L})) orelse return error.Unbound;
             try r.kernels.others(r.stream).carry(src, w, 0, accepted, w, dst);
         };
+        try f.transaction.keep(accepted + 1);
         // Engram's tail: (tail + the committed ids)[-(max_ngram - 1):]
         if (f.engram) |h| {
             const keep_n = h.max_ngram - 1;
@@ -475,24 +462,20 @@ pub const Forward = struct {
         if (f.sess) |x| try x.commit(x.ptr, f.ids[0 .. accepted + 1]);
     }
 
-    const op_window: i64 = 1;
-    const op_greedy: i64 = 2;
-    const op_keep: i64 = 3;
-    const op_stop: i64 = 4;
-    const op_ds_ingest: i64 = 5;
-    const op_ds_propose: i64 = 6;
-    const op_prefill: i64 = 7;
-    /// 60: [op, ids...] the next prompt piece's ids for the coming prefill's Engram read-ahead (prefillAhead)
-    const op_ahead: i64 = 60;
-    const op_sess_save: i64 = 8;
-    const op_sess_restore: i64 = 9;
-    const op_release: i64 = 10;
-    const op_ds_reset: i64 = 11;
-    /// 12-15: the CUDA port (the keyed sampler); 12: [op, row0, n, T, top_k, top_p, min_p]
-    pub const op_sample: i64 = 12;
-    /// 13: [op, n, (row0, rows, T, top_k, top_p, min_p, seed, pos0) a segment] several keyed segments in one call
-    /// (TF_DSV41_SAMP_BATCH, sampling_gpu.chooseSegments)
-    pub const op_sample_many: i64 = 13;
+    const op_window = fwd_follow.op_window;
+    const op_greedy = fwd_follow.op_greedy;
+    const op_keep = fwd_follow.op_keep;
+    const op_stop = fwd_follow.op_stop;
+    const op_ds_ingest = fwd_follow.op_ds_ingest;
+    const op_ds_propose = fwd_follow.op_ds_propose;
+    const op_prefill = fwd_follow.op_prefill;
+    const op_ahead = fwd_follow.op_ahead;
+    const op_sess_save = fwd_follow.op_sess_save;
+    const op_sess_restore = fwd_follow.op_sess_restore;
+    const op_release = fwd_follow.op_release;
+    const op_ds_reset = fwd_follow.op_ds_reset;
+    pub const op_sample = fwd_follow.op_sample;
+    pub const op_sample_many = fwd_follow.op_sample_many;
 
     /// The sampler's side of a follower (sampling_gpu.zig): rank 0's op_sample message, run on this rank.
     pub const Sampler = struct {
@@ -500,70 +483,27 @@ pub const Forward = struct {
         follow: *const fn (ptr: *anyopaque, msg: []const i64) anyerror!void,
     };
 
-    /// Rank 0: a sampled choice's message to the followers (before its gathers).
-    pub fn sendSample(f: *Forward, ints: []const i64) !void {
-        if (f.leads()) try f.link.?.send(ints);
-    }
-    const op_tree_drop: i64 = 20;
-    /// 44-47: the CUDA port (CED replay); 44: [op, end] the decoder replay (finishPrompt); 45: a prompt snapshot
-    const op_ced_finish: i64 = 44;
-    const op_sess_prompt: i64 = 45;
-    /// 48-51: the CUDA port (sessions over several slots); 48: [op, need, n, spilled entry ids...] a request's admission
-    const op_sess_admit: i64 = 48;
+    pub const sendSample = fwd_follow.sendSample;
+    pub const dsResetOp = fwd_follow.dsResetOp;
 
-    /// 52-55: the CUDA port (multi-segment prefill runs); 52: [op, segments, (slot, start, rows) a segment, ids...];
-    /// 53: [op, n, slots...] the slots' CED decoder replays in one run (replayMulti)
-    const op_pf_multi: i64 = 52;
-    const op_ced_multi: i64 = 53;
-
-    /// Several slots' CED decoder replays in one run (forward_prefill.finishMulti, TF_DSV41_REPLAY_RUNS): every rank,
-    /// the leader's message first. `out`: each slot's replayed tail and its rows of "w.taps".
-    pub fn replayMulti(f: *Forward, slots: []const u32, out: []pf.Replayed) !void {
-        if (f.leads()) {
-            var msg: [2 + 16]i64 = undefined;
-            if (slots.len > 16) return error.BadWindow;
-            msg[0] = op_ced_multi;
-            msg[1] = @intCast(slots.len);
-            for (slots, msg[2 .. 2 + slots.len]) |s, *y| y.* = s;
-            try f.link.?.send(msg[0 .. 2 + slots.len]);
-        }
-        return pf.finishMulti(f, slots, out);
-    }
+    const op_tree_drop = fwd_follow.op_tree_drop;
+    const op_ced_finish = fwd_follow.op_ced_finish;
+    const op_sess_prompt = fwd_follow.op_sess_prompt;
+    const op_sess_admit = fwd_follow.op_sess_admit;
+    const op_pf_multi = fwd_follow.op_pf_multi;
+    const op_ced_multi = fwd_follow.op_ced_multi;
+    pub const replayMulti = fwd_follow.replayMulti;
 
     /// A slot's views made current on this rank (slots.zig SlotSet.view), for a multi-segment run's segments.
     pub const PfSwitch = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque, slot: u32) anyerror!void };
     pub const PfStash = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque) anyerror!void };
 
-    /// Several slots' prompt segments in one run (forward_prefill.promptMulti, TF_DSV41_PIECE_RUNS): each segment's ids
-    /// from its slot's position, every slot's state then moved past its segment. The leader sends the run first.
-    pub fn prefillMulti(f: *Forward, segs: []const pf.MultiSeg) !void {
-        if (segs.len == 0) return;
-        f.gated = false;
-        if (f.leads()) {
-            var msg: std.ArrayList(i64) = .empty;
-            defer msg.deinit(f.gpa);
-            try msg.appendSlice(f.gpa, &.{ op_pf_multi, @intCast(segs.len) });
-            for (segs) |sg| try msg.appendSlice(f.gpa, &.{ sg.slot, @intCast(sg.start), @intCast(sg.ids.len) });
-            for (segs) |sg| for (sg.ids) |t| try msg.append(f.gpa, t);
-            try f.link.?.send(msg.items);
-        }
-        f.quiet = true;
-        defer f.quiet = false;
-        return pf.promptMulti(f, segs);
-    }
+    pub const prefillMulti = fwd_follow.prefillMulti;
+    pub const finishPrompt = fwd_follow.finishPrompt;
 
-    /// CED (TF_DSV41_PREFILL=replay, ced.zig): the decoder replay over the prompt's prefilled tail, after its last
-    /// prefill segment and before its first verify window (rounds.py `finish_prompt`), on every rank; full mode: nothing.
-    pub fn finishPrompt(f: *Forward) !void {
-        if (f.prefill_state.mode != .replay) return;
-        if (f.leads()) try f.link.?.send(&.{ op_ced_finish, @intCast(f.slot.pos) });
-        return pf.finish(f);
-    }
-    /// 28-31: the CUDA port; 28: [op, sub (bind / step / release), ...] (grammar_gpu.zig)
-    pub const op_grammar: i64 = 28;
+    pub const op_grammar = fwd_follow.op_grammar;
 
-    /// Structured output's side of the forward (grammar_gpu.zig): `apply` before a pick reads "w.logits" rows
-    /// [row0, row0 + n) (every rank, in the same order), `follow` a follower's op_grammar message.
+    /// Structured output's side of the forward: `apply` before a pick reads "w.logits", `follow` an op_grammar message.
     pub const Grammar = struct {
         ptr: *anyopaque,
         follow: *const fn (ptr: *anyopaque, msg: []const i64) anyerror!void,
@@ -573,13 +513,14 @@ pub const Forward = struct {
     /// A workstream's follower side: rank 0's message of an operation number this file does not know.
     pub const Ext = struct { ptr: *anyopaque, run: *const fn (ptr: *anyopaque, msg: []const i64) anyerror!void };
 
-    /// The session store's side of the forward (sessions_gpu.zig): `commit` hears every committed id (keep, prefill
-    /// segments); `save` / `restore` are the leader's operations the followers run in its order.
+    /// The session store's side: `commit` hears every committed id; `save` / `restore` run in the leader's order.
     pub const Sess = struct {
         ptr: *anyopaque,
         commit: *const fn (ptr: *anyopaque, ids: []const u32) anyerror!void,
+        reserve: ?*const fn (ptr: *anyopaque, ids: []const u32) anyerror!void = null,
         save: *const fn (ptr: *anyopaque) anyerror!void,
-        restore: *const fn (ptr: *anyopaque, id: u32) anyerror!void,
+        /// `ids`: an NVMe entry's ids (the leader's prompt prefix: its tokens are not indexed)
+        restore: *const fn (ptr: *anyopaque, id: u32, ids: []const i64) anyerror!void,
         /// CED replay's prompt snapshot: an entry at the slot's position, the slot keeps going (sessions_gpu.zig)
         prompt: *const fn (ptr: *anyopaque) anyerror!void,
         /// the slot empty: its pages back, the committed ids cleared
@@ -689,9 +630,6 @@ pub const Forward = struct {
         reset: *const fn (ptr: *anyopaque) void,
     };
 
-    pub fn dsResetOp() [1]i64 {
-        return .{op_ds_reset};
-    }
 
     /// Rank 0: a drafter operation to the followers (before running it).
     pub fn sendDrafter(f: *Forward, ints: []const i64) !void {
@@ -780,7 +718,9 @@ pub const Forward = struct {
                 },
                 op_sess_restore => {
                     const x = f.sess orelse return error.BadPlan;
-                    x.restore(x.ptr, @intCast(msg[1])) catch |err| return f.followSess("restore", err);
+                    const lid: u32 = @intCast(msg[1]);
+                    const lids: ?[]const i64 = if (msg.len > 2) msg[2..] else null;
+                    x.restore(x.ptr, lid, lids orelse &.{}) catch |err| return f.followSess("restore", err);
                 },
                 op_sess_prompt => {
                     const x = f.sess orelse return error.BadPlan;
@@ -954,7 +894,7 @@ pub const Forward = struct {
             const V: usize = f.cfg.vocab / W;
             const rows = try f.sendBuffer(r, 2 * n * D);
             try k.embedSend(f.dev_ids.?.ptr, n, embed.ptr, @intCast(f.comm.rank() * V), V, D, rows);
-            if (f.vision) |vr| try vr.fill(r.stream, f.ids, rows, D); // rank 0: the image positions' rows (vision.fill)
+            if (hooks.set.vision) |vr| try vr.fill(f.vision.?, r.stream, f.ids, rows, D); // rank 0: the image positions' rows (vision.fill)
             const recv = try r.tensorAddr(c.args[1].arg.t);
             try f.comm.allGather(rows, recv, n * D, .bf16, s);
             return k.embedSum(recv, W, n, D, try r.tensorAddr(c.args[0].arg.t));
@@ -1012,7 +952,7 @@ pub const Forward = struct {
 
     /// A window's Engram rows of layer L: hashes of its ids (with the slot's tail), this rank's heads' rows (M2a: the
     /// synthetic index rows), the all-gather and the column order of forward.gather_cols.
-    fn engramRows(f: *Forward, r: *run.Runner, c: *const calls.Call) !void {
+    pub fn engramRows(f: *Forward, r: *run.Runner, c: *const calls.Call) !void {
         const h = f.engram orelse return glueMissing("engram_rows (no Engram tables)");
         const L: u32 = @intCast(c.args[1].arg.i);
         const n = f.ids.len; // a multi-segment run: every segment's rows (fillEngramRows takes each with its slot's tail)
@@ -1051,12 +991,12 @@ pub const Forward = struct {
     }
 
     /// This rank's columns of an Engram row (its heads' share).
-    fn engramCols(f: *const Forward, h: *const eh.Host) usize {
+    pub fn engramCols(f: *const Forward, h: *const eh.Host) usize {
         return h.headShard(f.comm.rank(), f.comm.world())[1] * @as(usize, f.cfg.engram_head_dim);
     }
 
     /// Layer L's rows of the window's ids (with the slot's tail): the hashes, this rank's heads' index rows.
-    fn fillEngramRows(f: *Forward, h: *const eh.Host, L: u32, out: []u16) !void {
+    pub fn fillEngramRows(f: *Forward, h: *const eh.Host, L: u32, out: []u16) !void {
         const tw = ph.start(f.phases, .@"engram.wait");
         defer tw.stop();
         if (f.multi) |m| {
@@ -1092,8 +1032,14 @@ pub const Forward = struct {
                 } else std.log.scoped(.dsv41).warn("engram gate off: no packed table (TF_DSV41_ENGRAM_DIR)", .{});
             }
         }
-        if (f.gate) |g| return g.source();
+        if (gateOf(f)) |g| return g.source();
         return if (f.engram_rows) |x| x.source() else null;
+    }
+
+    /// The Engram gate behind the forward's opaque hook handle (engram_gate.Gate).
+    fn gateOf(f: *Forward) ?*egate.Gate {
+        const g = f.gate orelse return null;
+        return @ptrCast(@alignCast(g));
     }
 
     /// TF_DSV41_ENGRAM_GATE: arms the gate for a window over `items` (`fill`: its rows with a bucket's padding); false
@@ -1101,7 +1047,7 @@ pub const Forward = struct {
     pub fn armEngram(f: *Forward, items: []const egate.Item, fill: u32) !bool {
         const h = f.engram orelse return false;
         _ = try f.engramSource(h); // the table and the gate open on the first Engram window
-        const g = f.gate orelse return false;
+        const g = gateOf(f) orelse return false;
         if (!g.eligible(fill)) return false;
         const ts = ph.start(f.phases, .@"engram.wait");
         defer ts.stop();
@@ -1131,12 +1077,12 @@ pub const Forward = struct {
 
     /// The armed round's errors (a failed read, a GPU wait past the timeout); nothing when no window was gated.
     pub fn engramCheck(f: *Forward) !void {
-        if (f.gate) |g| if (f.gated) try g.check();
+        if (gateOf(f)) |g| if (f.gated) try g.check();
     }
 
     /// The gate kernel of Engram layer L: `n` rows of the armed round's staging into `dst` once the worker published them.
     pub fn gateCopy(f: *Forward, r: *run.Runner, L: u32, dst: u64, n: usize) !void {
-        const g = f.gate.?;
+        const g = (gateOf(f) orelse return error.NotEngram);
         const k = g.slotOf(L) orelse return error.NotEngram;
         return r.kernels.others(r.stream).engramGate(g.mem.ctl_dev, @intCast(egate.ctl_ready + k), egate.ctl_err, g.layerBase(k), g.parityStride(), dst, @intCast(2 * n * g.cols), g.timeout_ns, true);
     }
@@ -1164,216 +1110,23 @@ pub const Forward = struct {
         const pend: ?[]const u32 = if (f.slot.pending) |p| f.ids[0..p.n] else null;
         const lb = eh.lookbackAt(f.slot.tail[0..f.slot.tail_len], f.slot.pos, pend, start, h.max_ngram - 1, &buf) orelse return;
         // the gate's worker owns the table between windows: a warm job (Python's `warm`), not a read on this thread
-        if (f.gate) |g| return g.warm(&.{.{ .ids = ids, .tail = lb }});
+        if (gateOf(f)) |g| return g.warm(&.{.{ .ids = ids, .tail = lb }});
         h.prefetch(f.gpa, src, ids, lb, f.comm.rank(), f.comm.world());
     }
 
-    /// Graphed: layer L's staged rows (copied before the launch) all-gathered, then forward.gather_cols' order.
-    fn engramGathered(f: *Forward, g: *Graphed, r: *run.Runner, c: *const calls.Call) !void {
-        const L: u32 = @intCast(c.args[1].arg.i);
-        const st = g.stageOf(L) orelse return error.NotEngram;
-        const n = f.ids.len;
-        if (f.gated) try f.gateCopy(r, L, st.dev.ptr, n);
-        try f.comm.allGather(st.dev.ptr, f.gathered.?.ptr, n * st.cols, .bf16, r.stream.handle);
-        return r.kernels.others(r.stream).gatherCols(f.gathered.?.ptr, f.comm.world(), n, st.cols, try r.tensorAddr(c.args[0].arg.t));
-    }
-
-    fn activeGraph(f: *Forward) ?*Graphed {
-        const g = f.graphed orelse return null;
-        return if (g.active) g else null;
-    }
-
-    /// The graphs' state, made on the first window when TF_DSV41_GRAPHS is set (both ranks must set it alike).
-    fn graphState(f: *Forward) !?*Graphed {
-        if (!f.graphs_read) {
-            f.graphs_read = true;
-            const s = try graphs.Settings.fromEnvOr(f.graphs_default);
-            if (s.on and f.planned_rows > 0) {
-                const g = try f.gpa.create(Graphed);
-                errdefer f.gpa.destroy(g);
-                try g.init(f, s);
-                f.graphed = g;
-                std.log.scoped(.dsv41).info("graphs: on, windows of up to {d} rows, context buckets of {d}", .{ g.rows_max, s.bucket });
-            }
-        }
-        return f.graphed;
-    }
-
-    /// R4: the window through its key's graph (captured on first use), its inputs staged first. False: not
-    /// graphable here (graphs off, more rows than planned, past the slot's limit, a traced program), run eagerly.
-    fn graphedWindow(f: *Forward, ids: []const u32) !bool {
-        const g = (try f.graphState()) orelse return false;
-        // a traced window (M2a / M2b's first step) is never graphed, and its program is not the key's: it is never
-        // emitted or cached here (pod 16: a cached traced program kept every later window eager)
-        if (f.opts.trace) return false;
-        const n: u32 = @intCast(ids.len);
-        const limit: u64 = @intCast(f.opts.limit);
-        if (n > g.rows_max or f.slot.pos + n > limit) return false;
-        const key: graphs.Key = .{ .rows = n, .ctx = graphs.bucketOf(f.slot.pos + n - 1, g.settings.bucket, g.settings.grow) };
-        const cs = try g.program(f, key);
-        if (graphs.audit(cs) != null) return false;
-        const r = f.runner;
-        f.ids = ids;
-        f.slot.pending = .{ .start = f.slot.pos, .n = n };
-        // inputs: one copy of the ids and start, then each Engram layer's rows (hashed here, on the host)
-        {
-            const ts = ph.start(f.phases, .@"graph.stage");
-            defer ts.stop();
-            f.gated = try f.armEngram(&.{.{ .ids = ids, .tail = f.slot.tail[0..f.slot.tail_len] }}, n);
-            if (!f.gated) f.issueEngram(ids, f.slot.tail[0..f.slot.tail_len]);
-            try g.statics.stage(r.stream, ids, f.slot.pos);
-            if (f.engram) |h| if (!f.gated) for (g.stages.items) |*st| {
-                try f.fillEngramRows(h, st.layer, try st.begin(n));
-                try st.commit(r.stream, n);
-            };
-        }
-        g.active = true;
-        defer g.active = false;
-        r.glue = .{ .ctx = f, .run = glueFn };
-        g.current = cs;
-        const t0 = ph.nowNs();
-        const fp = f.fingerprint(g);
-        // TF_DSV41_ROUND_GRAPH=split: the head's graph, then the tail's, launched while the GPU runs the head
-        const at = if (g.split) |rg| round_graph.splitAt(cs, rg.head) else null;
-        var outcome: graphs.gc.Outcome = .replayed;
-        if (at) |i| {
-            g.span = .{ 0, i };
-            const o1 = try g.cache.run(.{ .rows = key.rows, .ctx = key.ctx, .part = 1 }, r.stream, fp, .{ .ctx = f, .run = graphBody });
-            g.span = .{ i, cs.len };
-            outcome = try g.cache.run(.{ .rows = key.rows, .ctx = key.ctx, .part = 2 }, r.stream, fp, .{ .ctx = f, .run = graphBody });
-            if (o1 == .captured) outcome = .captured;
-        } else {
-            g.span = .{ 0, cs.len };
-            outcome = try g.cache.run(key, r.stream, fp, .{ .ctx = f, .run = graphBody });
-        }
-        if (f.phases) |x| x.add(if (outcome == .captured) .@"graph.capture" else .@"graph.replay", ph.nowNs() - t0);
-        if (outcome == .captured and g.cache.stats.captured == 1)
-            std.log.scoped(.dsv41).info("graphs: first capture ({d} rows, context bucket {d})", .{ key.rows, key.ctx });
-        return true;
-    }
-
-    fn graphBody(ctx: *anyopaque, stream: cuda.Stream) anyerror!void {
-        const f: *Forward = @ptrCast(@alignCast(ctx));
-        _ = stream; // the runner's stream: the one the cache captures
-        const g = f.graphed.?;
-        try f.runner.window(g.current[g.span[0]..g.span[1]]);
-    }
-
-    /// The addresses a graphed window bakes in beyond the runner's bound roles: any change drops every graph.
-    fn fingerprint(f: *const Forward, g: *const Graphed) u64 {
-        var words: [64]u64 = undefined;
-        var m: usize = 0;
-        for (f.runner.owned.items) |b| {
-            if (m + 2 > words.len) break;
-            words[m] = b.ptr;
-            words[m + 1] = b.len;
-            m += 2;
-        }
-        for ([_]?cuda.DeviceBuffer{ f.runner.scratch, f.send, f.gathered, g.statics.dev }) |b| if (b) |x| {
-            if (m + 1 > words.len) break;
-            words[m] = x.ptr;
-            m += 1;
-        };
-        for (g.stages.items) |st| if (m < words.len) {
-            words[m] = st.dev.ptr;
-            m += 1;
-        };
-        return graphs.gc.fingerprintOf(words[0..m]);
-    }
+    pub const greedyScratch = fwd_sample.greedyScratch;
+    /// The multi-segment prefill run's segments (forward_prefill.promptMulti; prefillMulti above sends the leader's op)
+    pub const finishMulti = pf.finishMulti;
+    pub const engramGathered = fwd_graph.engramGathered;
+    pub const activeGraph = fwd_graph.activeGraph;
+    pub const graphState = fwd_graph.graphState;
+    const graphedWindow = fwd_graph.graphedWindow;
+    const graphBody = fwd_graph.graphBody;
+    pub const fingerprint = fwd_graph.fingerprint;
 };
 
-/// The graphed path's state: the cache over the runner's stream, the window statics, the Engram stages, the
-/// programs by key (emitted at the bucket's end: the indexer scores the bucket's keys).
-pub const Graphed = struct {
-    gpa: std.mem.Allocator,
-    settings: graphs.Settings,
-    rows_max: u32,
-    engine: graphs.gc.CudaEngine,
-    agreement: graphs.Agreement,
-    cache: graphs.Cache,
-    statics: graphs.Statics,
-    stages: std.ArrayList(graphs.EngramStage) = .empty,
-    programs: std.AutoHashMapUnmanaged(graphs.Key, []const calls.Call) = .empty,
-    current: []const calls.Call = &.{},
-    /// the calls of `current` the graph body issues (TF_DSV41_ROUND_GRAPH's `split`: the head's, then the tail's)
-    span: [2]usize = .{ 0, 0 },
-    split: ?round_graph.Settings = null,
-    active: bool = false,
+pub const Graphed = fwd_graph.Graphed;
 
-    fn init(g: *Graphed, f: *Forward, s: graphs.Settings) !void {
-        const r = f.runner;
-        const rows = @min(s.rows_max, f.planned_rows);
-        g.* = .{
-            .gpa = f.gpa,
-            .settings = s,
-            .rows_max = rows,
-            .engine = .{ .d = r.d },
-            .agreement = try graphs.Agreement.init(r.d, f.comm, r.stream),
-            .cache = undefined,
-            .statics = undefined,
-        };
-        errdefer g.agreement.deinit();
-        g.statics = try graphs.Statics.init(r.d, rows);
-        errdefer g.statics.deinit();
-        const rg = try round_graph.current();
-        if (rg.split) g.split = rg;
-        // `split`: a window's head and tail graphs in one cache of twice the cap (a head is ~1/43 of a window)
-        g.cache = graphs.Cache.init(f.gpa, g.engine.engine(), .{ .on = true, .max = if (rg.split) 2 * s.max else s.max, .hold = s.floor_hold });
-        g.cache.agree = g.agreement.agree();
-        g.cache.room = roomFn;
-        room_floor = s.floor_gib;
-        // every buffer a graph bakes in, at the largest window: the exchanges' send, Engram's gathered rows
-        const D: usize = f.cfg.hidden;
-        const W: usize = f.comm.world();
-        // at the planned rows, so an eager window of more rows than a graph takes moves nothing (the fingerprint)
-        const most: usize = f.planned_rows;
-        _ = try f.sendBuffer(r, 2 * most * D);
-        if (f.engram) |h| {
-            var la = std.heap.ArenaAllocator.init(f.gpa);
-            defer la.deinit();
-            const cols = f.engramCols(h);
-            for (try f.backbone(la.allocator())) |L| if (std.mem.indexOfScalar(u32, h.layer_ids, L) != null) {
-                try g.stages.append(f.gpa, try graphs.EngramStage.init(r.d, L, rows, cols));
-            };
-            const bytes = W * 2 * most * cols;
-            if (f.gathered == null or f.gathered.?.len < bytes) {
-                if (f.gathered) |*b| b.free();
-                f.gathered = try cuda.DeviceBuffer.alloc(r.d, bytes);
-            }
-        }
-    }
-
-    fn deinit(g: *Graphed) void {
-        const cs = g.cache.stats;
-        std.log.scoped(.dsv41).info("graphs: {d} captured, {d} replayed, {d} eager, {d} keys held, {d} evicted, {d} dropped{s}", .{ cs.captured, cs.replayed, cs.eager, g.cache.count(), cs.evicted, cs.dropped, if (g.cache.failed) " (off after a failed capture)" else "" });
-        g.cache.deinit();
-        for (g.stages.items) |*st| st.deinit();
-        g.stages.deinit(g.gpa);
-        g.programs.deinit(g.gpa);
-        g.statics.deinit();
-        g.agreement.deinit();
-    }
-
-    fn stageOf(g: *Graphed, L: u32) ?*graphs.EngramStage {
-        for (g.stages.items) |*st| if (st.layer == L) return st;
-        return null;
-    }
-
-    /// The key's calls, emitted once (forward's arena) at the start that puts the window's end at its bucket's end.
-    fn program(g: *Graphed, f: *Forward, key: graphs.Key) ![]const calls.Call {
-        if (g.programs.get(key)) |cs| return cs;
-        const a = f.arena.allocator();
-        const start = graphs.emitStart(key.rows, key.ctx, g.settings, @intCast(f.opts.limit));
-        const cs = try block.emit(a, f.cfg, f.widths, f.opts, try f.backbone(a), key.rows, start, true);
-        try g.programs.put(g.gpa, key, cs);
-        return cs;
-    }
-};
-
-var room_floor: f64 = 5.0;
-fn roomFn() bool {
-    return graphs.roomAbove(room_floor);
-}
 
 /// M2a's peer: world 2, rank 0 alone on one GPU, the peer's half of every all-gather zeros (dsv41_m1_capture.py's
 /// ZeroPeer, the Python reference's). Only the all-gather the forward uses is implemented.
@@ -1424,3 +1177,4 @@ pub const ZeroPeer = struct {
         return .{ .ptr = z, .vtable = &vtable };
     }
 };
+

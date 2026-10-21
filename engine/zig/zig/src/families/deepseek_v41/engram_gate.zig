@@ -1,28 +1,7 @@
-//! TF_DSV41_ENGRAM_GATE (engram_gate.py, prod: 1): the GPU, not the host, waits for a decode window's Engram rows.
-//!
-//! - **Arm, then launch at once.** `arm` (at a window's staging, every rank) queues the window's round job on the
-//!   gate's worker and writes the round's number into the pinned control word `ctl[0]`; nothing waits.
-//! - **The worker** (one thread) issues every Engram layer's reads of the round (one batch, Python's), then layer by
-//!   layer writes the rows - the same bf16 rows `Host.windowRows` gives the old path, the padded rows of a row-mode
-//!   bucket copies of its last row as `batch.stageEngram` makes them - into pinned, device-mapped staging (two buffers
-//!   by the round's parity) and publishes the layer's flag `ctl[1 + k]` with a release store.
-//! - **The device side** (`engram_gate.cu`, `kernels_ops.engramGate`): where the window's glue step `engram_rows` of
-//!   layer L ran the staged rows' copy, one kernel spins until the flag reaches the armed round, then copies the
-//!   staging into the same device buffer; the all-gather and `gather_cols` follow as before. In a graph it is one node
-//!   reading the control word at run time, so layer 14's reads overlap layers 0-13.
-//! - **Safety.** A worker error still publishes every flag (the GPU never hangs) and is raised by `check` after the
-//!   window; a GPU wait past TF_DSV41_ENGRAM_GATE_TIMEOUT_S (30) stores the layer's slot in `ctl[7]`, also raised.
-//!   Arming a new round synchronizes the stream first (in serving it is idle there), so a staging buffer is never
-//!   rewritten under a running window.
-//! - **One reader.** While the gate lives, every Engram read of the forward (prefill, read-ahead, the old path) goes
-//!   through `source()`, which holds the gate's lock around the table (engram_rows' caches are not shared state).
-//!
-//! The bits: the device buffer the gathers read holds the same bytes as on the old path (the same rows, the same
-//! padding), so nothing downstream changes. Knobs: TF_DSV41_ENGRAM_GATE (0 | 1), TF_DSV41_ENGRAM_GATE_ROWS (128: wider
-//! windows take the old path), TF_DSV41_ENGRAM_GATE_TIMEOUT_S (30), TF_DSV41_ENGRAM_WAIT_S (300: `check`'s bound on a
-//! round's reads).
+//! TF_DSV41_ENGRAM_GATE: the GPU, not the host, waits for a decode window's Engram rows (same bits as the old path).
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const cuda = @import("cuda");
 const eh = @import("engram_host.zig");
 
@@ -56,8 +35,7 @@ pub fn settings() !Settings {
     return s;
 }
 
-/// A window's part on one slot: its ids and the slot's Engram tail (lookback) before them.
-pub const Item = struct { ids: []const u32, tail: []const u32 };
+pub const Item = @import("forward_types.zig").Item;
 
 const Job = struct {
     /// 0: a warm job (reads only, nothing published)
@@ -91,8 +69,7 @@ const Job = struct {
     }
 };
 
-/// The gate's memory: the control words and the staging [2][layers][rows][cols] u16, both host memory the GPU reads
-/// (`stage_dev` / `ctl_dev`: their device addresses; 0 in host tests).
+/// The gate's memory: control words and staging [2][layers][rows][cols] u16, host memory the GPU reads (0 in tests).
 pub const Memory = struct {
     ctl: []i64,
     staging: []u16,
@@ -137,7 +114,7 @@ pub const Gate = struct {
         warm: u64 = 0,
         syncs: u64 = 0,
         failed: u64 = 0,
-        /// TF_DSV41_WIN_PROF=1: summed host ns of each arm's sync, previous-round wait and job + push; logged at deinit
+        /// TF_DSV41_WIN_PROF=1: host ns of each arm's parts (sync, previous wait, job, push), logged at deinit
         prof: bool = false,
         sync_ns: u64 = 0,
         wait_ns: u64 = 0,
@@ -274,9 +251,7 @@ pub const Gate = struct {
         g.push(j);
     }
 
-    /// A window over `items` (rows in window order; `fill` >= their rows: the bucket's rows) armed: its round job queued
-    /// and the control word set; the stream the earlier rounds' windows ran on (`sync`) synchronized first. The
-    /// window's `engram_rows` steps then launch the gate kernel.
+    /// Arms a window over `items`: syncs the earlier rounds' stream, queues the round job, sets the control word.
     pub fn arm(g: *Gate, items: []const Item, fill: u32) !void {
         var t = if (g.stats.prof) nowNs() else 0;
         if (g.armed) |prev| {
@@ -319,8 +294,7 @@ pub const Gate = struct {
         return x - t.*;
     }
 
-    /// After a window: its round's reads done (bounded by TF_DSV41_ENGRAM_WAIT_S), a failed read or a timed-out GPU wait
-    /// raised (the window's logits are not used).
+    /// After a window: its reads done (TF_DSV41_ENGRAM_WAIT_S bound); a failed read or timed-out GPU wait is raised.
     pub fn check(g: *Gate) !void {
         const j = g.armed orelse return;
         try g.wait(j);
@@ -333,7 +307,7 @@ pub const Gate = struct {
         const slot = p.*;
         if (slot == 0) return;
         p.* = 0;
-        log.warn("engram gate: the GPU waited past the timeout for layer {d}", .{g.layers[@intCast(slot - ctl_ready)]});
+        if (!quiet) log.warn("engram gate: the GPU waited past the timeout for layer {d}", .{g.layers[@intCast(slot - ctl_ready)]});
         return error.EngramGateTimeout;
     }
 
@@ -368,7 +342,7 @@ pub const Gate = struct {
             g.run(j) catch |e| {
                 j.failed = e;
                 g.stats.failed += 1;
-                log.warn("engram gate: round {d} failed ({t})", .{ j.seq, e });
+                if (!quiet) log.warn("engram gate: round {d} failed ({t})", .{ j.seq, e });
             };
             if (j.seq != 0 and j.failed != null) for (0..g.layers.len) |k| g.publish(j, k); // the GPU must not wait on it
             _ = std.c.pthread_mutex_lock(&g.mu);
@@ -383,8 +357,7 @@ pub const Gate = struct {
     fn run(g: *Gate, j: *Job) !void {
         _ = std.c.pthread_mutex_lock(&g.lock);
         defer _ = std.c.pthread_mutex_unlock(&g.lock);
-        // every layer's reads in flight first (Python's one batch), then the rows layer by layer, the first published
-        // while the later ones still read
+        // every layer's reads in flight first (one batch), then rows layer by layer, published as each lands
         var at: [2]usize = .{ 0, 0 };
         for (0..j.items()) |i| {
             const it = j.item(i, &at);
@@ -462,7 +435,7 @@ fn fixtureHost(a: std.mem.Allocator, ids_buf: []u32) !struct { h: eh.Host, bytes
     const bytes = try a.alignedAlloc(u8, .@"4", head + 4 * @as(usize, V));
     @memcpy(bytes[0..head], fx[0..head]);
     @memset(bytes[head..], 0); // every token maps to 0: the hashes still differ by position and layer
-    return .{ .h = try eh.Host.load(bytes, 8, 2, 16_000_000, ids_buf), .bytes = bytes };
+    return .{ .h = try eh.Host.loadLegacyFixture(bytes, 8, 2, 16_000_000, ids_buf), .bytes = bytes };
 }
 
 test "engram gate: the worker stages the old path's rows (row mode padding included), publishes in order, and a failed read still raises every flag" {

@@ -1,7 +1,4 @@
-//! One stream through the lanes engine over any `Target` (the GPU forward, the CPU twin), for gates: `generate` with
-//! a pass of the caller's. Two gate passes: `NoDraft` (streams run with drafts off; lanes holds a pass it never asks)
-//! and `Oracle` (drafts copied from a known serial decode, corrupted on a fixed schedule, so a gate sees full
-//! accepts, partial accepts and rejects through the target's multi-row windows and keeps without a drafter).
+//! One stream through lanes over any `Target` for gates; passes `NoDraft` (drafts off) and `Oracle` (corrupted serial).
 const std = @import("std");
 const lanes = @import("lanes");
 const iface = @import("iface.zig");
@@ -32,9 +29,7 @@ pub const NoDraft = struct {
     }
 };
 
-/// Drafts from a serial decode: `serial[j]` is the token at position `prompt_len + j` (serial[0] = the prompt's
-/// choice). Round r (one ask) corrupts nothing when r % 4 is 0 or 2, draft (r / 4) % block when r % 4 == 1 (a partial
-/// accept), and draft 0 when r % 4 == 3 (a reject). Past the serial decode's end it drafts `vocab - 1`.
+/// Drafts `serial[j]` (position prompt_len + j); round r corrupts draft (r/4)%block if r%4==1, draft 0 if r%4==3.
 pub const Oracle = struct {
     serial: []const u32,
     prompt_len: u64,

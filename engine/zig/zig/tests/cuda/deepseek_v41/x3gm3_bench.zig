@@ -1,11 +1,4 @@
-//! x3gm v3 against v2 at production prefill shapes (2,048-row capture: 384 experts, top-6, D 5,120, I 1,152,
-//! ragged widths 4 / 6 / 8 / 10), on synthetic data: every expert's own random trellis words (~3 GB, streamed from
-//! DRAM as in prod), random rotated inputs and scales, routing uniform or skewed (Zipf 0.8 over the experts). For
-//! each row count, v2's gate/up and down (the prod tiles, gmTuned2) and every v3 variant are timed with events (2
-//! warm-up launches, then the median of `reps`), and every v3 output is compared with v2's byte for byte. v2 is the
-//! Python engine's bits (the x3gm fixtures), so this times bit-identical kernels.
-//!
-//!   tf-dsv41-test x3gm3-bench [rows,...] [reps]     (default 512,1024,2048 and 9)
+//! x3gm v3 against v2 at the served prefill shapes on synthetic data: byte-exact outputs, then timed (x3gm3-bench).
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -240,7 +233,7 @@ pub fn run(gpu: Gpu, k: *const dsv41.Kernels, rows_arg: ?[]const u8, reps_arg: ?
         try bufs[4].download(0, std.mem.sliceAsBytes(&np));
         std.debug.print("rows {d} ({s} routing): {d} pairs, {d} passes\n", .{ R, if (skew) "Zipf 0.8" else "uniform", P, np[0] });
 
-        // v2 (the prod tiles): the reference outputs and times
+        // v2 (the served tiles): the reference outputs and times
         st.v2 = true;
         const gu2 = try timeIt(stream, d, ticket, .{ .ctx = &st, .run = State.gateup }, reps);
         const dn2 = try timeIt(stream, d, ticket, .{ .ctx = &st, .run = State.down }, reps);

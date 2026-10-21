@@ -1,4 +1,4 @@
-//! Session memory, family-neutral: the paged KV pool's book, the bytes behind its pages, prefix entries, the RAM tier with its residency budget, and the streamed NVMe tier.
+//! Session memory, family-neutral: the KV pool book, page bytes, prefix entries, the RAM tier and the NVMe tier.
 
 pub const freeset = @import("freeset.zig");
 pub const pool = @import("pool.zig");
@@ -19,6 +19,9 @@ pub const store = @import("store.zig");
 pub const Store = store.Store;
 
 test {
+    _ = @import("store_residency_linux_test.zig");
+    _ = @import("store_residency_test.zig");
+    _ = @import("store_failure_test.zig");
     _ = freeset;
     _ = pool;
     _ = pagestore;

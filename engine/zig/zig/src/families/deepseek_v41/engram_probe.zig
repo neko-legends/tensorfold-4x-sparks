@@ -1,18 +1,4 @@
-//! `tf-dsv41-m1 engram-probe DIR RANK WORLD`: the Engram read path on a node's shards, no GPU (the cold-rep question:
-//! a cold code T0.7 x4 round reads ~250 extents of ~770 B and the gate worker waits 3.9 ms for them).
-//!
-//! 1. The shards: rows, bytes, O_DIRECT or not (the table's size against RAM).
-//! 2. The device: O_DIRECT reads of one serving extent (a row's sectors: 512 or 1,024 B) at random rows, depth 1 / 8 /
-//!    32 / 64 (that many threads, each one read at a time): reads a second and each read's latency (p50 / p99 / max).
-//! 3. The serving read paths (engram_rows.Rows as the gate worker uses it): the reader threads (TF_DSV41_ENGRAM_QD,
-//!    prod's containers), native AIO (TF_DSV41_ENGRAM_AIO=1), AIO with polled waits (+ TF_DSV41_ENGRAM_POLL=1) and
-//!    io_uring where allowed; batches of 1 / 32 / 128 / 256
-//!    fresh random rows a layer, both layers issued then each layer's `rows` (the round job's order): the batch's wall
-//!    time.
-//! 4. The same at 128 and 256 with every core but two busy-spinning (the engine's cuEventSynchronize spin and its other
-//!    host threads): the pool's wake-up cost under load.
-//!
-//! Reads only (O_DIRECT: the page cache is not filled). Prints one line a measurement.
+//! `tf-dsv41 engram-probe DIR RANK WORLD`: no-GPU, read-only probe of the Engram read path on a node's shards.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -98,8 +84,7 @@ var seed_calls: u64 = 0;
 extern "c" fn setenv(name: [*:0]const u8, value: [*:0]const u8, overwrite: c_int) c_int;
 
 fn pool(gpa: std.mem.Allocator, rows: *er.Rows, shards: []const Shard, batch: usize, trials: usize, mode: []const u8, label: []const u8, w: *std.Io.Writer) !void {
-    // fresh rows for every measurement (a seed a call): a batch size's second run must not re-read its first's rows,
-    // which the cache holds (the 2026-10-09 run's spinning lines were such cache hits)
+    // fresh rows each measurement: a batch size's second run must not re-read its first's (cached) rows
     seed_calls += 1;
     var prng = std.Random.DefaultPrng.init(0xbeef + batch + seed_calls * 1_000_003);
     const rnd = prng.random();
@@ -120,8 +105,7 @@ fn pool(gpa: std.mem.Allocator, rows: *er.Rows, shards: []const Shard, batch: us
         t.* = nowNs() - t0;
     }
     std.mem.sort(u64, times, {}, std.sort.asc(u64));
-    // cold reads: the rows `issue` had to start (neither cached nor in flight); fewer than asked = rows the cache
-    // already held (a small table's repeats; never on a node's 192M-row shards)
+    // cold reads: rows `issue` had to start; fewer than asked = rows the cache already held
     const asked = trials * batch * shards.len;
     const issued = rows.stats.issued - issued0;
     try w.print("{s}{s} {d:3} rows a layer x {d} layers: p50 {d:7.2} ms p90 {d:7.2} ms max {d:7.2} ms ({d} trials; {d} of {d} rows read cold{s})\n", .{ mode, label, batch, shards.len, pct(times, 0.5) / 1e3, pct(times, 0.9) / 1e3, @as(f64, @floatFromInt(times[times.len - 1])) / 1e6, trials, issued, asked, if (issued < asked) ": NOT all cold" else "" });
@@ -138,8 +122,7 @@ pub fn main(gpa: std.mem.Allocator, dir: []const u8, rank: u32, world: u32, w: *
         try raw(gpa, shards[0], d, w);
         try w.flush();
     }
-    // the serving read paths at the gate's cache size (fresh random rows: every batch a cold read): the reader
-    // threads (prod's containers), native AIO (TF_DSV41_ENGRAM_AIO=1), io_uring where the process may use it
+    // the serving read paths at the gate's cache size, every batch a cold read: reader threads, native AIO, io_uring
     const n = @max(1, (std.Thread.getCpuCount() catch 4) -| 2);
     for ([_][]const u8{ "threads", "aio", "aio-poll", "io_uring" }) |mode| {
         const aio = std.mem.startsWith(u8, mode, "aio");

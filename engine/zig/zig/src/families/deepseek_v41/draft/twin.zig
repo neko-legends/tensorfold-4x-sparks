@@ -1,7 +1,4 @@
-//! A CPU twin of the model path the lanes drive: a one-layer causal attention model with a bigram head as the
-//! `Target` (row-invariant: a row's bits come from its own fixed loop over its context), and a DSpark-shaped drafter
-//! as the `Pass` (context rings fed from the target's taps, a block of noise rows, the real chain rule with a Markov
-//! head equal to the bigram). The GPU forward and pass implement the same vtables.
+//! A CPU twin of the lanes' model path: a one-layer attention `Target` and a DSpark-shaped `Pass` on the same vtables.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
@@ -277,8 +274,7 @@ fn dot(a: []const f32, b: []const f32) f32 {
     return s;
 }
 
-/// The twin's DSpark: per-slot rings of the target's taps, a block [anchor, noise...] attending the ring (non-causal
-/// over the block), base logits from the target's head, and the chain rule with the bigram as its Markov head.
+/// The twin's DSpark: rings of target taps, a non-causal block over them, the target head, the bigram chain rule.
 pub const Drafter = struct {
     gpa: Allocator,
     t: *Twin,
@@ -290,8 +286,7 @@ pub const Drafter = struct {
     cw: []f32,
     passes: u64 = 0,
     ingests: u64 = 0, // ingest calls (tests)
-    /// `begin` / `collect` (passAsync): the pass reads the rings at `begin`, as a GPU stream orders it, and the host
-    /// takes its results at `collect`; sized for every slot
+    /// `begin` / `collect` (passAsync): the pass reads rings at `begin`, the host takes results at `collect`; all slots
     stash_drafts: []u32,
     stash_conf: []f32,
     stash_cand: []i32,

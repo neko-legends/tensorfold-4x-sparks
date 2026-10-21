@@ -1,22 +1,4 @@
-//! Python's per-request lookup drafting plan (prod 8474f31 deepseek_v41/cuda/lookup.py `Planner`, on
-//! glm5_next/spark/lookup.py's `SuffixIndex`), behind TF_DSV41_LOOKUP_PLAN=1 (default off: the lanes core's generic
-//! copy, `lanes.SuffixLookup`, which copies up to 15 tokens whenever the match reaches `enter_match`, unpriced).
-//!
-//! Each round the request's history (prompt + reply) is matched against itself: the longest backward match of its
-//! last n-gram among the 64 most recent occurrences (ties to the most recent), measured up to 64 tokens; the tokens
-//! that followed it are the drafts (up to TF_DSV41_MAX_ROWS - 1 = 15). They are priced as Python prices them: the
-//! match length's band (0 / 8 / 16 / 32 tokens) gives p, the running chance a lookup draft is kept after a kept one
-//! (prior 0.45 / 0.7 / 0.8 / 0.9 worth 2 trials, evidence decayed by 0.85 a lookup round), and `depth.bestK` picks
-//! k from 1 maximizing E(k) - rate x verify[k] against `rate`, the tokens a modelled ms of the request's last 8
-//! DSpark / serial rounds. A lookup round only when that surplus is positive; a band of 16+ token matches skipped
-//! 8 times is tried once. Otherwise the round drafts with DSpark as before.
-//!
-//! The lone-window costs price every round, shared or not (Python's rule): a 16-row copy beside three DSpark
-//! windows is drafted only when its band's evidence pays for 15 rows of a lone window. The lanes core's copy has no
-//! price: at 4 streams it put 12-16-row copies into 24-row rounds (32-43 rows a forward, Spark 2026-10-09, Python
-//! never past 24), keeping ~5 tokens for 27-67 ms more a forward.
-//!
-//! Drafts never change a reply. Rank 0's alone (the plan reaches the followers as tokens).
+//! Priced per-request lookup drafting (TF_DSV41_LOOKUP_PLAN=1): history suffix matches drafted only when they pay.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -25,7 +7,7 @@ const costs_mod = @import("costs.zig");
 const depth = @import("depth.zig");
 const joint = @import("joint.zig");
 
-/// (shortest match of the band, prior p) (glm5_next lookup.BANDS)
+/// (shortest match of the band, prior p)
 pub const bands = [_]struct { least: i64, prior: f64 }{ .{ .least = 0, .prior = 0.45 }, .{ .least = 8, .prior = 0.7 }, .{ .least = 16, .prior = 0.8 }, .{ .least = 32, .prior = 0.9 } };
 pub const prior_weight: f64 = 2.0;
 pub const decay: f64 = 0.85;
@@ -34,21 +16,21 @@ pub const probe_match: i64 = 16;
 pub const alt_window = 8;
 pub const candidates = 64;
 pub const extend_to = 64;
-/// glm5_next vision_prep.VBASE: an image row's virtual id is never a token to draft
+/// An image row's virtual id base: never a token to draft
 pub const vbase: u32 = 1 << 24;
-pub const max_rows = depth.slot_rows; // Python depth.MAX_ROWS (16)
+pub const max_rows = depth.slot_rows; // 16
 
-/// TF_DSV41_LOOKUP_PLAN, TF_DSV41_LOOKUP, TF_DSV41_LOOKUP_MIN, TF_DSV41_MAX_ROWS (Python env_settings).
+/// TF_DSV41_LOOKUP_PLAN, TF_DSV41_LOOKUP, TF_DSV41_LOOKUP_MIN, TF_DSV41_MAX_ROWS.
 pub const Settings = struct {
     plan: bool = false,
-    lookup: bool = false,
+    lookup: bool = true,
     min_match: i64 = 4,
     max_rows: i64 = max_rows,
 
     pub fn fromEnv() !Settings {
         var s: Settings = .{};
         s.plan = try flag(std.c.getenv("TF_DSV41_LOOKUP_PLAN"), false);
-        s.lookup = try flag(std.c.getenv("TF_DSV41_LOOKUP"), false);
+        s.lookup = try flag(std.c.getenv("TF_DSV41_LOOKUP"), true);
         if (std.c.getenv("TF_DSV41_LOOKUP_MIN")) |v| if (std.mem.span(v).len > 0) {
             s.min_match = std.fmt.parseInt(i64, std.mem.trim(u8, std.mem.span(v), " "), 10) catch return error.BadLookupMin;
         };
@@ -60,7 +42,7 @@ pub const Settings = struct {
         return s;
     }
 
-    /// Python's lookup flag: anything but 0 / false / off / no / "" is on; unset is `default`.
+    /// The lookup flag: anything but 0 / false / off / no / "" is on; unset is `default`.
     fn flag(v: ?[*:0]const u8, default: bool) !bool {
         const raw = std.mem.trim(u8, std.mem.span(v orelse return default), " \t");
         var low: [8]u8 = undefined;
@@ -71,7 +53,7 @@ pub const Settings = struct {
     }
 };
 
-/// glm5_next lookup.SuffixIndex: where every n-gram of a growing history ends.
+/// Where every n-gram of a growing history ends.
 pub const SuffixIndex = struct {
     gpa: Allocator,
     n: usize,
@@ -159,7 +141,7 @@ pub const SuffixIndex = struct {
 
 pub const Kind = enum { serial, dspark, lookup };
 
-/// One request's drafting state (Python lookup.Request, the lookup part).
+/// One request's drafting state (the lookup part).
 pub const Request = struct {
     index: SuffixIndex,
     acc: [bands.len]f64 = @splat(0.0),
@@ -183,7 +165,7 @@ pub const Request = struct {
     }
 };
 
-/// The batcher's lookup decisions (Python lookup.Planner's `start`, `window`, `observe`, lookup part).
+/// The batcher's lookup decisions: `start`, `window`, `observe`.
 pub const Planner = struct {
     set: Settings,
     costs: *const costs_mod.Costs,
@@ -212,8 +194,7 @@ pub const Planner = struct {
         return (r.acc[b] + bands[b].prior * prior_weight) / (r.tri[b] + prior_weight);
     }
 
-    /// Tokens a modelled ms of the request's recent non-lookup rounds (before any: a DSpark round keeping one draft,
-    /// or a serial step).
+    /// Tokens a modelled ms of recent non-lookup rounds (before any: a one-draft DSpark round, or a serial step).
     pub fn altRate(p: *const Planner, r: *const Request) f64 {
         if (r.alt_len > 0) {
             var tokens: f64 = 0.0;
@@ -229,8 +210,7 @@ pub const Planner = struct {
         return if (p.dspark) 2.0 / (c.windowMs(2) + c.draft) else 1.0 / c.windowMs(1);
     }
 
-    /// This round's lookup drafts (empty: none; the round drafts with DSpark when `drafts` and DSpark is on).
-    /// `left`: tokens the request may still emit. `eos`: cut the drafts at the first end token (`stop_eos`).
+    /// This round's lookup drafts (empty: none); `left`: tokens still allowed; `eos`: cut at the first end token.
     pub fn window(p: *const Planner, r: *Request, left: i64, drafts: bool, eos: []const u32) ![]const u32 {
         const room: i64 = @max(0, left - 1);
         r.kind = .serial;
@@ -283,16 +263,14 @@ pub const Planner = struct {
     }
 };
 
-/// The planner as a stream's lanes proposer (`priced`: the core takes its drafts as they are, no width or match
-/// gate of its own). The round's decision is made once per history length (a second ask in the same round, e.g.
-/// a depth probe, reads it back); `round` is told every non-forced round's rows and kept drafts.
+/// The planner as a stream's lanes proposer (`priced`): one decision per history length, `round` feeds outcomes back.
 pub const Proposer = struct {
     planner: *const Planner,
     req: Request,
     eos: []const u32,
-    /// the history length the planner's index holds (the stream's context grows by committed tokens)
+    /// the history length the planner's index holds (grows by committed tokens)
     synced: usize,
-    /// the round's ask (history length, room) and the drafts it got: a second ask reads them back
+    /// the round's ask (history length, room) and its drafts: a second ask reads them back
     asked: ?struct { len: usize, max_draft: i64 } = null,
     kept_k: usize = 0,
 
@@ -317,7 +295,7 @@ pub const Proposer = struct {
     fn propose(p: *anyopaque, context: []const u32, max_draft: i64) anyerror![]const u32 {
         const x = self(p);
         if (x.asked) |a| if (a.len == context.len and a.max_draft == max_draft) return x.req.out.items[0..x.kept_k];
-        // the history's new tokens (the reply so far) into the index: Python's observe extends it by the emitted
+        // the history's new tokens (the reply so far) into the index
         if (context.len > x.synced and x.planner.set.lookup) try x.req.index.extend(context[x.synced..]);
         x.synced = @max(x.synced, context.len);
         const ds = try x.planner.window(&x.req, max_draft + 1, true, x.eos);
@@ -332,7 +310,7 @@ pub const Proposer = struct {
 
     fn round(p: *anyopaque, rows: u32, kept: u32) void {
         const x = self(p);
-        if (x.asked == null) x.req.kind = .serial; // not asked this round: a stream that does not draft (Python "s")
+        if (x.asked == null) x.req.kind = .serial; // not asked this round: a stream that does not draft
         x.asked = null;
         // no tokens: the index takes the committed ones from the context at the next propose (the same tokens)
         x.planner.observe(&x.req, rows, kept, &.{}) catch unreachable;
@@ -343,7 +321,7 @@ test "lookup plan: a repeated span is drafted when its band pays, priced against
     const gpa = std.testing.allocator;
     var verify = [_]f64{ 42, 47, 52, 57, 62, 67, 72, 77, 82, 87, 92, 97, 102, 107, 112, 117 };
     const c: costs_mod.Costs = .{ .verify = &verify, .draft = 5.6 };
-    const pl = Planner.init(.{ .plan = true, .lookup = true }, &c, true);
+    const pl = Planner.init(.{ .plan = true }, &c, true);
     const span = [_]u32{ 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29 };
     var prompt: std.ArrayList(u32) = .empty;
     defer prompt.deinit(gpa);

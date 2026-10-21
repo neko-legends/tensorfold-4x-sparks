@@ -1,5 +1,6 @@
-//! The mailbox backend: two-rank exchanges in one kernel through pinned host memory both GPUs map (same host; host side of mailbox.cu).
+//! The mailbox backend: two-rank exchanges in one kernel through pinned host memory both GPUs map (host side).
 const std = @import("std");
+const log = @import("log.zig");
 const cuda = @import("cuda");
 const collective = @import("collective.zig");
 const Bootstrap = @import("bootstrap.zig").Bootstrap;
@@ -77,8 +78,7 @@ pub const Mailbox = struct {
         if (image.len == 0) return error.NoKernel;
         const slot = std.mem.alignForward(usize, max_bytes, 4096);
         const len = ctrl_bytes + 2 * (flag_bytes + 2 * slot);
-        // the file: rank 0 creates and sizes it before anyone learns its name, the others open it, all map it,
-        // then rank 0 unlinks it
+        // rank 0 creates and sizes the file before anyone learns its name, the others open it, then rank 0 unlinks it
         var name: [64]u8 = undefined;
         var name_len: u8 = 0;
         var fd: std.c.fd_t = -1;
@@ -161,7 +161,7 @@ pub const Mailbox = struct {
             .slot_bytes = m.slot_bytes,
             .timeout_ns = m.timeout_ns,
             .rank = m.me,
-            .mode = @intFromEnum(mode),
+            .mode = @backingInt(mode),
         };
         var params = [1]?*anyopaque{@ptrCast(&a)};
         const r = m.d.api.cuLaunchKernel(m.func.handle, blocksFor(n), 1, 1, threads, 1, 1, 0, stream, &params, null);
@@ -197,7 +197,7 @@ pub const Mailbox = struct {
         for (0..2) |r| {
             const rec = ctrl_rank + 8 * r;
             if (m.ctrlWord(rec).load(.acquire) != 0) {
-                std.log.warn("tp mailbox: rank {d}'s wait for seq {d} failed ({s} after {d} us; block {d}, flag held {d})", .{ r, m.ctrlWord(rec + 1).load(.acquire), if (m.ctrlWord(rec + 4).load(.acquire) == 1) "aborted" else "timed out", m.ctrlWord(rec + 5).load(.acquire), m.ctrlWord(rec + 3).load(.acquire), m.ctrlWord(rec + 2).load(.acquire) });
+                log.warn("tp mailbox: rank {d}'s wait for seq {d} failed ({s} after {d} us; block {d}, flag held {d})", .{ r, m.ctrlWord(rec + 1).load(.acquire), if (m.ctrlWord(rec + 4).load(.acquire) == 1) "aborted" else "timed out", m.ctrlWord(rec + 5).load(.acquire), m.ctrlWord(rec + 3).load(.acquire), m.ctrlWord(rec + 2).load(.acquire) });
                 return error.PeerFailed;
             }
         }

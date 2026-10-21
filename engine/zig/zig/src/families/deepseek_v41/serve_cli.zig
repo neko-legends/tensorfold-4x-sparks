@@ -1,25 +1,13 @@
-//! The served engine without HTTP (tf-dsv41-m1):
-//!
-//!   follow PACK ASSETS          ranks > 0: load this rank (model.zig), replay rank 0's forward operations until it
-//!                               stops (the server's close or generate's end)
-//!   generate PACK ASSETS TRACE  rank 0: every line of TRACE (TF_DSV41_TRACE_TOKENS' file from tensorfold-dsv41) replayed
-//!                               through the same engine (serve_engine.Served: lanes over the GPU target) as one
-//!                               greedy request of the recorded prompt and length; PASS when every reply's ids equal
-//!                               the recorded ones (M4's "HTTP tokens == CLI"); a line's "sampling" ({seed,
-//!                               temperature, top_k, top_p, min_p}: dsv41_samp_ref.py's replies) makes it that keyed
-//!                               request (the sampled gate: Python's tokens for the same request and seed); a line's
-//!                               "structure" ({kind, text}) replays it under that grammar (TF_DSV41_GRAMMAR=1);
-//!                               TF_DSV41_GEN_STREAMS=N keeps N requests in flight (with TF_DSV41_SLOTS: batched rows)
-//!
-//! TF_DSV41_DRAFTS=0: no DSpark (serial windows through the same lanes), as the server's --no-drafts.
+//! The served engine without HTTP (tf-dsv41 follow / generate): replays a token trace; TF_DSV41_DRAFTS=0: no DSpark.
 
 const std = @import("std");
 const api = @import("engine_api");
-const model = @import("model.zig");
+const model = @import("cuda_model.zig");
 const se = @import("serve_engine.zig");
 
 fn drafts() bool {
-    return model.draftsEnv();
+    const v = std.c.getenv("TF_DSV41_DRAFTS") orelse return true;
+    return !std.mem.eql(u8, std.mem.span(v), "0");
 }
 
 pub fn follow(gpa: std.mem.Allocator, io: std.Io, pack: []const u8, assets: []const u8) !u8 {
@@ -120,7 +108,7 @@ pub fn generate(gpa: std.mem.Allocator, io: std.Io, pack: []const u8, assets: []
         }
     }
     const ok = n > 0 and equal == n;
-    std.debug.print("{s} M4 CLI == HTTP: {d}/{d} replies equal\n", .{ if (ok) "PASS" else "FAIL", equal, n });
+    std.debug.print("{s} CLI == HTTP: {d}/{d} replies equal\n", .{ if (ok) "PASS" else "FAIL", equal, n });
     // DSpark's acceptance on these replies (drafts on): accepted / drafted, and tokens a verify round
     const rate: f64 = if (drafted > 0) @as(f64, @floatFromInt(accepted)) / @as(f64, @floatFromInt(drafted)) else 0;
     std.debug.print("DSpark: {d} drafted, {d} accepted ({d:.3})\n", .{ drafted, accepted, rate });

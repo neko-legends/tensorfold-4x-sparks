@@ -1,9 +1,4 @@
-//! The NVMe tier: one file an entry under <root>/<compat>/rank<r>/, written and read streamed through the lanes (format.zig).
-//!
-//! Threads: `writeFile` and `readFile` touch only files, staging and lanes, so an async park or restore runs them on a tier thread;
-//! the index (`register`, `touch`, `remove`, `trim`) changes on the round thread at plan-ordered points, so both ranks keep the same files.
-//! Delta files reference their base: a base is never deleted while a newer file stacks on it, and a chain longer than `max_chain`
-//! is rewritten whole. Writes go to <key>.tmp, then fdatasync and rename: a crash leaves no half entry (`reconcile` deletes .tmp).
+//! The NVMe tier: a file an entry under <root>/<compat>/rank<r>/, written via .tmp + rename, streamed via the lanes.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -51,7 +46,7 @@ pub const Blob = struct {
     bytes: []const u8,
 };
 
-/// What a park writes: the entry, its tokens from first_page on, and per family the pages this rank stores, in logical order.
+/// What a park writes: the entry, its tokens from first_page on, and this rank's pages per family, in logical order.
 pub const WriteSrc = struct {
     key: Digest,
     /// the file holding pages [0, first_page) (a delta), or null (a whole entry: first_page 0)
@@ -82,7 +77,7 @@ pub const Extent = struct {
     pos: u64,
 };
 
-/// Where a restore puts rows: per family, the family-tensor page of each of the slot's logical pages (any value where not owned).
+/// Where a restore puts rows: per family, the family-tensor page of each of the slot's logical pages.
 pub const ReadSink = struct {
     store: PageStore,
     families: []const Family,
@@ -155,6 +150,7 @@ pub const Disk = struct {
     stats: Stats = .{},
 
     pub fn open(gpa: std.mem.Allocator, io: Io, opts: Options) !*Disk {
+        if (@import("builtin").os.tag != .linux) return error.UnsupportedPlatform;
         const d = try gpa.create(Disk);
         errdefer gpa.destroy(d);
         var name_buf: [64]u8 = undefined;
@@ -258,8 +254,9 @@ pub const Disk = struct {
         return Layout.build(d.gpa, head, segs.items);
     }
 
-    /// Writes an entry's file, streamed: the pump copies pages into staging, the lanes hash and write; returns the file's bytes.
+    /// Writes an entry's file streamed (the pump copies pages to staging, lanes hash and write); returns its bytes.
     pub fn writeFile(d: *Disk, src: *const WriteSrc) !u64 {
+        if (@import("builtin").os.tag != .linux) return error.UnsupportedPlatform;
         var lay = try d.plan(src);
         defer lay.deinit(d.gpa);
         var tb: [48]u8 = undefined;
@@ -349,7 +346,7 @@ pub const Disk = struct {
         var op = try Op.init(d.gpa, d.io, &d.staging);
         defer op.deinit();
         errdefer op.wait() catch {};
-        // jobs: (segment, chunk) pairs to read; the pump keeps at most staging - 1 in flight (one buffer for the header path)
+        // (segment, chunk) jobs; the pump keeps at most staging - 1 in flight (one buffer for the header path)
         var jobs: std.ArrayList(struct { seg: u32, chunk: u32 }) = .empty;
         defer jobs.deinit(d.gpa);
         for (lay.segs, 0..) |*s, si| switch (s.kind) {
@@ -487,9 +484,9 @@ pub const Disk = struct {
         }
     };
 
-    /// Indexes the directory on restart: .tmp files and unreadable, foreign or truncated files are deleted, every valid file's
-    /// ids are checked chunk by chunk; registered oldest first with bases before their deltas (a delta whose base is gone is deleted).
+    /// Indexes the directory on restart: drops .tmp and bad files, checks ids, registers bases before their deltas.
     pub fn scan(d: *Disk, out: *std.ArrayList(Found)) !void {
+        if (@import("builtin").os.tag != .linux) return error.UnsupportedPlatform;
         var it = d.dir.iterate();
         var nb: [48]u8 = undefined;
         while (try it.next(d.io)) |ent| {
@@ -596,6 +593,7 @@ pub const Disk = struct {
 
     /// Deletes a file without dependents (error when one stacks on it).
     pub fn remove(d: *Disk, key: Digest) !void {
+        if (@import("builtin").os.tag != .linux) return error.UnsupportedPlatform;
         const id = d.by_key.get(key) orelse return;
         const r = &d.recs.items[id];
         if (r.refs > 0) return error.HasDependents;
@@ -609,7 +607,7 @@ pub const Disk = struct {
         try d.free_recs.append(d.gpa, id);
     }
 
-    /// Deletes least recently used files without dependents while over budget; their keys go to out (the store drops their entries).
+    /// Deletes least recently used files without dependents while over budget; their keys go to out.
     pub fn trim(d: *Disk, out: *std.ArrayList(Digest)) !void {
         var id = d.oldest;
         while (d.used > d.opts.budget and id != none) {

@@ -1,18 +1,7 @@
-// The prefill segment's glue (block_prefill.zig's glue steps; tensorfold-decode1 8474f31: csa2/index.py,
-// csa2/backend.py, blocks.py, prefill_moe.py, x3gm.py, pick.py): the torch ops between the kernels of a prefill
-// segment, each element as torch computes it. Integers and casts only: no arithmetic whose order could differ.
-//
-//   top_positions  index.top_positions: the `count` largest int64 keys of a row (torch.topk: an exact selection, keys
-//                  unique but for KEY_NONE pads, which all map to -1), pos = 0x7FFFFFFF - (key & 0xFFFFFFFF) (-1 for
-//                  KEY_NONE, past-table for pos < 0), ascending, -1 padded to `count`
-//   cand_keys      index.candidate_keys: block b -> positions b * BS + t, -1 for b < 0 (int64 math, int32 store)
-//   counts         backend.visible_counts: #(sel >= 0 && sel < (pos + 1) / ratio) a row
-//   gm_picks       prefill_moe: pick[:, :topk] contiguous, f32(f16(wts))[:, :topk] (pick.kit_weights)
-//   width_mask     x3gm._run_ragged: where(k2[pick] == K2, pick, E) (k2[E] = 0: picks past the table never match)
-//   f64_bf16_f32   the indexer head weights: f32(bf16(f32(w64))) (torch's double -> BFloat16 goes through float)
-//   widen_cat      blocks._projection: f32(kv) (ratio 2: [f32(kv) | f32(gate)])
-//   ring_copy      blocks.stage_rows: dst[p % dst_ring] = src[p % src_ring] for p in [lo, hi), row_bytes a row
-//
+// Prefill segment glue: the torch ops between a segment's kernels, element-exact (integers and casts only).
+
+// top_positions, cand_keys, counts, gm_picks, width_mask, f64_bf16_f32, widen_cat, ring_copy: see each kernel.
+
 // Built with --fmad=false (nothing here multiplies and adds).
 
 #include <cstdint>
@@ -28,8 +17,7 @@ __device__ __forceinline__ unsigned long long ukey(long long k) {   // signed or
     return static_cast<unsigned long long>(k) ^ 0x8000000000000000ull;
 }
 
-// One CTA a row: an 8-pass radix select of the c-th largest key (c = min(count, n)), the winners' positions, a
-// bitonic sort ascending, -1 for missing.
+// One CTA a row: 8-pass radix select of the c-th largest key (c = min(count, n)), bitonic sort ascending, -1 padded.
 __global__ void __launch_bounds__(NT) top_positions_kernel(const long long* __restrict__ keys, long long ld, int n,
                                                            int count, int* __restrict__ out) {
     __shared__ int hist[256];
@@ -119,7 +107,7 @@ __global__ void __launch_bounds__(256) counts_kernel(const int* __restrict__ sel
                                                      int ratio, int R, int* __restrict__ out) {
     const int r = blockIdx.x * 8 + (threadIdx.x >> 5), lane = threadIdx.x & 31;
     if (r >= R) return;
-    // positions are in [0, 2^31 - 1) (int32 everywhere else) and ratio > 0: C's division is Python's //
+    // positions in [0, 2^31 - 1) and ratio > 0: C's truncating division equals floor division
     const long long nvis = (long long)((int)(pos[r] + 1) / ratio);
     int c = 0;
     for (int j = lane; j < K; j += 32) {
@@ -168,8 +156,7 @@ __global__ void __launch_bounds__(256) widen_cat_kernel(const uint16_t* __restri
     }
 }
 
-// the rows p in [lo, hi) of a ring of src_ring rows into a ring of dst_ring rows, row_bytes each (4-byte units when
-// every row and base is 4-byte aligned, else bytes)
+// rows p in [lo, hi) of a src_ring ring into a dst_ring ring, row_bytes each (4-byte units when all 4-byte aligned)
 __global__ void __launch_bounds__(256) ring_copy_kernel(const unsigned char* __restrict__ src, int src_ring,
                                                         unsigned char* __restrict__ dst, int dst_ring, long long row_bytes,
                                                         long long lo, long long hi) {

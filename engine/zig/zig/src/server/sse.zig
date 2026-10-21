@@ -1,4 +1,4 @@
-//! Server-sent events as the Python server frames them: the head, ``data:`` frames, typed ``event:`` frames, ``[DONE]``.
+//! Python-compatible SSE: the head, data frames, typed event frames and [DONE].
 const std = @import("std");
 const json = @import("json");
 const Conn = @import("http_conn.zig").Conn;

@@ -1,13 +1,11 @@
-//! Host test of TF_DSV41_STREAM_RB (`zig build test-dsv41-knobs`): the reader, and the long-context prefill program
-//! with the stream top-k as `_stream_rb<N>`: each `_stream` launch replaced in place, its grid ceil(rows / N) x splits,
-//! the same tensors (the same split buffers, so the same merge), every other call unchanged.
+//! Host test of TF_DSV41_STREAM_RB: the reader, and the long-prefill program with `_stream` as `_stream_rb<N>`.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
-const check = @import("m1_check.zig");
-const pk = @import("prod_knobs.zig");
+const check = @import("calls_check.zig");
+const pk = @import("serve_knobs.zig");
 const Config = @import("config.zig").Config;
 
 const Fake = struct {
@@ -43,8 +41,8 @@ test "TF_DSV41_STREAM_RB on the long-context prefill: _stream_rb<N> in place of 
     const aa = arena.allocator();
     const cfg: Config = .{};
     var w: block.Widths = .{};
-    try check.parseDense(aa, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(aa, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(aa, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(aa, &w, @embedFile("fixtures/expert-k2.txt"));
     var enc: [21]u32 = undefined;
     for (&enc, 0..) |*l, i| l.* = @intCast(i);
     const base: block.Options = .{ .gm_v2 = .one, .limit = 1 << 20, .rope_rows = (1 << 20) + 2048, .index_budget = 64 << 20 };

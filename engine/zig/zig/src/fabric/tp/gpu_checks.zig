@@ -1,4 +1,5 @@
-//! Every collective on real GPUs against the host reference (each rank rebuilds every rank's input), eager and replayed from a graph; any world.
+//! Every collective on real GPUs against the host reference (each rank rebuilds every rank's input), eager and
+//! replayed from a graph; two to sixteen ranks.
 const std = @import("std");
 const cuda = @import("cuda");
 const tp = @import("tp");
@@ -170,8 +171,7 @@ pub const Ctx = struct {
         }
     }
 
-    /// A chain of collectives captured once and replayed with fresh inputs, mixed with eager calls between replays
-    /// (the mailbox's device epoch must carry on across both).
+    /// A captured chain replayed with fresh inputs, eager calls between replays (the mailbox epoch spans both).
     pub fn graphs(c: *Ctx, comm: Collective, label: []const u8, n_bytes: usize, replays: u32) !void {
         const w: usize = c.world;
         const n = n_bytes - n_bytes % 16;

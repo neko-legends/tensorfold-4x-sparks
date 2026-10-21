@@ -1,12 +1,8 @@
-// pick.top on the device in one launch (tensorfold-dsquant src/tensorfold/families/deepseek_v41/cuda/pick.py): each
-// row's best k of bf16-valued fp32 logits, value descending, ties by the lower column, as
-//
-//   keys = (mono(bits(x + 0.0)) & -65536) | (65535 - col)     (pick.keys: unique in a row, C <= 65,536 columns)
-//   _, cols = torch.topk(keys, k);  vals = gather(x, cols)
-//
-// Keys are unique in a row, so the top k and their order are fully determined: any exact selection gives torch's
-// result. One CTA a row: a 4-pass 8-bit radix select of the k-th largest key, the k winners gathered, then a bitonic
-// sort (descending) in shared memory. cols int64 (torch.topk's indices), vals fp32 (the gathered logits).
+// Row top-k of bf16-valued fp32 logits on the device: value descending, ties by lower column (torch.topk of keys).
+
+// keys = (mono(bits(x + 0.0)) & -65536) | (65535 - col): unique in a row (C <= 65,536), so any exact select matches.
+
+// One CTA a row: 4-pass 8-bit radix select of the k-th key, gather k winners, bitonic sort; cols int64, vals fp32.
 
 #include <cstdint>
 

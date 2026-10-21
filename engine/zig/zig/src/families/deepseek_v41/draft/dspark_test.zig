@@ -1,5 +1,4 @@
-//! draft/dspark.zig's chain lanes against the one-at-a-time sums (`zig build test-dsv41-draft`; draft.zig's tests:
-//! the chain needs the lanes module, which mdraft's test module, also importing dspark.zig, has not).
+//! draft/dspark.zig's chain lanes against one-at-a-time sums (run in draft.zig's tests: the chain needs lanes).
 const std = @import("std");
 const dspark = @import("dspark.zig");
 const Markov = dspark.Markov;
@@ -32,7 +31,7 @@ const reference = struct {
     }
 };
 
-test "the chain's lanes: markovZ and the confidences bit for bit the one-at-a-time sums (prod's shape and ragged ones)" {
+test "the chain's lanes: markovZ and the confidences bit for bit the one-at-a-time sums (the served shape and ragged ones)" {
     const a = std.testing.allocator;
     var prng = std.Random.DefaultPrng.init(0x4101_5eed);
     const rnd = prng.random();

@@ -1,21 +1,4 @@
-//! Several live slots on the GPU path (Python forward.Forward's `slots` with rowmode.stack, G8): every slot's bounded
-//! state stacked in one buffer a role, so a row's slot is an offset (row mode, batch.zig) and a one-slot program (a
-//! prefill, a session operation, a release) reads one slot through a view.
-//! - Stacked roles: each layer's SWA ring "s.L<i>.swa.v / .s" (slot s at s x ring rows), each ratio-2 carry
-//!   "s.L<i>.carry" (row s), the pool's page tables "s.kv.pt" / "s.kv.ct" (row s of kv.DevicePool's [S, pts]). The
-//!   buffer plan sizes them from the row programs (rowmode.zig), so Runner.bind allocates S slots' worth.
-//! - `activate(s)`: the one-slot roles point at slot s's views, the forward's `slot` (position, Engram tail, pending
-//!   window) is slot s's, and the pool's current slot is s. Every one-slot operation (Forward.prefill / window / keep /
-//!   release) then runs on slot s unchanged. The leader sends `op_select` first, so every rank activates the same slot
-//!   before the same operation.
-//! - `deactivate()`: the roles back at the stacked bases (row mode's view), the active slot's state stored.
-//! - Swapped roles (`swap`: CED's stash ring "s.ced.*", one buffer the active slot's prompt uses): each slot's bytes kept
-//!   aside while another slot's prompt runs, swapped in by `activate` on every rank alike (Python keeps a stash a slot,
-//!   replay.py `encode`). Only prompts prefilled in pieces between decode rounds (TF_DSV41_PREFILL_PIECES) interleave
-//!   two slots' prompts; a whole prompt in one call never needed it.
-//! Row mode needs the pool (Python: rowmode.ready); the contiguous slot is refused by name (error.RowsNeedPool).
-//! The session store (sessions_gpu.zig) runs on the activated slot: its views of the stacked roles (a slot's bytes),
-//! its `Forward.Slot`, the pool's current slot.
+//! Several live slots on the GPU path: each slot's bounded state stacked a role, one slot activated through views.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -46,6 +29,7 @@ pub const SlotSet = struct {
     f: *fwd.Forward,
     n: u32,
     states: []fwd.Slot,
+    transactions: []@import("cuda_transaction.zig").Transaction,
     /// the slot whose views are bound (its state lives in f.slot meanwhile); null: the stacked bases
     active: ?u32 = null,
     roles: std.StringArrayHashMapUnmanaged(Stacked) = .empty,
@@ -61,14 +45,19 @@ pub const SlotSet = struct {
         const ss = try gpa.create(SlotSet);
         errdefer gpa.destroy(ss);
         const states = try gpa.alloc(fwd.Slot, n);
+        errdefer gpa.free(states);
         @memset(states, .{});
-        ss.* = .{ .gpa = gpa, .f = f, .n = n, .states = states };
+        const transactions = try gpa.alloc(@import("cuda_transaction.zig").Transaction, n);
+        @memset(transactions, .{});
+        ss.* = .{ .gpa = gpa, .f = f, .n = n, .states = states, .transactions = transactions };
         f.pf_switch = .{ .ctx = ss, .run = viewFn };
         f.pf_stash = .{ .ctx = ss, .run = stashFn };
         return ss;
     }
 
     pub fn deinit(ss: *SlotSet) void {
+        for (ss.transactions) |*x| x.deinit(ss.gpa);
+        ss.gpa.free(ss.transactions);
         for (ss.swapped.items) |*x| x.aside.free();
         ss.swapped.deinit(ss.gpa);
         ss.roles.deinit(ss.gpa);
@@ -98,14 +87,14 @@ pub const SlotSet = struct {
         }
     }
 
-    /// After Runner.bind: `roles` (planned ones; others skipped) become per-slot by swapping (CED's stash ring with
-    /// prompts in pieces). Each slot's copy is set aside in its own buffer (S x the role's bytes).
+    /// After Runner.bind: `roles` (planned ones) become per-slot by swapping, each slot's copy in its own buffer.
     pub fn swap(ss: *SlotSet, plan: *const buffers.Plan, roles: []const []const u8) !void {
         const r = ss.f.runner;
         for (roles) |role| {
             const len = plan.sizes.get(role) orelse continue;
             const addr = r.addressOf(role) orelse return error.NotBound;
-            try ss.swapped.append(ss.gpa, .{ .addr = addr, .len = len, .aside = try cuda.DeviceBuffer.alloc(r.d, len * ss.n) });
+            try ss.swapped.ensureUnusedCapacity(ss.gpa, 1);
+            ss.swapped.appendAssumeCapacity(.{ .addr = addr, .len = len, .aside = try cuda.DeviceBuffer.alloc(r.d, len * ss.n) });
         }
     }
 
@@ -146,22 +135,22 @@ pub const SlotSet = struct {
         if (ss.active == s) return;
         ss.store();
         ss.f.slot = ss.states[s];
-        try ss.point(s);
+        ss.f.transaction = ss.transactions[s];
+        ss.transactions[s] = .{};
         ss.active = s;
+        try ss.point(s);
     }
 
-    /// Slot s's views and state current on this rank alone (no op_select: a multi-segment prefill run's segments,
-    /// which every rank runs in the same order; forward_prefill.promptMulti). The swapped roles (CED's stash ring)
-    /// stay with their owner: a run switches slots at every segment's CSA2 steps of every layer, and only its stash
-    /// steps touch the ring, which make it the current slot's first (`stashFn`). Swapped here, a 3-segment run moved
-    /// 2 x 6.6 MB a switch: 715 MB and 7 ms of copies in one 20-layer encoder pass (a Spark nsys capture, 2026-10-09).
+    /// Slot s's views and state current on this rank alone (no op_select); swapped roles stay with their owner.
     pub fn view(ss: *SlotSet, s: u32) !void {
         if (s >= ss.n) return error.SlotRange;
         if (ss.active == s) return;
         ss.store();
         ss.f.slot = ss.states[s];
-        try ss.point(s);
+        ss.f.transaction = ss.transactions[s];
+        ss.transactions[s] = .{};
         ss.active = s;
+        try ss.point(s);
     }
 
     fn viewFn(ctx: *anyopaque, s: u32) anyerror!void {
@@ -189,8 +178,16 @@ pub const SlotSet = struct {
         return if (ss.active == s) &ss.f.slot else &ss.states[s];
     }
 
+    pub fn transaction(ss: *SlotSet, s: u32) *@import("cuda_transaction.zig").Transaction {
+        return if (ss.active == s) &ss.f.transaction else &ss.transactions[s];
+    }
+
     fn store(ss: *SlotSet) void {
-        if (ss.active) |a| ss.states[a] = ss.f.slot;
+        if (ss.active) |a| {
+            ss.states[a] = ss.f.slot;
+            ss.transactions[a] = ss.f.transaction;
+            ss.f.transaction = .{};
+        }
     }
 
     fn point(ss: *SlotSet, s: u32) !void {

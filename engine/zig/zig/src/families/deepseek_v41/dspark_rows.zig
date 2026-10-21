@@ -1,19 +1,9 @@
-//! The host side of DSpark passes over several slots (dspark_slots.zig runs them on the GPU), pure and host-tested:
-//! which slots share a pass, the pass's statics (Python's DraftInputs.stage in row mode: each row's ring slot, the
-//! context list as rows of the stacked ring), the plan-link messages and the gathered candidates' order.
-//!
-//! A pass over k slots runs k x block rows. Python runs every live slot in one pass, padded to a power of two (20 rows
-//! at 4 slots); our pass is gated below 16 rows (mhc_cuda's site1 / final take at most 16 rows, and a 16-row int is a
-//! new Triton specialization), so a round's slots split into balanced passes of at most `group` slots (block 5: 3).
-//! A slot's drafts depend on its own rows only (every launch is row-invariant), so grouping changes no draft.
+//! Host side of DSpark passes over several slots: grouping, pass statics, plan-link messages, candidate order.
 
 const std = @import("std");
 const emit = @import("dspark_emit.zig");
 
-/// Plan-link operations (docs 0a: 40-43, the CUDA port; 28-31 are the CUDA port). Every rank runs them in
-/// the leader's order.
-/// 40: [op, slot, start, src, skip, n]: an ingest of n taps rows from row `skip` of `src` (0 "w.taps", 1 batch.zig's
-///     stash) into slot's rings at positions start ..; src -1: the rows are not on the device, the context restarts.
+/// Plan-link op 40 (every rank, leader order): [op, slot, start, src, skip, n]: ingest n taps rows; src -1: restart.
 pub const op_ingest: i64 = 40;
 /// 41: [op, k, (slot, anchor, start) x k]: one pass over k slots (their rows in this order).
 pub const op_propose: i64 = 41;
@@ -28,12 +18,10 @@ pub fn enabled() bool {
     return std.mem.eql(u8, std.mem.span(v), "1");
 }
 
-/// The most slots a pass takes: the most whose rows stay below 16, or with TF_DSV41_ROWS_CAP past 16 (block_wide.zig:
-/// the > 16-row decode path) the most within the cap, so 4 slots run one 20-row pass as Python's drafter does
-/// (TF_DSV41_SLOT_DRAFT_GROUP lowers it; 1: a pass a slot, the one-slot pass's shapes).
+/// The most slots a pass: rows below 16, or within TF_DSV41_ROWS_CAP past 16; TF_DSV41_SLOT_DRAFT_GROUP lowers it.
 pub fn groupFromEnv(block: u32) !u32 {
     const cap: u32 = if (std.c.getenv("TF_DSV41_ROWS_CAP")) |v| try std.fmt.parseInt(u32, std.mem.span(v), 10) else 16;
-    // past 16 rows: every live slot (TF_DSV41_SLOTS) within the cap, as Python's drafter runs them in one pass
+    // past 16 rows: every live slot (TF_DSV41_SLOTS) within the cap, in one pass
     const live: u32 = if (std.c.getenv("TF_DSV41_SLOTS")) |v| try std.fmt.parseInt(u32, std.mem.span(v), 10) else 1;
     const most = if (cap > 16) @max(1, @min(live, cap / block)) else maxGroup(block);
     const v = std.c.getenv("TF_DSV41_SLOT_DRAFT_GROUP") orelse return most;
@@ -64,10 +52,7 @@ pub fn groups(n: usize, most: usize, out: [][2]usize) usize {
 /// One slot of a pass: its ring slot, the pending token at `start`, and the first position whose ring rows are its own.
 pub const Member = struct { slot: u32, anchor: u32, start: u64, valid: u64 };
 
-/// The pass's statics into the host mirrors (`h64` / `h32`, at least `lay.len64` / `lay.len32` long), as Python's
-/// DraftInputs.stage in row mode: block ids [anchor, noise ...], positions start .., read / write slot = the slot,
-/// the context list max(start - window, valid) .. start - 1 as rows of the stacked ring (slot x ring + row), counts,
-/// lo = start, hi = start + n - 1. Writes only the arrays the launches read; everything else is zero.
+/// The pass's statics into the host mirrors in row mode; writes only the arrays the launches read, the rest zero.
 pub fn stage(lay: emit.Layout, n: u32, window: u32, ring: u32, noise: u32, ms: []const Member, h64: []i64, h32: []i32) void {
     @memset(h64[0..@intCast(lay.len64)], 0);
     @memset(h32[0..@intCast(lay.len32)], 0);
@@ -93,9 +78,7 @@ pub fn stage(lay: emit.Layout, n: u32, window: u32, ring: u32, noise: u32, ms: [
     }
 }
 
-/// The one-slot pass's statics (dspark_gpu.zig, Python's DraftInputs for slot 0): ids [anchor, noise ...],
-/// positions start .., the context list max(start -| window, valid) .. start - 1 as ring rows, counts, lo, hi, start,
-/// anchor; every other element 0.
+/// The one-slot pass's statics: ids, positions, the context list as ring rows, counts, lo, hi, start, anchor.
 pub fn stageOne(st: emit.Statics, ring: u64, noise: u32, valid: u64, anchor: u32, start: u64, h64: []i64, h32: []i32) void {
     const n: usize = @intCast(st.n);
     const W: usize = @intCast(st.window);
@@ -119,8 +102,7 @@ pub fn stageOne(st: emit.Statics, ring: u64, noise: u32, valid: u64, anchor: u32
     h32[@intCast(st.anchor())] = @intCast(anchor);
 }
 
-/// glue.cu ds_stage's arithmetic on the host (its mirror, for the test against `stageOne`): the position-dependent
-/// statics from a device pick `pick` ([nw + 3]: picks, accepted, bonus, next position) over already staged ones.
+/// glue.cu ds_stage's arithmetic on the host (tests `stageOne`): position-dependent statics from a device pick.
 pub fn stageMirror(st: emit.Statics, ring: u64, noise: u32, valid: u64, pick: []const i64, nw: usize, h64: []i64, h32: []i32) void {
     const n: usize = @intCast(st.n);
     const W: i64 = st.window;
@@ -210,10 +192,7 @@ pub fn proposeOf(msg: []const i64, valid: []const u64, out: []Member) ![]Member 
 /// Where an ingest's taps rows are: `src` (0 "w.taps", 1 the stash, -1 not on the device) and the row within it.
 pub const TapsAt = struct { src: i64, skip: i64 };
 
-/// The taps rows `row0 .. row0 + n` of a slot whose taps start at device address `address` (`rows` of them, `stride`
-/// bytes a row): in "w.taps" (`taps_base`) or the stash (`stash`: base and bytes, len 0: none). Rows past the taps
-/// or past the planned ingest rows are not on the device (Python's restore without DSpark rows: the context restarts
-/// after them).
+/// A slot's taps rows `row0 .. row0 + n` in "w.taps" or the stash; rows not on the device restart the context.
 pub fn locate(address: u64, rows: u32, stride: u64, row0: u32, n: u32, ingest_rows: u32, taps_base: u64, stash: [2]u64) !TapsAt {
     if (row0 + n > rows or n > ingest_rows) return .{ .src = -1, .skip = 0 };
     const in_stash = address >= stash[0] and address < stash[0] + stash[1];
@@ -222,8 +201,7 @@ pub fn locate(address: u64, rows: u32, stride: u64, row0: u32, n: u32, ingest_ro
     return .{ .src = @intFromBool(in_stash), .skip = @intCast((address - base) / stride + row0) };
 }
 
-/// The ranks' gathered candidates [W][R][2k] (values, then ids as fp32 bits) into rows of [W k] (rank 0's k first,
-/// Python's gather_cols): `cand` ids, `cval` values.
+/// The ranks' gathered candidates [W][R][2k] (values, then ids as fp32 bits) into rows of [W k]: `cand` ids, `cval`.
 pub fn ungather(all: []const f32, world: usize, R: usize, k: usize, cand: []i32, cval: []f32) void {
     const c = world * k;
     for (0..world) |w| for (0..R) |i| {

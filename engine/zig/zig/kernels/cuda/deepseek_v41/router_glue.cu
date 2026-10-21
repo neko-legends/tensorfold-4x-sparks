@@ -1,8 +1,4 @@
-// Locally owned decode glue. Arithmetic reference: exl3_experts.cu, source blob
-// 8ce66ca83bce at 78b703d (src/tensorfold/cuda/exl3/experts.cu).
-// Build with upstream exl3_experts' -O3 policy (default fmad on, ftz off).
-// R <= 64, slots <= 9, E <= 512,
-// K == 5120, bf16 input; each warp preserves upstream rot_in's 128-value tree.
+// Decode router glue, arithmetic of exl3/experts.cu (blob 8ce66ca83bce); -O3, fmad on, ftz off; R <= 64, K == 5120.
 #include <cuda_runtime.h>
 #include <cuda_fp16.h>
 #include <cuda_bf16.h>
@@ -29,9 +25,7 @@ __device__ __forceinline__ void fwht128(float (&v)[4], int lane) {
     }
 }
 
-// Integer-equivalent to upstream group_kernel: histogram, ascending-id scan,
-// and each pick's count of equal earlier picks. Atomics affect counts only.
-// Duplicate picks beyond maxm are truncated, exactly as upstream's row scan.
+// Integer-equal to upstream group_kernel (histogram, id scan, earlier equal picks; duplicates past maxm truncated).
 __device__ __forceinline__ void group_rows(const int* pick, int* uids, int* ucount,
                                           int* members, int R, int slots, int E, int maxm) {
     __shared__ int picks[MAX_PICKS], count[MAX_E], place[MAX_E], warp_tot[WARPS];
@@ -91,9 +85,7 @@ extern "C" __global__ void __launch_bounds__(1024) router_group(
     dsv41_router_glue::group_rows(pick, uids, ucount, members, R, slots, E, maxm);
 }
 
-// grid.x = 1 + ceil(R * slots * (K / 128) * 2 / 32), block.x = 1024.
-// CTA 0 groups; every other warp rotates one independent (pick, K-block, mat).
-// No output of grouping feeds rotation. The following kernel observes both.
+// grid.x = 1 + ceil(R slots (K / 128) 2 / 32), block 1024: CTA 0 groups, other warps rotate one (pick, block, mat).
 extern "C" __global__ void __launch_bounds__(1024) router_group_rot(
     const uint16_t* x, int x_stride, const int* pick, const half* suh0, const half* suh1,
     half* out0, half* out1, int* uids, int* ucount, int* members,

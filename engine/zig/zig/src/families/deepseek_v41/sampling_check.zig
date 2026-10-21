@@ -1,14 +1,4 @@
-//! tf-dsv41-samp: the keyed sampler's device steps on one GPU against the host reference (sampling_pipe.HostDevice).
-//! Rows of bf16-valued logits as a rank's vocabulary slice (64,640 columns: Gaussian, peaked, coarse ties, flat):
-//!
-//! - candidates (topk_keys.cu + sampling.cu's pack) at k 9 / 28 / 520 / 1024: bit-equal to the host's packed rows;
-//! - nucleus statistics at T 0.6 / 1.0 / 1.3, both kernels (stats_kernel's CTA a row and the split launches over every
-//!   SM): the max bit-equal, the sum within 1e-12 relative (its order is not torch's; ``nucleus.GUARD`` absorbs it);
-//!   then each one's time a call at 1 / 5 / 16 rows (a sampled segment's statistics, TF_DSV41_SAMP_STATS);
-//! - the picks (``serve/sampling.zig``) from the device's candidates and statistics equal the host's, for top-p,
-//!   top-k and min-p samplings at many positions.
-//!
-//! Prints one line a check and PASS / FAIL; exit 0 on PASS.
+//! tf-dsv41-samp: the keyed sampler's device steps on one GPU against the host reference; PASS / FAIL, exit 0 on PASS.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -48,7 +38,10 @@ pub fn main(init: std.process.Init) !u8 {
     var kernels = try dk.Kernels.load(&ctx);
     defer kernels.deinit();
     var gpu = try Gpu.init(&driver, stream, &kernels);
-    defer gpu.deinit();
+    defer {
+        drainOrExit(stream);
+        gpu.deinit();
+    }
     var host: pipe.HostDevice = .{ .gpa = gpa };
     defer host.deinit();
     const dev = gpu.device();
@@ -59,7 +52,10 @@ pub fn main(init: std.process.Init) !u8 {
     defer gpa.free(lg);
     rows(prng.random(), lg);
     var d_lg = try cuda.DeviceBuffer.alloc(&driver, 4 * lg.len);
-    defer d_lg.free();
+    defer {
+        drainOrExit(stream);
+        d_lg.free();
+    }
     try d_lg.upload(0, std.mem.sliceAsBytes(lg));
     const h_lg: u64 = @intFromPtr(lg.ptr);
     var bad: usize = 0;
@@ -170,5 +166,12 @@ fn timeStats(driver: *const cuda.Driver, stream: cuda.Stream, gpu: *Gpu, dev: pi
         try e1.synchronize();
         const ms = try cuda.Event.elapsedMs(e0, e1);
         std.debug.print("stats time {s} rows {d}: {d:.1} us a call\n", .{ if (mode) "split" else "row", rows_, 1000.0 * ms / reps });
+    };
+}
+
+fn drainOrExit(stream: cuda.Stream) void {
+    stream.synchronize() catch |err| {
+        std.log.err("sampler drain failed ({t}); retaining owners until process exit", .{err});
+        std.process.exit(1);
     };
 }

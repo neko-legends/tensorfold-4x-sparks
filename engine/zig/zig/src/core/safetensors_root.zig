@@ -2,3 +2,7 @@
 //! (tensorfold-dsv41's engine: DeepSeek-V4.1's pack reads safetensors headers through `core.safetensors`).
 
 pub const safetensors = @import("safetensors.zig");
+/// The EXL3 pack geometry (groups, TP parts, expert layouts) DeepSeek-V4.1's plan/names/pack read through `core`.
+pub const exl3_layout = @import("exl3_layout.zig");
+/// The codebook the pack markers pick (exl3_layout.Codebook lives here).
+pub const exl3_load = @import("exl3_load.zig");

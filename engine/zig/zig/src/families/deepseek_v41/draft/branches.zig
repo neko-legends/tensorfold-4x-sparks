@@ -1,20 +1,4 @@
-//! Tree verify windows on a target that runs chains only (the GPU forward): Python's tree.py verifies each extra
-//! branch as its own chain window on a shadow slot (shadow.py: the slot's state copied, private pages under the
-//! window), so every row attends its ancestors only and no kernel changes. Here the branches run on the slot itself,
-//! lazily: the window first runs the chain of first children from row 0 (the main chain, row 0 the pending token);
-//! where the target's choice after a row is a later child of it (a sibling), that chain is dropped uncommitted and the
-//! path so far plus the sibling's chain of first children runs instead. The accepted path (lanes accept.acceptPath:
-//! the first child by row whose token is the choice) is then a prefix of the last chain, which stays pending for keep.
-//!
-//! - **Exactness:** every chain is an ordinary chain window from the committed state, so each row's bits are the
-//!   serial decode's (the drafted == serial induction); a row re-run in a later chain must choose as before (checked).
-//! - **No shadow state:** nothing is copied and no private pages exist, so the paged pool, split KV and sessions see
-//!   plain windows (Python refuses split KV with trees: its private pages ignore the split's page residues).
-//! - **Cost:** a sibling that loses costs no row (Python computes it beside the main chain); one that wins costs a
-//!   second window of its path. The cost model is Python's either way (tree.plan with Python's duplicate pricing), so
-//!   the rounds' choices, acceptance and tokens per round are Python's.
-//! - **Choices** of rows no chain ran are `unrun` (acceptPath never reaches them: it enters a child only on its
-//!   parent's choice, and that child's chain is the one run).
+//! Tree verify windows on a chain-only target: siblings run lazily as fresh chain windows on the slot itself, exact.
 const std = @import("std");
 const lanes = @import("lanes");
 const iface = @import("iface.zig");
@@ -31,8 +15,7 @@ pub const Chains = struct {
     vtable: *const VTable,
 
     pub const VTable = struct {
-        /// A chain window: `tokens` at `start` (the slot's committed position; row r at start + r, its choice keyed at
-        /// draws[r]) into `choices`. A pending chain window that is neither kept nor dropped keeps every row first.
+        /// Chain window: `tokens` at `start` (row r at start + r, choice keyed at draws[r]); unresolved keeps all rows.
         run: *const fn (ptr: *anyopaque, slot: u32, start: u64, tokens: []const u32, draws: []const u64, sampling: ?lanes.Sampling, choices: []u32) anyerror!void,
         /// Drop the slot's pending chain window without committing a row (the slot stays at its start).
         drop: *const fn (ptr: *anyopaque, slot: u32) anyerror!void,
@@ -52,8 +35,7 @@ pub const Resolver = struct {
 
     pub const Stats = struct { trees: u64 = 0, chains: u64 = 0, rerun_rows: u64 = 0, deep: u64 = 0 };
 
-    /// Resolve the tree window `s` (parents set) through `ch` into `choices` (s.tokens.len), leaving the chain that
-    /// holds the accepted path pending on the slot.
+    /// Resolve tree window `s` (parents set) through `ch` into `choices`; the accepted path's chain stays pending.
     pub fn window(r: *Resolver, ch: Chains, s: iface.Segment, choices: []u32) !void {
         const n = s.tokens.len;
         const parents = s.parents orelse return error.NoTree;
@@ -123,8 +105,7 @@ pub const Resolver = struct {
         r.live = true;
     }
 
-    /// The kept path (tree rows, row 0 first) as the last chain's accepted count (its rows 0 .. count). The map stays
-    /// until the slot's next window (lanes ingests the path's taps after the keep).
+    /// The kept path (tree rows, row 0 first) as the last chain's accepted count; the map stays until the next window.
     pub fn keep(r: *Resolver, path: []const u32) !u32 {
         if (!r.live) return error.NoTree;
         if (path.len == 0 or path.len > r.n) return error.NotResolved;

@@ -1,13 +1,4 @@
-//! The stream top-k twins (stream_rb.py's `_stream_pf`: one row a program with the next tile's key loads issued
-//! ahead; `_stream_rb2` / `_stream_rb4`: row-blocked) against the served `_stream`
-//! (csa2/stream_topk.py, MODE 0) at prod's indexer shapes (H 32, D 128, BP 64, ratio 2, SPLIT 16,384, K 512, CAP
-//! 1,024, FP8 keys paged at 128 rows a page), on synthetic data: random bf16 queries and fp32 head weights, random
-//! e4m3 key rows (NaN codes avoided) with scale 0.0625, an identity page table. For every (start, rows) case each
-//! kernel runs once into its own poisoned buffer and every row's split buffers' first K int64 keys are compared with
-//! `_stream`'s slot for slot; then each is timed with events (2 warm-ups, the median of `reps`). The kernels come from
-//! a Triton AOT set (aot.json + cubins/); a variant missing from it is SKIPPED (never PASS).
-//!
-//!   tf-dsv41-test stream-rb <aot dir> [--reps 5] [--twins 1,2,4]   (1: `_stream_pf`, 2 / 4: `_stream_rb<N>`)
+//! Stream top-k twins (`_stream_pf`, `_stream_rb2` / `_rb4`) against `_stream`: keys slot for slot, then timed.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -55,14 +46,14 @@ fn median(xs: []f32) f32 {
     return xs[xs.len / 2];
 }
 
-/// The emitter's constexprs (block_prefill.streamSelect): WS / SCALE as f64 1 / sqrt narrowed to fp32 (triton_call.split).
+/// The emitter's constexprs (block_prefill.streamSelect): WS / SCALE as f64 1 / sqrt narrowed to fp32.
 fn common(c: *std.ArrayList(aot.Const), a: std.mem.Allocator) !void {
     try c.appendSlice(a, &.{
-        aot.ci("RATIO", RATIO),                                    aot.ci("H", H),
-        aot.ci("D", D),                                            aot.ci("BP", BP),
-        aot.cf("WS", @floatCast(1.0 / @sqrt(@as(f64, H)))),        aot.cf("SCALE", @floatCast(1.0 / @sqrt(@as(f64, D)))),
-        aot.ci("SPLIT", SPLIT),                                    aot.ci("K", K),
-        aot.ci("CAP", CAP),                                        aot.ci("PSH", PSH),
+        aot.ci("RATIO", RATIO),                             aot.ci("H", H),
+        aot.ci("D", D),                                     aot.ci("BP", BP),
+        aot.cf("WS", @floatCast(1.0 / @sqrt(@as(f64, H)))), aot.cf("SCALE", @floatCast(1.0 / @sqrt(@as(f64, D)))),
+        aot.ci("SPLIT", SPLIT),                             aot.ci("K", K),
+        aot.ci("CAP", CAP),                                 aot.ci("PSH", PSH),
         aot.ci("KFP8", 1),
     });
 }
@@ -84,10 +75,10 @@ const Case = struct {
         var args: std.ArrayList(aot.Arg) = .empty;
         var consts: std.ArrayList(aot.Const) = .empty;
         try args.appendSlice(a, &.{
-            aot.ptr("QI", "*bf16", c.qi),            aot.ptr("W", "*fp32", c.w),
-            aot.int("w_stride", H),                  aot.ptr("IK", "*u8", c.ik),
-            aot.ptr("POS", "*i32", c.pos),           aot.ptr("BUF", "*i64", buf),
-            aot.int("nsplit", @intCast(c.ns)),       aot.ptr("PT", "*i32", c.pt),
+            aot.ptr("QI", "*bf16", c.qi),      aot.ptr("W", "*fp32", c.w),
+            aot.int("w_stride", H),            aot.ptr("IK", "*u8", c.ik),
+            aot.ptr("POS", "*i32", c.pos),     aot.ptr("BUF", "*i64", buf),
+            aot.int("nsplit", @intCast(c.ns)), aot.ptr("PT", "*i32", c.pt),
         });
         try common(&consts, a);
         const ns: u32 = @intCast(c.ns);

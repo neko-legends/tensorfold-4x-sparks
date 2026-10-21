@@ -1,6 +1,4 @@
-//! Cost-derived DSpark depth (Python depth.Depth): verify the k drafts maximizing E(k) - lambda verify[k] from the
-//! confidence head's calibrated chances; a lone window may verify none (zero depth), a shared round chooses jointly.
-//! Every input is shared by both ranks and nothing reads a clock, so both ranks choose alike.
+//! Cost-derived DSpark depth: verify the k drafts maximizing E(k) - lambda verify[k]; clock-free, so ranks agree.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Costs = @import("costs.zig").Costs;
@@ -9,7 +7,7 @@ const joint = @import("joint.zig");
 const tree = @import("tree.zig");
 
 pub const rate_window = 16; // rounds in a slot's running rate
-pub const slot_rows = 16; // a slot's window at most (Python MAX_ROWS)
+pub const slot_rows = 16; // a slot's window at most
 
 pub const Mode = enum { cost, static };
 

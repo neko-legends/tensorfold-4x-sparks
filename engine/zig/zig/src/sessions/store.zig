@@ -1,10 +1,4 @@
-//! The session store (DeepSeek sessions.py + residency.py on the Zig engine): RAM entries holding pool pages and bounded state, chats
-//! kept resident within a budget, the least recently used chat parked to the NVMe tier, resumes from RAM (shared pages) or NVMe (streamed).
-//!
-//! Both ranks hold a store and make the same calls in the same order (the round plan), so entries, pages and evictions agree; parks and
-//! restores that run on the tier thread change the index only when the plan settles them.
-//! Older turns are never rewritten: an entry its chat's newer entry covers is dropped, and a park whose leading pages came from a file
-//! writes a delta on that file.
+//! The session store: RAM entries holding pool pages and bounded state, a residency budget, and the NVMe tier.
 
 const std = @import("std");
 const Io = std.Io;
@@ -23,7 +17,7 @@ const Job = jobs.Job;
 
 pub const none = prefix.none;
 
-/// A slot's bounded state (SWA rings, carries, Engram lookback, DSpark taps) as the family snapshots it: opaque to the store.
+/// A slot's bounded state (rings, carries, lookback, taps) as the family snapshots it: opaque to the store.
 pub const Bounded = struct {
     ptr: *anyopaque,
     vtable: *const VTable,
@@ -41,9 +35,9 @@ pub const Bounded = struct {
 pub const Policy = struct {
     /// bounded state the RAM tier keeps (least recently used entries go past it)
     ram_bytes: u64 = 512 << 20,
-    /// idle chats resident in the pool (0: no limit) and pool bytes held by entries alone (0: no limit)
-    chats: u32 = 0,
-    resident_bytes: u64 = 0,
+    /// Idle chats and entry-only pool bytes: null is unlimited; zero retains no idle residency.
+    chats: ?u32 = null,
+    resident_bytes: ?u64 = null,
     /// park an evicted chat's older turns too (default: drop them, the leaf's file covers them)
     park_prefixes: bool = false,
     /// drop, never write, an entry a newer entry of its chain covers
@@ -141,7 +135,7 @@ pub const Store = struct {
         s.* = undefined;
     }
 
-    fn digests(s: *Store, tag: u32, ids: []const i32) ![]const Digest {
+    pub fn digests(s: *Store, tag: u32, ids: []const i32) ![]const Digest {
         const n = ids.len / s.pool.page;
         try s.scratch.resize(s.gpa, n);
         prefix.chain(tag, ids, s.pool.page, s.scratch.items);
@@ -160,7 +154,7 @@ pub const Store = struct {
         return .{ .id = id, .ram = e.ram, .pos = e.pos };
     }
 
-    fn link(s: *Store, id: u32) void {
+    pub fn link(s: *Store, id: u32) void {
         const x = &s.index.get(id).extra;
         x.older = s.newest;
         x.newer = none;
@@ -174,7 +168,7 @@ pub const Store = struct {
         if (x.newer != none) s.index.get(x.newer).extra.older = x.older else s.newest = x.older;
     }
 
-    fn touch(s: *Store, id: u32) void {
+    pub fn touch(s: *Store, id: u32) void {
         s.clock += 1;
         const e = s.index.get(id);
         e.extra.used = s.clock;
@@ -184,63 +178,27 @@ pub const Store = struct {
         }
     }
 
-    /// An entry for a slot's state at len(ids): shares of its pages below; null for a duplicate (bounded is released then).
-    pub fn save(s: *Store, slot: *Slot, bounded: Bounded, ids: []const i32, tag: u32, kind: u32) !?u32 {
-        if (ids.len == 0) return error.EmptyEntry;
-        const need = pool_mod.pagesFor(ids.len, s.pool.page);
-        if (slot.len < need) return error.SlotTooShort;
-        const d = try s.digests(tag, ids);
-        const ins = try s.index.insert(tag, ids, d, false, .{ .kind = kind });
-        errdefer if (ins.new) s.index.remove(ins.id);
-        const e = s.index.get(ins.id);
-        if (e.ram) {
-            bounded.vtable.release(bounded.ptr);
-            s.touch(ins.id);
-            s.stats.dups += 1;
-            return null;
-        }
-        const pages = try s.gpa.dupe(u32, slot.mapped()[0..need]);
-        errdefer s.gpa.free(pages);
-        try s.index.setRam(ins.id, true, ids);
-        s.pool.share(pages);
-        const x = &s.index.get(ins.id).extra;
-        x.pages = pages;
-        x.bounded = bounded;
-        x.kind = kind;
-        if (slot.origin) |o| x.origin = .{ .key = o.key, .pages = @min(o.pages, @as(u32, @intCast(ids.len / s.pool.page))) };
-        s.bounded_total += bounded.vtable.nbytes(bounded.ptr);
-        s.ram_count += 1;
-        s.link(ins.id);
-        s.touch(ins.id);
-        s.stats.saves += 1;
-        try s.trimRam();
-        _ = try s.enforce();
-        return ins.id;
-    }
+    // RAM ownership transfers live in a separate module; helpers below also serve disk policy work.
+    pub const save = @import("store_ram.zig").save;
+    pub const restoreRam = @import("store_ram.zig").restoreRam;
 
-    /// A RAM entry into an empty slot: its full pages shared, its partial last page copied (copy on write); returns its bounded state.
-    pub fn restoreRam(s: *Store, id: u32, slot: *Slot) !Bounded {
+    /// A restored entry's ids (pos long): RAM from the index, else `given`, the prompt's prefix, checked.
+    pub fn historyOf(s: *Store, id: u32, given: ?[]const i32, out: []i32) !void {
         const e = s.index.get(id);
-        if (!e.ram) return error.NotInRam;
-        const full: u32 = @intCast(e.pos / s.pool.page);
-        try slot.adopt(e.extra.pages[0..full]);
-        errdefer _ = slot.releaseAll() catch {};
-        if (e.pos % s.pool.page != 0) {
-            const src = e.extra.pages[full];
-            const dst = try s.pool.takeAt(full);
-            for (s.pool.layout.families, 0..) |f, fi| {
-                if (f.split and !s.pool.owns(src)) continue;
-                try s.pages.copyPage(@intCast(fi), s.pool.familyPage(f, src), s.pool.familyPage(f, dst));
-            }
-            try slot.push(dst);
-        }
-        if (e.extra.origin) |o| slot.origin = .{ .key = o.key, .pages = @min(o.pages, full) };
-        s.touch(id);
-        s.stats.hits_ram += 1;
-        return e.extra.bounded.?;
+        if (out.len != e.pos) return error.BadLength;
+        if (e.ram) return s.index.idsOf(id, out);
+        // an NVMe entry's tokens left the index with its RAM (prefix.dropTokens): only the prompt still holds them
+        const ids = given orelse return error.NotInRam;
+        if (ids.len < e.pos) return error.BadLength;
+        const pos: usize = @intCast(e.pos);
+        const full = pos / s.pool.page;
+        const d = try s.digests(e.tag, ids[0..pos]);
+        const node = if (full == 0) prefix.root(e.tag) else d[full - 1];
+        if (!std.mem.eql(u8, &prefix.entryKey(node, e.pos, ids[full * s.pool.page .. pos]), &e.key)) return error.NotTheEntry;
+        @memcpy(out, ids[0..pos]);
     }
 
-    /// Starts an NVMe resume into an empty slot (its pages mapped now, filled by the job); settle it before the slot runs.
+    /// Starts an NVMe resume into an empty slot (pages mapped now, filled by the job); settle it before the slot runs.
     pub fn beginRestore(s: *Store, id: u32, slot: *Slot) !*Job {
         const d = s.disk orelse return error.NoDisk;
         const e = s.index.get(id);
@@ -272,7 +230,7 @@ pub const Store = struct {
         return j;
     }
 
-    /// Per family: the family-tensor pages of logical pages [first, len(pages)) (owned_only: this rank's of a split family).
+    /// Per family: family-tensor pages of logical [first, len(pages)) (owned_only: this rank's of split families).
     fn familyLists(s: *Store, pages: []const u32, first: u32, owned_only: bool) ![][]u32 {
         const fams = s.pool.layout.families;
         const out = try s.gpa.alloc([]u32, fams.len);
@@ -342,7 +300,7 @@ pub const Store = struct {
         return j;
     }
 
-    /// Settles a finished job at the plan's point: a park registers the file and lets go of the entry's pages; a restore returns the bounded state.
+    /// Settles a finished job at the plan's point: a park registers its file, a restore returns the bounded state.
     pub fn settle(s: *Store, j: *Job) !?disk_mod.Restored {
         s.runner.?.wait(j);
         defer {
@@ -388,7 +346,7 @@ pub const Store = struct {
             },
             .restore => {
                 if (j.err) |err| {
-                    // the slot as before the restore (empty, its reservation kept: prod's `sl.truncate(0)`)
+                    // the slot as before the restore: empty, its reservation kept
                     _ = try s.pool.slots.items[j.slot].truncate(0);
                     return err;
                 }
@@ -420,7 +378,7 @@ pub const Store = struct {
     }
 
     /// A RAM entry lets go of its pages and bounded state; it stays indexed if a file holds it.
-    fn leaveRam(s: *Store, id: u32) !void {
+    pub fn leaveRam(s: *Store, id: u32) !void {
         const e = s.index.get(id);
         if (!e.ram) return;
         try s.pool.drop(e.extra.pages);
@@ -437,14 +395,13 @@ pub const Store = struct {
         if (!e.extra.file) s.index.remove(id);
     }
 
-    /// An entry whose file could not be read back (a damaged NVMe file: prod's sessdisk `read` deletes it): its file
-    /// deleted and the entry gone unless RAM holds it. Every rank forgets the same entry, so the indexes stay alike.
+    /// An entry whose file could not be read back: the file deleted, the entry gone unless RAM holds it (every rank).
     pub fn forget(s: *Store, id: u32) !void {
         const e = s.index.get(id);
         if (e.extra.job != null) return error.Busy;
         if (e.extra.file) if (s.disk) |d| {
             d.stats.bad += 1;
-            // a delta's base stays while a newer file stacks on it (TF_DSV41_SESSION_DELTA; off by default)
+            // a delta's base stays while a newer file stacks on it (an opt-in delta mode)
             d.remove(e.key) catch |err| return if (err == error.HasDependents) {} else err;
             e.extra.file = false;
         };
@@ -457,7 +414,7 @@ pub const Store = struct {
         s.stats.drops += 1;
     }
 
-    /// Lets go of a RAM entry: dropped when a newer entry covers it, parked when the tier takes it, else dropped; returns a started park.
+    /// Lets go of a RAM entry: dropped when covered, parked if the tier takes it, else dropped; returns a started park.
     pub fn evict(s: *Store, id: u32) !?*Job {
         const e = s.index.get(id);
         if (e.extra.job != null) return null;
@@ -476,11 +433,11 @@ pub const Store = struct {
     }
 
     /// Evicts least recently used RAM entries past the bounded-state budget.
-    fn trimRam(s: *Store) !void {
+    pub fn trimRam(s: *Store, keep: u32) !void {
         var id = s.oldest;
         while (s.bounded_total > s.policy.ram_bytes and s.ram_count > 1 and id != none) {
             const next = s.index.get(id).extra.newer;
-            if (s.index.get(id).extra.job == null) _ = try s.evict(id);
+            if (id != keep and s.index.get(id).extra.job == null) _ = try s.evict(id);
             id = next;
         }
     }
@@ -509,11 +466,10 @@ pub const Store = struct {
         return e.extra.job == null and s.index.isLeaf(id) and (e.extra.pages.len == 0 or s.pool.slot_refs[e.extra.pages[0]] == 0);
     }
 
-    /// Evicts the least recently used idle chats past the residency budget (chats, pool bytes held by entries alone): the leaf parked,
-    /// its older turns dropped (or parked) unless another chat branches from them. Returns how many chats went.
+    /// Evicts LRU idle chats past the residency budget (leaf parked, unshared older turns dropped); returns how many.
     pub fn enforce(s: *Store) !u32 {
         const pol = s.policy;
-        if (pol.chats == 0 and pol.resident_bytes == 0) return 0;
+        if (pol.chats == null and pol.resident_bytes == null) return 0;
         var chats: std.ArrayList(Chat) = .empty;
         defer chats.deinit(s.gpa);
         var members: std.ArrayList(u32) = .empty;
@@ -528,15 +484,14 @@ pub const Store = struct {
         var idle: u32 = @intCast(chats.items.len);
         var gone: u32 = 0;
         for (chats.items) |c| {
-            const over_n = pol.chats > 0 and idle > pol.chats;
-            const over_b = pol.resident_bytes > 0 and s.pool.entryOnlyBytes() > pol.resident_bytes;
+            const over_n = if (pol.chats) |limit| idle > limit else false;
+            const over_b = if (pol.resident_bytes) |limit| s.pool.entryOnlyBytes() > limit else false;
             if (!over_n and !over_b) break;
             if (!s.index.get(c.leaf).ram or !s.idleLeaf(c.leaf)) continue;
             members.clearRetainingCapacity();
             _ = try s.index.members(c.leaf, &members, usedOf);
             _ = try s.evict(c.leaf);
-            // deepest first: a member more RAM entries extend than this chat's leaf (when still in RAM, parking) is another chat's branch point,
-            // and so is everything above it
+            // deepest first: a member more RAM entries extend than this chat's leaf is a branch point, as is all above
             const own: u32 = if (s.index.get(c.leaf).ram) 1 else 0;
             for (members.items) |m| {
                 if (s.index.get(m).extra.job != null) continue;
@@ -550,8 +505,7 @@ pub const Store = struct {
         return gone;
     }
 
-    /// Which RAM entries to let go of (coldest first, never those in keep) so need pool pages are available: [] when they are,
-    /// null when even all of them are not enough. Decides only: the plan names them, both ranks evict them.
+    /// RAM entries to let go of (coldest first, never keep) so need pages are free: [] if they are, null if impossible.
     pub fn planSpill(s: *Store, need: u32, keep: []const u32, out: *std.ArrayList(u32)) !bool {
         out.clearRetainingCapacity();
         var avail = s.pool.available();
@@ -695,8 +649,8 @@ pub const Store = struct {
         std.mem.sort(Chat, chats.items, {}, chatLess);
         var idle: u32 = @intCast(chats.items.len);
         for (chats.items) |c| {
-            const over_n = pol.chats > 0 and idle > pol.chats;
-            const over_b = pol.resident_bytes > 0 and s.pool.entryOnlyBytes() > pol.resident_bytes;
+            const over_n = if (pol.chats) |limit| idle > limit else false;
+            const over_b = if (pol.resident_bytes) |limit| s.pool.entryOnlyBytes() > limit else false;
             if (!over_n and !over_b) break;
             if (s.wouldPark(c.leaf)) try out.append(s.gpa, c.leaf);
             if (pol.park_prefixes) {

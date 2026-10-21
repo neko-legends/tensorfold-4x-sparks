@@ -1,26 +1,4 @@
-//! The row-bounded decode top-k (TF_DSV41_INDEX_BOUND) against the served kernels, on the same synthetic index scores:
-//! topk_b.cu's `topk_b_kernel` (tf_dsv41_topk_b_v1.topk) against topk_cuda.cu's `topk_kernel` (attn_cuda's top-k), and
-//! dtopk_b.py's `_dtopk_b` against csa2/dtopk.py's `_dtopk` (Triton AOT set), at prod's shapes (K 512, candidate blocks
-//! 2,048 of 8 positions).
-//!
-//! Scores are what `_scores` / `_scores_b` leave: row r at position q has nvis = (q + 1) / ratio entries, then -inf to
-//! the bucket's NK. The visible entries cycle through four patterns a row - coarse values (ties, +0 / -0), continuous
-//! values, continuous with -inf / +inf / NaN spikes, one value everywhere (all ties) - so the scan-order tie rule, the
-//! radix's quota mode and the canonical images are exercised; some short rows have nvis < K (the -inf padding picks).
-//! Row sets: a row window (row mode: int64 POS[r]) of 20 short rows (positions 100 .. ~4K) and 4 at the long position,
-//! the same 24 rows all long, and a one-slot window (int32 POS[0] + r) of 16 rows at the long position.
-//!
-//! Kernels and long positions (one A/B each, every row set):
-//!   - CUDA select, ratio 2 at 154,183 (NK 77K: one job, mode 0 - the ratio-2 index layers);
-//!   - CUDA select + blocks, ratio 1 at 120,000 (two jobs, modes 0 and 2 - the candidate source under 126,976 keys);
-//!   - CUDA blocks only, ratio 1 at 154,183 (the source's blocks after `_dtopk`: one job, mode 2);
-//!   - `_dtopk` mode 0, ratio 1 at 154,183 (NK past 126,976: the ratio-1 index layers);
-//!   - `_dtopk` mode 2, ratio 1 at 1,040,000 (the source's blocks past 126,976 blocks).
-//! Each kernel writes its own poisoned outputs (selection [R, K], visible counts [R]; a blocks job's [R, 2048]); every
-//! output byte is compared, then each is timed with events (2 warm-ups, the median of `reps`). A Triton variant missing
-//! from the AOT set is SKIPPED (never PASS).
-//!
-//!   tf-dsv41-test topk-b <aot dir> [--reps 20]
+//! Row-bounded decode top-k (TF_DSV41_INDEX_BOUND, CUDA and Triton) against the served kernels: bit-exact, timed.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -34,8 +12,7 @@ const tk = dsv41.ops.topk;
 const K: i64 = 512;
 const CB: i64 = 2048;
 const BS: i64 = 8;
-/// graphs.Settings.bucket: a served window's keys end at a multiple of it (Triton's div16 specialization of NK and
-/// the strides: the served variants)
+/// graphs.Settings.bucket: a served window's keys end at a multiple of it (the served variants' div16 NK / strides).
 const bucket: i64 = 2048;
 const LONG: i64 = 154_183; // the bench's 131K prompt (long-131072: 154,183 prompt tokens)
 
@@ -177,16 +154,16 @@ fn launch(k: *const dsv41.Kernels, set: *const aot.Set, stream: cuda.Stream, a: 
             const out = if (blocks) b.out1 else b.out0;
             var args: std.ArrayList(aot.Arg) = .empty;
             try args.appendSlice(a, &.{
-                aot.ptr("S", "*fp32", b.s),                          aot.int("s_stride", @intCast(b.ss)),
-                aot.ptr("P", "*fp32", b.s),                          aot.int("p_stride", 0),
+                aot.ptr("S", "*fp32", b.s),                             aot.int("s_stride", @intCast(b.ss)),
+                aot.ptr("P", "*fp32", b.s),                             aot.int("p_stride", 0),
                 aot.ptr("POS", if (b.pos64) "*i64" else "*i32", b.pos), aot.int("NK", @intCast(if (blocks) nb else b.nk)),
-                aot.ptr("OUT", "*i32", out),                         aot.int("o_stride", @intCast(kk)),
+                aot.ptr("OUT", "*i32", out),                            aot.int("o_stride", @intCast(kk)),
                 aot.ptr("CNT", "*i32", if (blocks) out else b.cnt0),
             });
             const consts = [_]aot.Const{
-                aot.ci("RATIO", sh.ratio),       aot.ci("K", kk),               aot.ci("MODE", if (blocks) 2 else 0),
-                aot.ci("ROWS", @intFromBool(b.pos64)), aot.ci("T", 4096),      aot.ci("BS", BS),
-                aot.ci("RB", 8),                 aot.ci("NPASS", 8),            aot.ci("SORT", 0),
+                aot.ci("RATIO", sh.ratio),              aot.ci("K", kk),    aot.ci("MODE", if (blocks) 2 else 0),
+                aot.ci("ROWS", @intFromBool(b.pos64)),  aot.ci("T", 4096),  aot.ci("BS", BS),
+                aot.ci("RB", 8),                        aot.ci("NPASS", 8), aot.ci("SORT", 0),
                 aot.ci("COUNT", @intFromBool(!blocks)), aot.ci("KP", kk),
             };
             return set.run(stream, if (bounded) "_dtopk_b" else "_dtopk", .{ @intCast(b.R), 1, 1 }, args.items, &consts);
@@ -225,8 +202,7 @@ pub fn run(gpu: Gpu, k: *const dsv41.Kernels, rest: []const [:0]const u8) !void 
         const R = pos.len;
         var last: i64 = 0;
         for (pos) |q| last = @max(last, q);
-        // the served window's NK: its context bucket's end (a 2,048-token step) over the ratio, every row's keys past
-        // its own visible end -inf (fillScores); a multiple of 16, as the served row-mode variants' NK / s_stride are
+        // NK: the context bucket's end over the ratio (a multiple of 16); keys past a row's visible end are -inf
         const nk: i64 = @divFloor(std.mem.alignForward(i64, last + 1, bucket), sh.ratio);
         const nku: usize = @intCast(nk);
         const host = try gpa.alloc(f32, R * nku);
@@ -248,8 +224,15 @@ pub fn run(gpu: Gpu, k: *const dsv41.Kernels, rest: []const [:0]const u8) !void 
         const hosts: [2][]u32 = .{ try a.alloc(u32, words), try a.alloc(u32, words) };
         var bufs: [2]Bufs = undefined;
         for (&bufs, outs) |*b, ob| b.* = .{
-            .s = s.ptr, .ss = nk, .nk = nk, .pos = pbuf.ptr, .pos64 = row_mode, .R = R,
-            .out0 = ob.ptr, .cnt0 = ob.ptr + 4 * R * @as(usize, @intCast(K)), .out1 = ob.ptr + 4 * (R * @as(usize, @intCast(K)) + R),
+            .s = s.ptr,
+            .ss = nk,
+            .nk = nk,
+            .pos = pbuf.ptr,
+            .pos64 = row_mode,
+            .R = R,
+            .out0 = ob.ptr,
+            .cnt0 = ob.ptr + 4 * R * @as(usize, @intCast(K)),
+            .out1 = ob.ptr + 4 * (R * @as(usize, @intCast(K)) + R),
         };
         const label = switch (st) {
             .mixed => "row window: 20 short + 4 long",

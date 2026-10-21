@@ -1,14 +1,4 @@
-//! Row mode's per-row metadata (Python rowtab.py, G8): a window over any mix of slots runs as one launch sequence over
-//! its rows padded to a bucket (1-8, 12, 16, 24, 32, 48, 64), so one CUDA graph a (bucket, context bucket) serves every
-//! mix. Every per-row value is a column of one int64 table [NCOL, rmax] on the device, written by one copy before the
-//! launch:
-//! - `ids`: the token ids (the embedding's input); `pos`: each row's position (RoPE, the CSA2 kernels' POS);
-//! - `rslot`: the slot whose ring / page table / carry a row reads; `wslot`: the slot it writes (-1: padding);
-//! - `prev`: ratio-2 pooling's previous row in [the slots' carries (row s = slot s) | the window's rows (S + r)];
-//! - `src`: the row whose Engram rows a row takes (itself; a padding row the last real row's).
-//! Padding rows mirror the last real row (its id, position, read slot and previous row: the same arithmetic, so the
-//! same experts) and write nothing. After the int64 columns the table holds `rslot` again as int32 [rmax] (split
-//! KV's exchange kernels take int32 slots). Host only: the tests check the tables, the padding and the keys.
+//! Row mode's per-row metadata: a mixed-slot window padded to a bucket, its per-row values as one int64 device table.
 
 const std = @import("std");
 
@@ -19,7 +9,7 @@ pub const Col = enum(u32) { ids, pos, rslot, wslot, prev, src };
 pub const ncol = 6;
 
 comptime {
-    std.debug.assert(@intFromEnum(Col.src) + 1 == ncol);
+    std.debug.assert(@backingInt(Col.src) + 1 == ncol);
 }
 
 /// One slot's window of a mix: its slot, first position and rows, in plan order.
@@ -48,7 +38,7 @@ pub fn totalRows(mix: []const Seg) u32 {
 
 pub const Error = error{ NoWindow, SlotTwice, SegmentRows, TooManyRows, PastLimit, SlotRange, IdCount };
 
-/// Checks a mix as Python's row_key does: windows of 1..seg_max rows, no slot twice, within `limit` and the slots.
+/// Checks a mix: windows of 1..seg_max rows, no slot twice, within `limit` and the slots.
 pub fn check(mix: []const Seg, slots: u32, limit: u64) Error!void {
     if (mix.len == 0) return error.NoWindow;
     var seen: u64 = 0;
@@ -69,8 +59,7 @@ pub fn lastPos(mix: []const Seg) u64 {
     return last;
 }
 
-/// The table int64 [NCOL, rmax] (column c at c x rmax) of `mix` padded to `R` rows, then rslot as int32 [rmax];
-/// `ids` every window's ids in order; `slots` the stacked carry rows (the window's rows start there in `prev`).
+/// The table int64 [NCOL, rmax] of `mix` padded to `R` rows, then rslot as int32 [rmax]; `slots` carry rows first.
 pub fn plan(mix: []const Seg, ids: []const u32, R: u32, rmax: u32, slots: u32, out: []i64, rslot32: []i32) Error!void {
     const n = totalRows(mix);
     if (ids.len != n) return error.IdCount;
@@ -78,7 +67,7 @@ pub fn plan(mix: []const Seg, ids: []const u32, R: u32, rmax: u32, slots: u32, o
     std.debug.assert(out.len >= ncol * rmax and rslot32.len >= rmax);
     const col = struct {
         fn of(o: []i64, rm: u32, c: Col) []i64 {
-            return o[@intFromEnum(c) * rm ..][0..rm];
+            return o[@backingInt(c) * rm ..][0..rm];
         }
     }.of;
     const id_c = col(out, rmax, .ids);
@@ -121,7 +110,7 @@ pub fn tableBytes(rmax: u32) usize {
 
 /// Byte offset of column `c` (int64 [rmax]) in the table.
 pub fn colOffset(c: Col, rmax: u32) usize {
-    return 8 * @as(usize, @intFromEnum(c)) * rmax;
+    return 8 * @as(usize, @backingInt(c)) * rmax;
 }
 
 /// Byte offset of the int32 rslot copy.
@@ -129,8 +118,7 @@ pub fn rslot32Offset(rmax: u32) usize {
     return 8 * ncol * @as(usize, rmax);
 }
 
-/// Splits a mix into forwards of at most `cap` rows, in plan order (each segment whole: rows are independent, so the
-/// bits do not depend on the split). `out` gets each forward's [first, end) range of `mix`; returns the count.
+/// Splits a mix into forwards of at most `cap` rows, segments whole and in order; `out` gets [first, end); the count.
 pub fn pack(mix: []const Seg, cap: u32, out: [][2]usize) Error!usize {
     var k: usize = 0;
     var i: usize = 0;
@@ -162,7 +150,7 @@ test "rowtab: buckets and the largest bucket a cap allows" {
 }
 
 test "rowtab: the plan of a mix as Python's plan_rows (padding mirrors the last real row and writes nothing)" {
-    // Python: plan_rows([(2, 10, 3), (0, 40, 2)], ids, 8, carries=4)
+    // reference: plan_rows([(2, 10, 3), (0, 40, 2)], ids, 8, carries=4)
     const mix = [_]Seg{ .{ .slot = 2, .start = 10, .rows = 3 }, .{ .slot = 0, .start = 40, .rows = 2 } };
     const ids = [_]u32{ 7, 8, 9, 100, 101 };
     const rmax = 16;
@@ -171,7 +159,7 @@ test "rowtab: the plan of a mix as Python's plan_rows (padding mirrors the last 
     try plan(&mix, &ids, 8, rmax, 4, &t, &r32);
     const C = struct {
         fn c(x: []const i64, k: Col) []const i64 {
-            return x[@intFromEnum(k) * rmax ..][0..8];
+            return x[@backingInt(k) * rmax ..][0..8];
         }
     }.c;
     try testing.expectEqualSlices(i64, &.{ 7, 8, 9, 100, 101, 101, 101, 101 }, C(&t, .ids));

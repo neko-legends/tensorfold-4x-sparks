@@ -22,7 +22,7 @@ pub fn deviceName(a: Allocator, flag: ?u32) ?[]const u8 {
     return a.dupe(u8, text) catch null;
 }
 
-fn chipClass(a: Allocator, capability: u32) ?[]const u8 {
+pub fn chipClass(a: Allocator, capability: u32) ?[]const u8 {
     return std.fmt.allocPrint(a, "nvidia-sm{d}", .{capability}) catch null;
 }
 
@@ -31,7 +31,7 @@ pub fn getenv(name: [:0]const u8) ?[]const u8 {
 }
 
 /// A variable's whole number: null when unset or empty, an error for anything else that is not one.
-fn envNumber(text: ?[]const u8) error{Invalid}!?u32 {
+pub fn envNumber(text: ?[]const u8) error{Invalid}!?u32 {
     const t = std.mem.trim(u8, text orelse return null, " ");
     if (t.len == 0) return null;
     return std.fmt.parseInt(u32, t, 10) catch error.Invalid;

@@ -1,14 +1,11 @@
-//! Host tests of row mode on the real emitter (`zig build test-dsv41-rows`): block.emit's whole backbone window on the
-//! release config and the q28-v2 widths, in pool mode (paged and split), rewritten by rowmode.transform; every CSA2 step
-//! must read its rows' positions and slots from the row table (compress.py / index.py / attn_cuda.py's row-mode
-//! arguments), the stacked roles must size S slots, and nothing else may change.
+//! Host tests of row mode on the real emitter: the backbone window rewritten by rowmode.transform reads the row table.
 
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const buffers = @import("buffers.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const graphs = @import("graphs.zig");
 const rowtab = @import("rowtab.zig");
 const rowmode = @import("rowmode.zig");
@@ -16,6 +13,7 @@ const Config = @import("config.zig").Config;
 
 test {
     _ = @import("branches_test.zig"); // TF_DSV41_BRANCHES / MHC_DEFER on the same emitter
+    _ = @import("kx_early_test.zig"); // TF_DSV41_KV_SPLIT_EARLY on the same emitter
     _ = rowtab;
     _ = rowmode;
     _ = @import("aot_needs.zig");
@@ -27,8 +25,8 @@ const rmax: u32 = 16;
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     return w;
 }
 
@@ -256,14 +254,26 @@ test "row mode: split KV's dense exchange reads the stacked split table; a union
     try testing.expect(n.dense > 0);
     const big = try block.emit(a, &cfg, &w, o, &backbone, 24, 2040, true);
     try testing.expectError(error.UnionInRows, rowmode.transform(a, big, 24, .{ .slots = S, .rmax = 64, .pts = pts }));
+    // a row window past 16 rows (4 slots' verify windows, TF_DSV41_ROWS_CAP 64) exchanges dense
+    var ro = o;
+    ro.rows = true;
+    for ([_]u32{ 17, 24, 64 }) |R| {
+        const wide = try block.emit(a, &cfg, &w, ro, &backbone, R, 2040, true);
+        const wrows = try rowmode.transform(a, wide, R, .{ .slots = S, .rmax = 64, .pts = pts });
+        var dense: usize = 0;
+        for (wrows) |c| {
+            try testing.expect(!std.mem.eql(u8, c.name, "glue.kx_union"));
+            dense += @intFromBool(std.mem.eql(u8, c.name, "glue.kx_dense"));
+        }
+        try testing.expect(dense > 0);
+    }
     // the contiguous slot has no row mode
     try testing.expectError(error.NoPool, rowmode.transform(a, one, 8, .{ .slots = S, .rmax = rmax, .pts = 0 }));
 }
 
-// -- 1M context, 4 slots, prod's knobs (the 4 x 1M boot: rank 1 refused UnknownRowsCall on the Sparks, 2026-10-07) ----
+// -- 1M context, 4 slots, the served knobs ----
 
-/// Python attn_cuda.plan's entries a thread (TOPK_THREADS 512, MAX_CL 8, ENTRIES_A_CTA 4096); past MAX_EPT 31 the
-/// Triton dtopk runs instead.
+/// The reference attention plan's entries a thread (512 threads, MAX_CL 8, 4096 a CTA); past 31 dtopk runs instead.
 fn pyEpt(nk: i64) i64 {
     const cl = @max(1, @min(8, std.math.divCeil(i64, nk, 4096) catch unreachable));
     var ept = @max(1, std.math.divCeil(i64, nk, cl * 512) catch unreachable);
@@ -271,9 +281,7 @@ fn pyEpt(nk: i64) i64 {
     return ept;
 }
 
-/// The selection launches Python's backend makes for one R-row window over `end` positions (backend.select /
-/// select_cand / reindex with TF_DSV41_ATTN_CUDA=1 and TF_DSV41_INDEX_DTOPK=1, blocks._select's order), written from
-/// backend.py / attn_cuda.py at 8474f31 independently of block.zig.
+/// The selection launches the reference backend makes for one R-row window over `end` positions.
 fn pyExpect(cfg: *const Config, R: i64, end: i64, budget: i64) Counts {
     var x: Counts = .{};
     for (0..cfg.layers) |l| {
@@ -308,7 +316,7 @@ fn pyExpect(cfg: *const Config, R: i64, end: i64, budget: i64) Counts {
     return x;
 }
 
-fn prodOptions(limit: i64) block.Options {
+fn servedOptions(limit: i64) block.Options {
     var o: block.Options = .{ .limit = limit, .r1 = true, .expert_topp = 0.85, .index_budget = 64 << 20, .rows = true, .rope_rows = limit + 2048 };
     o.pool = poolOf(limit, false);
     return o;
@@ -323,7 +331,7 @@ fn expectSelections(got: Counts, want: Counts) !void {
     }
 }
 
-test "row mode at 1M, 4 slots, prod's knobs: every bucket and context bucket rewrites, the selections are Python's" {
+test "row mode at 1M, 4 slots, the served knobs: every bucket and context bucket rewrites, the selections are Python's" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -332,7 +340,7 @@ test "row mode at 1M, 4 slots, prod's knobs: every bucket and context bucket rew
     var backbone: [40]u32 = undefined;
     for (&backbone, 0..) |*l, i| l.* = @intCast(i);
     const limit: i64 = 1 << 20;
-    const o = prodOptions(limit);
+    const o = servedOptions(limit);
     const pts = o.pool.?.pts;
     const s: graphs.Settings = .{};
     var seen_dtopk = false;
@@ -384,7 +392,7 @@ test "row mode at 1M: buckets past 16 rows run backend._blocked's 16-row blocks 
     var backbone: [40]u32 = undefined;
     for (&backbone, 0..) |*l, i| l.* = @intCast(i);
     const limit: i64 = 1 << 20;
-    const o = prodOptions(limit);
+    const o = servedOptions(limit);
     const pts = o.pool.?.pts;
     // these programs' table holds R rows (rmax = R, countsOf)
     for ([_]u32{ 24, 32, 48, 64 }) |R| {
@@ -439,7 +447,7 @@ fn countsOf(a: std.mem.Allocator, one: []const calls.Call, R: u32, pts: i64) !Co
     return n;
 }
 
-test "one slot at 1M with prod's budget: verify windows past 5 rows select through _keys as Python's backend does" {
+test "one slot at 1M with the served budget: verify windows past 5 rows select through _keys as Python's backend does" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -448,7 +456,7 @@ test "one slot at 1M with prod's budget: verify windows past 5 rows select throu
     var backbone: [40]u32 = undefined;
     for (&backbone, 0..) |*l, i| l.* = @intCast(i);
     const limit: i64 = 1 << 20;
-    var o = prodOptions(limit);
+    var o = servedOptions(limit);
     o.rows = false;
     // Forward.plan's windows (1..16 rows at the limit's end) and a window at 400K
     for (1..17) |r| {
@@ -490,9 +498,9 @@ test "rowtab at 1M: four slots' windows at the limit's end, padded, within the l
     var t: [rowtab.ncol * rmax]i64 = undefined;
     var r32: [rmax]i32 = undefined;
     try rowtab.plan(&mix, &ids, R, rmax, S, &t, &r32);
-    const pos = t[@intFromEnum(rowtab.Col.pos) * rmax ..][0..R];
+    const pos = t[@backingInt(rowtab.Col.pos) * rmax ..][0..R];
     try testing.expectEqualSlices(i64, &.{ limit - 6, limit - 5, limit - 4, limit - 3, limit - 2, limit - 1, 900_000, 131_071, 131_072, 131_073, 131_074, 0, 1, 1, 1, 1 }, pos);
-    const ws = t[@intFromEnum(rowtab.Col.wslot) * rmax ..][0..R];
+    const ws = t[@backingInt(rowtab.Col.wslot) * rmax ..][0..R];
     try testing.expectEqualSlices(i64, &.{ 3, 3, 3, 3, 3, 3, 0, 2, 2, 2, 2, 1, 1, -1, -1, -1 }, ws);
     // the window's context bucket: the limit's last (its end is the limit)
     const s: graphs.Settings = .{};
@@ -550,4 +558,10 @@ test "TF_DSV41_ROUND_GRAPH=split on the served row window: head + tail = the win
         }
         try testing.expectEqual(@as(?usize, null), round_graph.splitAt(rows, 40));
     };
+}
+
+test {
+    _ = graphs; // graphs.zig's own tests (the room rule, the bucket ends)
+    _ = @import("forms_inplace.zig"); // TF_DSV41_FORMS_INPLACE's binding
+    _ = @import("ex_stacks.zig"); // TF_DSV41_EX_STACKS's pairs and binding
 }

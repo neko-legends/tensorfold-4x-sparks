@@ -4,7 +4,7 @@
 //! the stage weights' names (only the TP-sharded tensors and their forms are the stage's own).
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const pipe = @import("pipe.zig");
 const Config = @import("config.zig").Config;

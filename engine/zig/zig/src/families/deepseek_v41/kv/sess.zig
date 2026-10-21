@@ -1,37 +1,23 @@
-//! Prod's session rules over several live slots (Python 8474f31), shared by the GPU side (sessions_gpu.zig) and the host
-//! gate (sess4_test.zig, against prod's own store, pool and NVMe tier: tools/zig/dsv41_sess4/golden.py):
-//! - `admit`: a request's pool admission (batch.py `_admit`): its pages (prompt + reply + slack, at most the slot's
-//!   capacity), less a RAM hit's shared full pages; when the pool's unreserved free pages fall short, the coldest RAM
-//!   entries to let go of (`Store.plan_spill`: never the hit), or a wait when even all of them are not enough;
-//! - `Measure`: the RAM tier's measure of a snapshot (`Bounded.nbytes` of prod's arrays: slots.py `snapshot`,
-//!   replay.Stash.arrays, drafter.snapshot), so the tier's budget (TF_DSV41_SESSION_RAM_MIB) trims at the same saves
-//!   as prod's whatever the Zig snapshot holds;
-//! - `dsRows` / `stashRows`: the drafter's and the CED stash's rows in such a snapshot.
+//! Session rules over several live slots: pool admission (`admit`), the RAM tier's `Measure`, `dsRows` / `stashRows`.
 
 const std = @import("std");
 const sessions = @import("sessions");
 
-/// kvpool.DEFAULT_SLACK (pool.py SLACK): positions past prompt + max_tokens a request may write (verify / draft windows)
+/// Positions past prompt + max_tokens a request may write (verify / draft windows)
 pub const slack: u64 = 64;
 
 pub const Error = error{RequestTooLarge};
 
-/// A request's admission: `need` pages reserved for its slot (`Slot.reserve`), `want` of them new; `wait`: the pool
-/// cannot hold them even with every RAM entry gone (prod leaves the request queued; nothing was decided).
+/// A request's admission: `need` pages for its slot, `want` of them new; `wait`: no fit even with every RAM entry gone.
 pub const Plan = struct { need: u32, want: u32, wait: bool = false };
 
-/// batch.py `_admit` for one request of `prompt` tokens and `max_new` reply tokens on a slot of `capacity` positions,
-/// `hit` the store's find for its prompt: its pages, and in `spills` the entries to evict first (both ranks evict the
-/// leader's list, in its order). `held`: entries never spilled (prod's `used + [key]`: the hit and the entries the
-/// round's earlier admissions resume); `extra`: pages the round's earlier admissions take (prod's `new_pages`: a round's
-/// admissions are decided before any of them runs), so `want` counts them too. Refuses a request larger than the whole
-/// pool (prod: a ValueError to the request).
+/// Pool admission of `prompt` + `max_new` on a `capacity` slot: pages, and the leader-ordered `spills` to evict first.
 pub fn admit(store: *sessions.Store, hit: ?sessions.store.Hit, prompt: u64, max_new: u64, capacity: u64, held: []const u32, extra: u32, spills: *std.ArrayList(u32)) !Plan {
     spills.clearRetainingCapacity();
     const pool = store.pool;
     const need = pool.needPages(prompt, max_new, capacity, slack);
     if (need > pool.npages) return error.RequestTooLarge;
-    // a RAM hit's full pages are shared, not new (`cached // PAGE if tier == "ram"`)
+    // a RAM hit's full pages are shared, not new
     const shared: u32 = if (hit) |h| (if (h.ram) @intCast(h.pos / pool.page) else 0) else 0;
     const want = need - @min(need, shared) + extra;
     if (pool.available() >= want) return .{ .need = need, .want = want };
@@ -69,16 +55,16 @@ pub fn savePoint(n: u64, cached: u64) ?u64 {
     return if (s > cached and s >= 64) s else null;
 }
 
-/// csa2.rows.ROW_BYTES: an SWA / DSpark ring row as prod's snapshot holds it (Records raw: 576 values + 8 scales)
+/// An SWA / DSpark ring row as the snapshot holds it (Records raw: 576 values + 8 scales)
 pub const row_bytes: u64 = 584;
-/// slots.py LOOKBACK: Engram's lookback ids (int64)
+/// Engram's lookback ids (int64)
 pub const lookback: u64 = 3;
-/// replay.KEEP: the stash rows a slot keeps (REPLAY - 1)
+/// the stash rows a slot keeps (REPLAY - 1)
 pub const keep: u64 = 127;
 
-/// What prod's snapshot of one slot holds, as sizes (`Bounded.nbytes` = the RAM tier's measure of an entry).
+/// What a slot's snapshot holds, as sizes (the RAM tier's measure of an entry).
 pub const Measure = struct {
-    /// SWA rings in the snapshot: replay mode the layers below the decoder (`replay.decoder_start`), full mode every one
+    /// SWA rings in the snapshot: replay mode the layers below the decoder, full mode every one
     rings: u64,
     /// the SWA window (cfg.sliding_window: the rings' rows and the drafter's)
     window: u64,
@@ -92,19 +78,19 @@ pub const Measure = struct {
     /// CED replay: the stash's rows ride along
     replay: bool,
 
-    /// A replay stash row: ced_x [hc x D] and ced_out [D] bf16, ced_pre / ced_post [4] and ced_comb [16] float32, its id
+    /// A replay stash row: ced_x [hc x D], ced_out [D] bf16, ced_pre / ced_post [4], ced_comb [16] f32, its id
     fn stashRow(m: Measure) u64 {
         return 2 * m.hc * m.hidden + 2 * m.hidden + 4 * (4 + 4 + 16) + 8;
     }
 
-    /// prod's `Bounded.nbytes` at `pos`, with `stash_rows` (`stashRows`) and `ds_rows` (`dsRows`)
+    /// the entry's bytes at `pos`, with `stash_rows` (`stashRows`) and `ds_rows` (`dsRows`)
     pub fn bytes(m: Measure, pos: u64, stash_rows: u64, ds_rows: u64) u64 {
         var n: u64 = 0;
         // swa_values / swa_scales: [rings, rows, 576 | 8] uint8 (none below one row)
         n += m.rings * @min(pos, m.window) * row_bytes;
         // the stash (replay: ced_lo int64, then its rows)
         if (m.replay) n += 8 + stash_rows * m.stashRow();
-        // carry: [carries, 2 x head_dim] float32 (prod: `if s.carry`)
+        // carry: [carries, 2 x head_dim] float32
         if (m.carries > 0) n += m.carries * 2 * m.head_dim * 4;
         // lookback [3] and rings (the layer ids) int64
         n += 8 * lookback + 8 * m.rings;
@@ -114,19 +100,17 @@ pub const Measure = struct {
     }
 };
 
-/// drafter.snapshot's rows: positions [max(0, pos - window, valid), pos); `valid` is 0 after a reset, and pos - n after
-/// a restore of n rows at pos (drafter.restore: n = 0 restores none and the context restarts at pos).
+/// The drafter snapshot's rows: [max(0, pos - window, valid), pos); `valid` 0 after a reset, pos - n after a restore.
 pub fn dsRows(pos: u64, valid: u64, window: u64) u64 {
     return pos -| @max(pos -| window, valid);
 }
 
-/// replay.Stash's rows at `pos` for a stash started at `from` (a slot's start, or a restored stash's first row): the
-/// last KEEP of them.
+/// The CED stash's rows at `pos` for a stash started at `from`: the last KEEP of them.
 pub fn stashRows(pos: u64, from: u64) u64 {
     return pos -| @max(from, pos -| keep);
 }
 
-test "the measure is prod's Bounded.nbytes (golden.py: 96 and >= 128 positions)" {
+test "the measure is the reference's Bounded.nbytes (golden.py: 96 and >= 128 positions)" {
     const m: Measure = .{ .rings = 20, .window = 128, .carries = 3, .head_dim = 512, .hidden = 5120, .hc = 4, .ds_blocks = 3, .replay = true };
     try std.testing.expectEqual(@as(u64, 6_227_136), m.bytes(96, stashRows(96, 0), dsRows(96, 0, 128)));
     try std.testing.expectEqual(@as(u64, 8_247_384), m.bytes(1488, stashRows(1488, 0), dsRows(1488, 0, 128)));

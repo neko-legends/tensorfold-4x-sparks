@@ -1,6 +1,4 @@
-//! kvsplit.cu against kv/split.zig's HostKernels formulas on seeded data: dense (single table and row mode's stacked
-//! tables, -1 selections, world 2 / 3) and gather, byte for byte. No Python involved: the copies are defined by the
-//! host reference.
+//! kvsplit.cu against kv/split.zig's HostKernels formulas on seeded data (dense, row mode, gather), byte for byte.
 
 const std = @import("std");
 const cuda = @import("cuda");

@@ -16,7 +16,7 @@
 //! - `TF_DSV41_PIPE_TRACE=1`: each line's rounds timed (pre-steps, stage, exchange), logged when it drains.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const ced = @import("ced.zig");

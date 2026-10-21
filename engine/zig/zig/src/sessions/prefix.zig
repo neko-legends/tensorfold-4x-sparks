@@ -1,9 +1,4 @@
-//! Session entries by prefix: a trie over chained page digests (GLM sessions.chain), one node per distinct run of full pages a tag.
-//!
-//! An entry of n tokens sits at the node of its n / page full pages with its tail (the last partial page's tokens).
-//! Nodes keep their page's tokens only while a RAM entry passes through them (disk-only paths keep digests: G18's bounded index),
-//! so a RAM entry's ids are its path's pages plus its tail, stored once however many turns share them (int32, packed).
-//! Longest-prefix lookup, coverage and chat leaves walk one path, never the entry list.
+//! Session entries by prefix: a trie over chained page digests, one node per distinct run of full pages a tag.
 
 const std = @import("std");
 
@@ -90,6 +85,7 @@ pub fn Index(comptime Extra: type) type {
         nodes: std.ArrayList(Node) = .empty,
         free_nodes: std.ArrayList(u32) = .empty,
         by_digest: std.AutoHashMapUnmanaged(Digest, u32) = .empty,
+        dead: u32 = 0, // nodes dropped from `by_digest` since it was last rehashed
         entries: std.ArrayList(Entry) = .empty,
         free_entries: std.ArrayList(u32) = .empty,
         by_key: std.AutoHashMapUnmanaged(Digest, u32) = .empty,
@@ -127,12 +123,14 @@ pub fn Index(comptime Extra: type) type {
         }
 
         fn newNode(x: *Self, digest: Digest, parent: u32, depth: u32) !u32 {
+            try x.by_digest.ensureUnusedCapacity(x.gpa, 1);
+            if (x.free_nodes.items.len == 0) try x.nodes.ensureUnusedCapacity(x.gpa, 1);
             const id: u32 = if (x.free_nodes.pop()) |i| i else blk: {
-                try x.nodes.append(x.gpa, undefined);
+                x.nodes.appendAssumeCapacity(undefined);
                 break :blk @intCast(x.nodes.items.len - 1);
             };
             x.nodes.items[id] = .{ .digest = digest, .parent = parent, .depth = depth };
-            try x.by_digest.put(x.gpa, digest, id);
+            x.by_digest.putAssumeCapacity(digest, id);
             if (parent != none) {
                 const p = &x.nodes.items[parent];
                 x.nodes.items[id].next_sib = p.first_child;
@@ -153,16 +151,18 @@ pub fn Index(comptime Extra: type) type {
             std.debug.assert(digests.len >= full);
             const r = root(tag);
             var n = x.by_digest.get(r) orelse try x.newNode(r, none, 0);
+            errdefer x.prune(n);
             for (0..full) |j| {
                 const d = digests[j];
                 n = x.by_digest.get(d) orelse try x.newNode(d, n, @intCast(j + 1));
             }
             const r2 = try x.place(tag, n, ids.len, ids[full * x.page ..], extra);
+            errdefer if (r2.new) x.remove(r2.id);
             if (r2.new and ram) try x.setRam(r2.id, true, ids);
             return r2;
         }
 
-        /// Adds a disk entry whose ids continue from node anchor (a base entry's path; none: the tag's root): suffix holds tokens [depth x page, pos).
+        /// Adds a disk entry continuing from node anchor (none: the tag's root); suffix: tokens [depth x page, pos).
         pub fn insertFrom(x: *Self, tag: u32, anchor: u32, suffix: []const i32, extra: Extra) !Placed {
             var n = if (anchor != none) anchor else blk: {
                 const r = root(tag);
@@ -170,6 +170,7 @@ pub fn Index(comptime Extra: type) type {
             };
             const d0 = x.nodes.items[n].depth;
             const full: u32 = @intCast(suffix.len / x.page);
+            errdefer x.prune(n);
             for (0..full) |j| {
                 const d = step(x.nodes.items[n].digest, suffix[j * x.page ..][0..x.page]);
                 n = x.by_digest.get(d) orelse try x.newNode(d, n, d0 + @as(u32, @intCast(j)) + 1);
@@ -189,11 +190,13 @@ pub fn Index(comptime Extra: type) type {
             if (x.by_key.get(key)) |e| return .{ .id = e, .new = false };
             const tail = try x.gpa.dupe(i32, tail_ids);
             errdefer x.gpa.free(tail);
+            try x.by_key.ensureUnusedCapacity(x.gpa, 1);
+            if (x.free_entries.items.len == 0) try x.entries.ensureUnusedCapacity(x.gpa, 1);
             const id: u32 = if (x.free_entries.pop()) |i| i else blk: {
-                try x.entries.append(x.gpa, undefined);
+                x.entries.appendAssumeCapacity(undefined);
                 break :blk @intCast(x.entries.items.len - 1);
             };
-            try x.by_key.put(x.gpa, key, id);
+            x.by_key.putAssumeCapacity(key, id);
             const nd = &x.nodes.items[n];
             x.entries.items[id] = .{ .key = key, .tag = tag, .pos = pos, .node = n, .tail = tail, .ram = false, .next_at = nd.first_entry, .extra = extra };
             if (nd.first_entry != none) x.entries.items[nd.first_entry].prev_at = id;
@@ -218,14 +221,19 @@ pub fn Index(comptime Extra: type) type {
             if (e.ram == ram) return;
             if (ram) {
                 const all = ids orelse return error.IdsNeeded;
+                var pending: std.ArrayList(struct { node: u32, bytes: []i32 }) = .empty;
+                defer pending.deinit(x.gpa);
+                try pending.ensureTotalCapacity(x.gpa, x.nodes.items[e.node].depth);
+                errdefer for (pending.items) |p| x.gpa.free(p.bytes);
                 var n = e.node;
                 while (n != none and x.nodes.items[n].depth > 0) : (n = x.nodes.items[n].parent) {
                     const nd = &x.nodes.items[n];
                     if (nd.tokens != null) continue;
-                    const b = try x.takeBlock();
-                    @memcpy(b, all[(nd.depth - 1) * x.page ..][0..x.page]);
-                    nd.tokens = b;
+                    const block = try x.takeBlock();
+                    @memcpy(block, all[(nd.depth - 1) * x.page ..][0..x.page]);
+                    pending.appendAssumeCapacity(.{ .node = n, .bytes = block });
                 }
+                for (pending.items) |p| x.nodes.items[p.node].tokens = p.bytes;
             }
             e.ram = ram;
             x.nodes.items[e.node].own_ram = if (ram) x.nodes.items[e.node].own_ram + 1 else x.nodes.items[e.node].own_ram - 1;
@@ -257,30 +265,48 @@ pub fn Index(comptime Extra: type) type {
             e.live = false;
             x.free_entries.append(x.gpa, id) catch {};
             x.addPath(n, -1, 0);
-            var m = n;
+            x.prune(n);
+        }
+
+        fn prune(x: *Self, from: u32) void {
+            var m = from;
             while (m != none and x.nodes.items[m].sub_all == 0) {
                 const nd = x.nodes.items[m];
+                const held = x.by_digest.get(nd.digest) orelse break;
+                if (held != m) break;
+                if (nd.tokens) |block| {
+                    x.blocks.append(x.gpa, block) catch x.gpa.free(block);
+                    x.nodes.items[m].tokens = null;
+                }
                 if (nd.parent != none) {
                     if (nd.prev_sib != none) x.nodes.items[nd.prev_sib].next_sib = nd.next_sib else x.nodes.items[nd.parent].first_child = nd.next_sib;
                     if (nd.next_sib != none) x.nodes.items[nd.next_sib].prev_sib = nd.prev_sib;
                 }
-                _ = x.by_digest.remove(nd.digest);
+                if (x.by_digest.remove(nd.digest)) x.dropped();
                 x.free_nodes.append(x.gpa, m) catch {};
                 m = nd.parent;
             }
         }
 
-        /// The entry's tail matches the prompt's tokens there and the entry is shorter (its full pages matched by digest).
+        /// std's tombstones never clear and keys fill 80 %: rehash at a tenth, so a tenth of the map always stays free.
+        fn dropped(x: *Self) void {
+            x.dead += 1;
+            if (@as(u64, x.dead) * 10 < x.by_digest.capacity()) return;
+            x.by_digest.rehash(std.hash_map.AutoContext(Digest){});
+            x.dead = 0;
+        }
+
+        /// The entry's tail matches the prompt there and the entry is shorter (its full pages matched by digest).
         fn tailOf(e: *const Entry, prompt: []const i32) bool {
             const at: usize = @intCast(e.pos - e.tail.len);
             return e.pos < prompt.len and std.mem.eql(i32, e.tail, prompt[at..][0..e.tail.len]);
         }
 
-        /// The longest entry of tag whose ids are a strict prefix of prompt (RAM before disk on a tie); digests: the prompt's chain.
+        /// The longest entry of tag whose ids strictly prefix prompt (RAM first on a tie); digests: the prompt's chain.
         pub fn find(x: *Self, tag: u32, prompt: []const i32, digests: []const Digest, tier: Tier) ?u32 {
             const full: u32 = @intCast(prompt.len / x.page);
             const r = x.by_digest.get(root(tag)) orelse return null;
-            // the deepest node on the prompt's path: nodes exist for every prefix of an entry's path, so a binary search finds it
+            // the deepest node on the prompt's path: each prefix of an entry's path has a node: binary search
             var lo: u32 = 0;
             var hi: u32 = full;
             while (lo < hi) {
@@ -304,7 +330,7 @@ pub fn Index(comptime Extra: type) type {
             return null;
         }
 
-        /// A newer entry of id's chain holds every position it does (tier .ram: a RAM entry), so id is no leaf and need not be written.
+        /// A newer entry of id's chain holds every position it does (tier .ram: in RAM), so id need not be written.
         pub fn covered(x: *Self, id: u32, tier: Tier) bool {
             const e = &x.entries.items[id];
             const nd = &x.nodes.items[e.node];
@@ -325,7 +351,7 @@ pub fn Index(comptime Extra: type) type {
             return false;
         }
 
-        /// How many RAM entries extend a RAM entry (strictly longer, same tag, its ids their prefix): a branch point has more than its own chat's.
+        /// How many RAM entries extend a RAM entry (longer, same tag, its ids their prefix): branch points have more.
         pub fn extensions(x: *Self, id: u32) u32 {
             const e = &x.entries.items[id];
             const nd = &x.nodes.items[e.node];
@@ -349,7 +375,7 @@ pub fn Index(comptime Extra: type) type {
             return x.entries.items[id].ram and !x.covered(id, .ram);
         }
 
-        /// The RAM entries a RAM leaf extends (its chat's older turns) into out; returns the chat's recency (the newest member's `used`).
+        /// A RAM leaf's older turns (the RAM entries it extends) into out; returns the chat's recency (newest `used`).
         pub fn members(x: *Self, leaf: u32, out: *std.ArrayList(u32), used: *const fn (*const Extra) u64) !u64 {
             const l = &x.entries.items[leaf];
             var recency = used(&l.extra);
@@ -433,7 +459,7 @@ test "longest strict prefix, ties, tags and coverage" {
     other[50] = -1; // diverges inside t2's tail page: t1 still prefixes it
     chain(7, other, 16, d[0..9]);
     try std.testing.expectEqual(@as(?u32, t1), x.find(7, other, d[0..9], .any));
-    // t3 extends t2 on disk only: its page's tokens are not kept, so a tail in that page is not decided (the store marks covered_by)
+    // t3 extends t2 on disk only: its page's tokens are gone, so a tail there is undecided (the store marks covered_by)
     try std.testing.expect(x.covered(t1, .ram) and !x.covered(t2, .any) and !x.covered(t2, .ram) and !x.covered(t3, .any));
     const t4 = try add(&x, 7, chat[0..64], false, 5); // page aligned: any deeper entry covers it
     try std.testing.expect(x.covered(t4, .any) and x.covered(t4, .ram));
@@ -459,4 +485,74 @@ test "longest strict prefix, ties, tags and coverage" {
     chain(7, chat[0..150], 16, d[0..9]);
     try std.testing.expectEqual(@as(?u32, null), x.find(7, chat[0..150], d[0..9], .any));
     try std.testing.expectEqual(@as(u32, 1 + 6), x.by_digest.count()); // tag 8's root + its 6 full pages
+}
+
+test "a long run of turns saved and dropped leaves the page map free slots" {
+    const gpa = std.testing.allocator;
+    var x = T.init(gpa, 16);
+    defer x.deinit();
+    var live: std.ArrayList(u32) = .empty;
+    defer live.deinit(gpa);
+    var rng = std.Random.DefaultPrng.init(5);
+    for (0..3000) |i| {
+        // a chat's turn (its own pages), the oldest dropped once eight are kept: nodes come and go
+        const ids = try seq(gpa, 16 * 60, @intCast(i));
+        defer gpa.free(ids);
+        try live.append(gpa, try add(&x, 7, ids[0 .. 16 * (1 + rng.random().uintLessThan(usize, 60))], true, i));
+        if (live.items.len > 8) x.remove(live.orderedRemove(0));
+        const meta = x.by_digest.metadata orelse continue;
+        var free: usize = 0;
+        for (meta[0..x.by_digest.capacity()]) |m| free += @intFromBool(m.isFree());
+        try std.testing.expect(free * 10 >= x.by_digest.capacity());
+    }
+}
+
+test "Failure boundaries: node map allocation failure preserves its free id" {
+    var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var x = T.init(fail.allocator(), 16);
+    defer x.deinit();
+    const digest = root(7);
+    const id = try x.newNode(digest, none, 0);
+    x.by_digest.clearAndFree(fail.allocator());
+    try x.free_nodes.append(fail.allocator(), id);
+    fail.fail_index = fail.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, x.newNode(digest, none, 0));
+    try std.testing.expectEqual(@as(usize, 1), x.free_nodes.items.len);
+    fail.fail_index = std.math.maxInt(usize);
+    try std.testing.expectEqual(id, try x.newNode(digest, none, 0));
+    try std.testing.expectEqual(@as(usize, 1), x.nodes.items.len);
+}
+
+test "Failure boundaries: entry map allocation failure preserves its free id" {
+    var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var x = T.init(fail.allocator(), 16);
+    defer x.deinit();
+    const node_id = try x.newNode(root(7), none, 0);
+    const placed = try x.place(7, node_id, 0, &.{}, 0);
+    x.remove(placed.id);
+    const n = try x.newNode(root(7), none, 0);
+    x.by_key.clearAndFree(fail.allocator());
+    fail.fail_index = fail.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, x.place(7, n, 0, &.{}, 0));
+    try std.testing.expectEqual(@as(usize, 1), x.free_entries.items.len);
+    fail.fail_index = std.math.maxInt(usize);
+    try std.testing.expectEqual(placed.id, (try x.place(7, n, 0, &.{}, 0)).id);
+}
+
+fn failedInsert(a: std.mem.Allocator) !void {
+    var x = T.init(a, 4);
+    defer x.deinit();
+    const ids = [_]i32{ 1, 2, 3, 4, 5, 6, 7, 8, 9 };
+    var digests: [2]Digest = undefined;
+    chain(1, &ids, 4, &digests);
+    const first = (try x.insert(1, &ids, &digests, true, 1)).id;
+    var out: [9]i32 = undefined;
+    try x.idsOf(first, &out);
+    try std.testing.expectEqualSlices(i32, &ids, &out);
+    x.remove(first);
+    _ = try x.insert(1, &ids, &digests, true, 2);
+}
+
+test "prefix insertion cleans up at every allocation failure" {
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, failedInsert, .{});
 }

@@ -1,25 +1,13 @@
-//! Prepared weight folders, the fast boot (Python's ``TF_DSV41_PREPARED`` / ``_PREPARED_WRITE``, prod's ~95 GB rank
-//! folders): each layer's named host images as `named.Builder` made them from the pack (the EXL3 trellises regrouped
-//! for this rank's TP plan, the expert tables, the natives widened) kept on disk and read back on the next boot, so
-//! a start reads the images instead of rebuilding them.
-//!
-//! - TF_DSV41_PREPARED=<dir>: files under ``<dir>/<key>/rank<r>/``, one a layer (``L<i>.bin``) plus ``top.bin``. The
-//!   key hashes everything the images depend on: the format, the source of the files that build them (`named.zig`,
-//!   `plan.zig`, `stage.zig`, `pack.zig`, `exl3.zig`), the pack's shards (name, size, mtime), the rank, the world,
-//!   the blocks and DSpark. Any change gives a new folder; nothing stale is ever read.
-//! - TF_DSV41_PREPARED_WRITE=1: a missing file is written after its layer is built (atomically: a temp file renamed).
-//! - TF_DSV41_PREPARED_VERIFY=1: every tensor read back is checked against its stored SHA-256.
-//!
-//! A file: ``TFDSV41P`` + version + count, then each tensor's entry (name, kind, rank, shape, offset, length, SHA-256),
-//! then the payloads at 4 KiB-aligned offsets (one pread each, straight into the image's own buffer).
+//! Prepared weight folders (TF_DSV41_PREPARED, _WRITE, _VERIFY): built layer images cached on disk for a fast boot.
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const named = @import("named.zig");
 const pack_mod = @import("pack.zig");
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
 const magic = "TFDSV41P";
-const version: u32 = 1;
+const version: u32 = 2;
 const page: u64 = 4096;
 
 /// What the images depend on besides the pack's bytes.
@@ -35,7 +23,7 @@ pub const Key = struct {
 };
 
 /// The builders' source, so a change to how images are made never reads an old folder.
-const sources = [_][]const u8{ @embedFile("named.zig"), @embedFile("plan.zig"), @embedFile("stage.zig"), @embedFile("pack.zig"), @embedFile("exl3.zig") };
+const sources = [_][]const u8{ @embedFile("named.zig"), @embedFile("plan.zig"), @embedFile("stage.zig"), @embedFile("pack.zig"), @embedFile("projection.zig"), @embedFile("names.zig"), @import("core").exl3_layout.source_bytes, @import("prepare.zig").source_bytes };
 
 pub const Stats = struct { hits: u32 = 0, misses: u32 = 0, written: u32 = 0, read_bytes: u64 = 0, read_ns: u64 = 0, write_ns: u64 = 0 };
 
@@ -72,7 +60,7 @@ pub const Cache = struct {
         if (key.variant != 0) h.update(std.mem.asBytes(&key.variant));
         var d: [32]u8 = undefined;
         h.final(&d);
-        const hex = std.fmt.bytesToHex(d[0..8].*, .lower);
+        const hex = std.fmt.bytesToHex(d, .lower);
         const root = try std.fmt.allocPrint(gpa, "{s}/{s}/rank{d}", .{ dir, &hex, key.rank });
         errdefer gpa.free(root);
         if (write) try Io.Dir.cwd().createDirPath(io, root);
@@ -87,8 +75,7 @@ pub const Cache = struct {
         return std.fmt.bufPrint(buf, "{s}/{s}.bin{s}", .{ c.root, tag, suffix });
     }
 
-    /// The kernel asked to read ``<tag>.bin`` ahead (POSIX_FADV_WILLNEED), so the next `get` of it finds its pages while
-    /// the caller uploads the layer before it; a missing file is ignored, nothing waits.
+    /// Asks the kernel to read `<tag>.bin` ahead (POSIX_FADV_WILLNEED); a missing file is ignored, nothing waits.
     pub fn willNeed(c: *const Cache, tag: []const u8) void {
         var pbuf: [std.fs.max_path_bytes]u8 = undefined;
         const p = c.path(pbuf[0 .. pbuf.len - 1], tag, "") catch return;
@@ -102,7 +89,7 @@ pub const Cache = struct {
     }
 
     /// Fills `b` from ``<tag>.bin``: true when read, false when there is no usable file (`b` is then untouched).
-    pub fn get(c: *Cache, b: *named.Builder, tag: []const u8) !bool {
+    pub fn get(c: *Cache, b: *named.Builder, tag: []const u8, expected: []const named.Named) !bool {
         var pbuf: [std.fs.max_path_bytes]u8 = undefined;
         const t0 = Io.Clock.awake.now(c.io).toNanoseconds();
         const file = Io.Dir.cwd().openFile(c.io, try c.path(&pbuf, tag, ""), .{}) catch {
@@ -110,8 +97,8 @@ pub const Cache = struct {
             return false;
         };
         defer file.close(c.io);
-        const got = readInto(c.gpa, c.io, file, b, c.verify) catch |e| {
-            std.log.warn("dsv41 prepared: {s} unusable ({t}); building it from the pack", .{ pbuf[0 .. c.root.len + tag.len + 5], e });
+        const got = readInto(b.gpa, c.io, file, b, c.verify, expected) catch |e| {
+            if (!quiet) std.log.warn("dsv41 prepared: {s} unusable ({t}); building it from the pack", .{ pbuf[0 .. c.root.len + tag.len + 5], e });
             c.stats.misses += 1;
             return false;
         };
@@ -141,24 +128,31 @@ pub const Cache = struct {
     }
 };
 
-/// The pack's shards as they are on disk: each file's name, size and modification time.
+/// Content identity includes shard names, lengths, headers and all tensor bytes. Stat equality is insufficient.
 pub fn packDigest(io: Io, p: *const pack_mod.Pack) ![32]u8 {
     var h = std.crypto.hash.sha2.Sha256.init(.{});
-    var buf: [std.fs.max_path_bytes]u8 = undefined;
-    for (p.files.items) |f| {
-        h.update(f);
-        const st = Io.Dir.cwd().statFile(io, try std.fmt.bufPrint(&buf, "{s}/{s}", .{ p.dir, f }), .{}) catch |e| switch (e) {
-            error.FileNotFound => {
-                h.update("missing");
-                continue;
-            },
-            else => return e,
-        };
-        h.update(std.mem.asBytes(&[_]i128{ @intCast(st.size), st.mtime.toNanoseconds() }));
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    var chunk: [65536]u8 = undefined;
+    for (p.files.items) |name| {
+        const file = try Io.Dir.cwd().openFile(io, try std.fmt.bufPrint(&path, "{s}/{s}", .{ p.dir, name }), .{});
+        defer file.close(io);
+        const stat = try file.stat(io);
+        h.update(std.mem.asBytes(&@as(u64, name.len)));
+        h.update(name);
+        h.update(std.mem.asBytes(&stat.size));
+        var off: u64 = 0;
+        while (off < stat.size) {
+            const want: usize = @intCast(@min(chunk.len, stat.size - off));
+            if (try file.readPositionalAll(io, chunk[0..want], off) != want) return error.ShortRead;
+            h.update(chunk[0..want]);
+            off += want;
+        }
+        const after = try file.stat(io);
+        if (after.size != stat.size or !std.meta.eql(after.mtime, stat.mtime)) return error.CheckpointChanged;
     }
-    var d: [32]u8 = undefined;
-    h.final(&d);
-    return d;
+    var digest: [32]u8 = undefined;
+    h.final(&digest);
+    return digest;
 }
 
 const Entry = extern struct {
@@ -172,6 +166,10 @@ const Entry = extern struct {
     sha256: [32]u8,
 };
 
+fn aligned(n: u64) !u64 {
+    return (try std.math.add(u64, n, page - 1)) & ~(page - 1);
+}
+
 fn writeOut(gpa: Allocator, io: Io, file: Io.File, b: *const named.Builder) !void {
     var head: std.ArrayList(u8) = .empty;
     defer head.deinit(gpa);
@@ -179,34 +177,37 @@ fn writeOut(gpa: Allocator, io: Io, file: Io.File, b: *const named.Builder) !voi
     try head.appendSlice(gpa, std.mem.asBytes(&version));
     try head.appendSlice(gpa, std.mem.asBytes(&@as(u32, @intCast(b.out.items.len))));
     var size: u64 = 16;
-    for (b.out.items) |n| size += @sizeOf(Entry) + n.name.len;
-    var at = std.mem.alignForward(u64, size, page);
     for (b.out.items) |n| {
-        var e: Entry = .{ .kind = @intFromEnum(n.kind), .rank = n.rank, .name_len = @intCast(n.name.len), .shape = undefined, .offset = at, .len = n.bytes.len, .sha256 = undefined };
+        if (n.name.len > std.math.maxInt(u16)) return error.BadEntry;
+        size = try std.math.add(u64, size, try std.math.add(u64, @sizeOf(Entry), n.name.len));
+    }
+    var at = try aligned(size);
+    for (b.out.items) |n| {
+        var e: Entry = .{ .kind = @backingInt(n.kind), .rank = n.rank, .name_len = @intCast(n.name.len), .shape = undefined, .offset = at, .len = n.bytes.len, .sha256 = undefined };
         for (&e.shape, n.shape) |*d, s| d.* = s;
         std.crypto.hash.sha2.Sha256.hash(n.bytes, &e.sha256, .{});
         try head.appendSlice(gpa, std.mem.asBytes(&e));
         try head.appendSlice(gpa, n.name);
-        at = std.mem.alignForward(u64, at + n.bytes.len, page);
+        at = try aligned(try std.math.add(u64, at, n.bytes.len));
     }
     try file.writePositionalAll(io, head.items, 0);
-    var cursor = std.mem.alignForward(u64, size, page);
+    var cursor = try aligned(size);
     for (b.out.items) |n| {
         try file.writePositionalAll(io, n.bytes, cursor);
-        cursor = std.mem.alignForward(u64, cursor + n.bytes.len, page);
+        cursor = try aligned(try std.math.add(u64, cursor, n.bytes.len));
     }
     try file.setLength(io, cursor);
 }
 
-/// Reads every tensor of a file into `b` (each into its own buffer); returns the payload bytes read. On any error `b`
-/// gets nothing.
-fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bool) !u64 {
+/// Reads every tensor of a file into `b` (each into its own buffer); returns payload bytes. On error `b` gets nothing.
+fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bool, expected: []const named.Named) !u64 {
     var fixed: [16]u8 = undefined;
     if (try file.readPositionalAll(io, &fixed, 0) != 16) return error.Truncated;
     if (!std.mem.eql(u8, fixed[0..8], magic)) return error.BadMagic;
     if (std.mem.readInt(u32, fixed[8..12], .little) != version) return error.BadVersion;
     const count = std.mem.readInt(u32, fixed[12..16], .little);
     const total = try file.length(io);
+    if (count != expected.len or count > 1_000_000 or total < 16 or count > (total - 16) / (@sizeOf(Entry) + 1)) return error.BadEntry;
     var got: std.ArrayList(named.Named) = .empty;
     errdefer {
         for (got.items) |n| {
@@ -216,16 +217,39 @@ fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bo
         got.deinit(gpa);
     }
     var off: u64 = 16;
+    var first_payload: u64 = total;
+    var payload_end: u64 = 0;
     var bytes: u64 = 0;
     for (0..count) |_| {
         var e: Entry = undefined;
         if (try file.readPositionalAll(io, std.mem.asBytes(&e), off) != @sizeOf(Entry)) return error.Truncated;
-        off += @sizeOf(Entry);
-        if (e.offset + e.len > total or e.rank > 4 or e.kind > @intFromEnum(named.Kind.i16)) return error.BadEntry;
+        off = std.math.add(u64, off, @sizeOf(Entry)) catch return error.BadEntry;
+        const end = std.math.add(u64, e.offset, e.len) catch return error.BadEntry;
+        const name_end = std.math.add(u64, off, e.name_len) catch return error.BadEntry;
+        if (e.offset < payload_end) return error.BadEntry;
+        first_payload = @min(first_payload, e.offset);
+        payload_end = end;
+        if (name_end > first_payload) return error.BadEntry;
+        if (end > total or e.offset % page != 0 or name_end > e.offset or e.name_len == 0 or
+            e.rank == 0 or e.rank > 4 or e.pad != 0 or e.kind > @backingInt(named.Kind.i16)) return error.BadEntry;
+        var elements: u64 = 1;
+        for (e.shape[0..e.rank]) |d| {
+            if (d == 0) return error.BadEntry;
+            elements = std.math.mul(u64, elements, d) catch return error.BadEntry;
+        }
+        for (e.shape[e.rank..]) |d| if (d != 1) return error.BadEntry;
+        const item_size: u64 = if (e.kind == @backingInt(named.Kind.f32)) 4 else 2;
+        if ((std.math.mul(u64, elements, item_size) catch return error.BadEntry) != e.len) return error.BadEntry;
         const name = try gpa.alloc(u8, e.name_len);
         errdefer gpa.free(name);
         if (try file.readPositionalAll(io, name, off) != name.len) return error.Truncated;
-        off += e.name_len;
+        off = name_end;
+        const want = expected[got.items.len];
+        if (!std.mem.eql(u8, name, want.name) or e.kind != @backingInt(want.kind) or e.rank != want.rank) return error.BadEntry;
+        for (e.shape, want.shape) |stored, planned| if (stored != planned) return error.BadEntry;
+        for (got.items) |prior| {
+            if (std.mem.eql(u8, name, prior.name)) return error.BadEntry;
+        }
         const data = try gpa.alignedAlloc(u8, .@"16", e.len);
         errdefer gpa.free(data);
         if (try file.readPositionalAll(io, data, e.offset) != data.len) return error.Truncated;
@@ -234,10 +258,10 @@ fn readInto(gpa: Allocator, io: Io, file: Io.File, b: *named.Builder, verify: bo
             std.crypto.hash.sha2.Sha256.hash(data, &sha, .{});
             if (!std.mem.eql(u8, &sha, &e.sha256)) return error.DigestMismatch;
         }
-        var n: named.Named = .{ .name = name, .kind = @enumFromInt(e.kind), .shape = undefined, .rank = e.rank, .bytes = data };
+        var n: named.Named = .{ .name = name, .kind = @fromBackingInt(@intCast(e.kind)), .shape = undefined, .rank = e.rank, .bytes = data };
         for (&n.shape, e.shape) |*d, s| d.* = @intCast(s);
+        bytes = std.math.add(u64, bytes, e.len) catch return error.BadEntry;
         try got.append(gpa, n);
-        bytes += e.len;
     }
     try b.out.appendSlice(b.gpa, got.items);
     got.deinit(gpa);
@@ -258,19 +282,19 @@ test "a layer's images round-trip through its prepared file, and another key mis
     defer c.deinit();
     var b: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
     defer b.deinit();
-    const sizes = [_]usize{ 4096, 5000, 16, 1 };
+    const sizes = [_]usize{ 4096, 5000, 16, 2 };
     for (sizes, 0..) |n, i| {
         const bytes = try gpa.alignedAlloc(u8, .@"16", n);
         for (bytes, 0..) |*x, j| x.* = @truncate(j *% 31 +% i);
-        try b.out.append(gpa, .{ .name = try std.fmt.allocPrint(gpa, "L1.t{d}.trellis", .{i}), .kind = @enumFromInt(i % 4), .shape = .{ n, 1, 1, 1 }, .rank = @intCast(1 + i % 4), .bytes = bytes });
+        try b.out.append(gpa, .{ .name = try std.fmt.allocPrint(gpa, "L1.t{d}.trellis", .{i}), .kind = @fromBackingInt(@intCast(i % 4)), .shape = .{ n / (if (i % 4 == 0) @as(usize, 4) else 2), 1, 1, 1 }, .rank = 1, .bytes = bytes });
     }
     var miss: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
     defer miss.deinit();
-    try std.testing.expect(!try c.get(&miss, "L1"));
+    try std.testing.expect(!try c.get(&miss, "L1", b.out.items));
     try c.put(&b, "L1");
     var back: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
     defer back.deinit();
-    try std.testing.expect(try c.get(&back, "L1"));
+    try std.testing.expect(try c.get(&back, "L1", b.out.items));
     try std.testing.expectEqual(b.out.items.len, back.out.items.len);
     for (b.out.items, back.out.items) |x, y| {
         try std.testing.expectEqualStrings(x.name, y.name);
@@ -286,17 +310,7 @@ test "a layer's images round-trip through its prepared file, and another key mis
     defer other.deinit();
     var none: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
     defer none.deinit();
-    try std.testing.expect(!try other.get(&none, "L1"));
-    // a key variant (a pipeline stage's copies: pipe_load) is another folder; variant 0 is the key as it always was
-    var v0 = try Cache.open(gpa, io, root, try packDigest(io, &p), .{ .rank = 1, .world = 2, .o_groups = 8, .blocks = &.{ 0, 1, 2 }, .dspark = true, .variant = 0 }, false, false);
-    defer v0.deinit();
-    try std.testing.expectEqualStrings(c.root, v0.root);
-    var v1 = try Cache.open(gpa, io, root, try packDigest(io, &p), .{ .rank = 1, .world = 2, .o_groups = 8, .blocks = &.{ 0, 1, 2 }, .dspark = true, .variant = 0x50495045 }, false, false);
-    defer v1.deinit();
-    try std.testing.expect(!std.mem.eql(u8, c.root, v1.root));
-    var none1: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
-    defer none1.deinit();
-    try std.testing.expect(!try v1.get(&none1, "L1"));
+    try std.testing.expect(!try other.get(&none, "L1", b.out.items));
     // a damaged payload is refused with VERIFY and the builder stays empty
     var pbuf: [std.fs.max_path_bytes]u8 = undefined;
     const f = try Io.Dir.cwd().openFile(io, try c.path(&pbuf, "L1", ""), .{ .mode = .read_write });
@@ -304,6 +318,121 @@ test "a layer's images round-trip through its prepared file, and another key mis
     f.close(io);
     var bad: named.Builder = .{ .gpa = gpa, .io = io, .pack = &p };
     defer bad.deinit();
-    try std.testing.expect(!try c.get(&bad, "L1"));
+    try std.testing.expect(!try c.get(&bad, "L1", b.out.items));
     try std.testing.expectEqual(@as(usize, 0), bad.out.items.len);
+}
+
+test "real cache separates equal-stat checkpoints by payload and shares identical content" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "a", .default_dir);
+    try tmp.dir.createDir(io, "b", .default_dir);
+    const image = try pack_mod.image(a, &.{.{ .name = "q", .dtype = "BF16", .shape = &.{1} }});
+    defer a.free(image);
+    try tmp.dir.writeFile(io, .{ .sub_path = "a/model.safetensors", .data = image });
+    image[image.len - 1] ^= 1;
+    try tmp.dir.writeFile(io, .{ .sub_path = "b/model.safetensors", .data = image });
+    const fa = try tmp.dir.openFile(io, "a/model.safetensors", .{});
+    defer fa.close(io);
+    const fb = try tmp.dir.openFile(io, "b/model.safetensors", .{ .mode = .read_write });
+    defer fb.close(io);
+    const stat = try fa.stat(io);
+    try fb.setTimestamps(io, .{ .access_timestamp = .unchanged, .modify_timestamp = .{ .new = stat.mtime } });
+    try std.testing.expectEqual(stat.size, (try fb.stat(io)).size);
+    try std.testing.expectEqual(stat.mtime, (try fb.stat(io)).mtime);
+    const dir_a = try tmp.dir.realPathFileAlloc(io, "a", a);
+    defer a.free(dir_a);
+    const dir_b = try tmp.dir.realPathFileAlloc(io, "b", a);
+    defer a.free(dir_b);
+    var pa = try pack_mod.Pack.open(a, io, dir_a);
+    defer pa.deinit();
+    var pb = try pack_mod.Pack.open(a, io, dir_b);
+    defer pb.deinit();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    const key: Key = .{ .rank = 0, .world = 1, .o_groups = 1, .blocks = &.{}, .dspark = false };
+    var ca = try Cache.open(a, io, root, try packDigest(io, &pa), key, true, true);
+    defer ca.deinit();
+    var cb = try Cache.open(a, io, root, try packDigest(io, &pb), key, true, true);
+    defer cb.deinit();
+    var original: named.Builder = .{ .gpa = a, .io = io, .pack = &pa };
+    defer original.deinit();
+    const bytes = try a.alignedAlloc(u8, .@"16", 2);
+    @memset(bytes, 1);
+    try original.out.append(a, .{ .name = try a.dupe(u8, "q"), .kind = .bf16, .shape = .{ 1, 1, 1, 1 }, .rank = 1, .bytes = bytes });
+    try ca.put(&original, "L0");
+    var back: named.Builder = .{ .gpa = a, .io = io, .pack = &pb };
+    defer back.deinit();
+    try std.testing.expect(!try cb.get(&back, "L0", original.out.items));
+    try std.testing.expectEqual(@as(usize, 0), back.out.items.len);
+    image[image.len - 1] ^= 1;
+    try fb.writePositionalAll(io, image, 0);
+    var same = try Cache.open(a, io, root, try packDigest(io, &pb), key, false, true);
+    defer same.deinit();
+    try std.testing.expectEqualStrings(ca.root, same.root);
+    try std.testing.expect(try same.get(&back, "L0", original.out.items));
+}
+
+test "prepared metadata corruption is a clean miss with no partial publication" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmp.dir.realPathFileAlloc(io, ".", a);
+    defer a.free(root);
+    var p = pack_mod.Pack.init(a);
+    defer p.deinit();
+    const key: Key = .{ .rank = 0, .world = 1, .o_groups = 1, .blocks = &.{}, .dspark = false };
+    var c = try Cache.open(a, io, root, @splat(1), key, true, false);
+    defer c.deinit();
+    var b: named.Builder = .{ .gpa = a, .io = io, .pack = &p };
+    defer b.deinit();
+    const bytes = try a.alignedAlloc(u8, .@"16", 2);
+    @memset(bytes, 7);
+    try b.out.append(a, .{ .name = try a.dupe(u8, "q"), .kind = .bf16, .shape = .{ 1, 1, 1, 1 }, .rank = 1, .bytes = bytes });
+    for ([_]bool{ false, true }) |verify| {
+        c.verify = verify;
+        try c.put(&b, "L0");
+        var valid: named.Builder = .{ .gpa = a, .io = io, .pack = &p };
+        defer valid.deinit();
+        try std.testing.expect(try c.get(&valid, "L0", b.out.items));
+        for (0..10) |bad_case| {
+            try c.put(&b, "L0");
+            var buf: [std.fs.max_path_bytes]u8 = undefined;
+            const file = try Io.Dir.cwd().openFile(io, try c.path(&buf, "L0", ""), .{ .mode = .read_write });
+            defer file.close(io);
+            var entry: Entry = undefined;
+            _ = try file.readPositionalAll(io, std.mem.asBytes(&entry), 16);
+            switch (bad_case) {
+                0 => entry.shape[0] = 5120,
+                1 => entry.kind = @backingInt(named.Kind.f32),
+                2 => entry.offset = std.math.maxInt(u64),
+                3 => entry.rank = 0,
+                4 => entry.name_len = std.math.maxInt(u16),
+                5 => entry.shape[1] = std.math.maxInt(u64),
+                7 => {
+                    entry.shape[0] = 2;
+                    entry.len = 4;
+                },
+                8 => entry.kind = @backingInt(named.Kind.f16),
+                9 => {
+                    entry.shape[0] = std.math.maxInt(u64);
+                    entry.shape[1] = 2;
+                    entry.rank = 2;
+                },
+                6 => {
+                    var count: u32 = std.math.maxInt(u32);
+                    try file.writePositionalAll(io, std.mem.asBytes(&count), 12);
+                },
+                else => unreachable,
+            }
+            try file.writePositionalAll(io, std.mem.asBytes(&entry), 16);
+            var back: named.Builder = .{ .gpa = a, .io = io, .pack = &p };
+            defer back.deinit();
+            try std.testing.expect(!try c.get(&back, "L0", b.out.items));
+            try std.testing.expectEqual(@as(usize, 0), back.out.items.len);
+        }
+    }
 }

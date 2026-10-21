@@ -1,14 +1,4 @@
-//! TF_DSV41_LIN2 (lin2.cu, ours) against the originals, on synthetic data: random trellis words, rotated inputs and
-//! scales. Every 17-32-row launch of dense3's lanes_linear (each width, each (WK, MINB) instance, one and several k
-//! splits) and of linear.cu's linear_kernel (each width and CTA width, with and without linear2's k-step prefetch)
-//! runs the original and the two-tile variant on the same buffers; their outputs are compared byte for byte and the
-//! k-split counters must be back at zero. Then both are timed with events (2 warm-ups, the median of `reps`) at the
-//! shapes a 4-stream decode window runs: the attention's projections and the head.
-//!
-//! TF_DSV41_LIN2_CLUSTER's lanesc is checked the same way (every width and split count at 1-32 rows) and timed beside
-//! them.
-//!
-//!   tf-dsv41-test lin2 [reps]     (default 15)
+//! TF_DSV41_LIN2 / _LIN2_CLUSTER kernels against the originals: byte-exact outputs, then timed (lin2 [reps]).
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -102,7 +92,11 @@ const Lin = struct {
 
     fn init(gpa: std.mem.Allocator, d: *const cuda.Driver, rng: *Rng, K: usize, N: usize, k2: u32, sk: usize, wk: usize) !Lin {
         return .{
-            .K = K, .N = N, .k2 = k2, .sk = sk, .wk = wk,
+            .K = K,
+            .N = N,
+            .k2 = k2,
+            .sk = sk,
+            .wk = wk,
             .xh = try halves(gpa, d, rng, 32 * K, -1.0, 1.0),
             .T = try words(gpa, d, rng, (K / 16) * (N / 16) * 4 * k2),
             .svh = try halves(gpa, d, rng, N, 0.01, 0.03),
@@ -139,7 +133,8 @@ const Lanes = struct {
         const K = seg.k;
         const N = seg.n;
         return .{
-            .seg = seg, .minb = minb,
+            .seg = seg,
+            .minb = minb,
             .xh = try halves(gpa, d, rng, 32 * K, -1.0, 1.0),
             .T = try words(gpa, d, rng, (K / 16) * (N / 16) * 4 * seg.k2),
             .svh = try halves(gpa, d, rng, N, 0.01, 0.03),
@@ -260,7 +255,7 @@ pub fn run(gpu: Gpu, k: *const dsv41.Kernels, reps_arg: ?[]const u8) !void {
     };
     check.pass("lin2 lanesc: {d} cluster launches equal to lanes_linear_kernel byte for byte", .{cases});
 
-    // -- time: the head (linear.cu at 6 bits, prod's plan) and attention-sized dense3 launches ---------------------
+    // -- time: the head (linear.cu at 6 bits, the served plan) and attention-sized dense3 launches ---------------
     std.debug.print("lin2 timing ({d} reps, median us; 'one pass' = the original at 16 rows)\n", .{reps});
     {
         const K = 4096;

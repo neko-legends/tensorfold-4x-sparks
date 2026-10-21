@@ -1,22 +1,10 @@
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-// Row-bounded decode top-k (ours, TF_DSV41_INDEX_BOUND; no Python twin): topk_cuda.cu's topk_kernel (the verbatim
-// copy, included for its Args / image / block_scan) whose row stops at its own visible end instead of the job's nk.
-//
-// A row window's graph is keyed by the context bucket of the mix's highest position, so every row's cluster reads
-// and radix-passes all nk entries, even a short slot's row whose entries past nvis = (q + 1) / ratio are all -inf
-// (index scores). topk_b_kernel is topk_kernel with each job's entries cut to [0, B):
-//   - mode 0 (dense select): B = min(nk, max(nvis, k)). image(-inf) = 0x007FFFFF is the smallest valid image (NaN is
-//     canonicalised to 0x7FC00000, -0 to +0) and the selection's order is (image descending, then scan order), so an
-//     entry past B (a -inf score later in scan order than all of [0, B)) is below every entry of [0, B), which holds
-//     >= k entries (or is all nk). topk_kernel computes exactly the top k of that order (the radix + the scan-order
-//     quota), so the selected set - hence the ascending positions, the visible count, the -1 padding - is the same.
-//   - mode 2 (candidate blocks): B = min(nk, cdiv(nvis, bs)). A block past B has e * bs >= nvis: topk_kernel already
-//     gives it image 0 (missing), which no histogram, count or compaction reads - every step is topk_kernel's.
-//   - mode 3 (candidate positions, scan order is not position order): B = nk, topk_kernel unchanged.
-// A CTA's loops then stop at its own entries' end (n rounded up to the 512-thread step for the warp-collective
-// histogram; the entries [n, that) are written 0 as topk_kernel writes past nk), every barrier and cluster sync is
-// kept (a CTA with no entries still takes part), and every other line is topk_kernel's.
+
+
+// Row-bounded decode top-k (TF_DSV41_INDEX_BOUND): topk_kernel with each row cut at its visible end, same selection.
+
+// Bound B: mode 0 min(nk, max(nvis, k)), mode 2 min(nk, cdiv(nvis, bs)), mode 3 nk; past-B entries rank below all kept.
+
+// Every barrier and cluster sync is kept (a CTA with no entries still takes part); other lines are topk_kernel's.
 
 #include "topk_cuda.cu"
 

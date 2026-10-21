@@ -1,10 +1,10 @@
-//! Host tests of the family's loader side: the release config, a synthetic pack named as the real packs are, the q28 pack's expert bytes, and real header dumps (TF_DSV41_HEADERS).
+//! Host tests of the loader side: release config, synthetic pack, 2.8 bpw widths, header dumps (TF_DSV41_HEADERS).
 
 const std = @import("std");
 const testing = std.testing;
 const config = @import("config.zig");
 const Config = config.Config;
-const exl3 = @import("exl3.zig");
+const exl3 = @import("core").exl3_layout;
 const Pack = @import("pack.zig").Pack;
 const plan = @import("plan.zig");
 const named = @import("named.zig");
@@ -32,7 +32,7 @@ test "the release config.json: topology, routing and rope" {
     try testing.expectEqual(@as(u32, 24), c.hashCols());
     try testing.expect(c.isEngram(14) and !c.isEngram(2));
     try testing.expectEqual(@as(u32, 1), c.eos);
-    // the release's values equal the defaults the Python Config holds
+    // the release's values equal the Config defaults
     const d: Config = .{};
     try testing.expectEqualSlices(u32, d.compress_ratios.items(), c.compress_ratios.items());
     try testing.expectEqualSlices(u64, d.engram_rows.items(), c.engram_rows.items());
@@ -98,14 +98,11 @@ fn tinyPackLen(a: std.mem.Allocator, c: *const Config, extra: []const u8, skip: 
         try T.group(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.wo_b", .{p}), c.o_groups * c.o_lora, D, 64);
         if (l < c.layers and c.kv_sources.contains(l)) {
             try T.group(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.compressor.wkv", .{p}), D, c.head_dim, 80);
-            try T.put(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.compressor.wkv.weight", .{p}), "BF16", &.{ c.head_dim, D });
             if (c.compressRatio(l) == 2) {
                 try T.group(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.compressor.wgate", .{p}), D, c.head_dim, 80);
-                try T.put(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.compressor.wgate.weight", .{p}), "BF16", &.{ c.head_dim, D });
             }
             try T.put(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.compressor.norm.weight", .{p}), "BF16", &.{c.head_dim});
             try T.group(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.indexer.wk", .{p}), c.head_dim, c.index_dim, 128);
-            try T.put(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.indexer.wk.weight", .{p}), "BF16", &.{ c.index_dim, c.head_dim });
             try T.put(wr, &at, &first, skip, try std.fmt.bufPrint(&nb, "{s}.attn.indexer.k_norm.weight", .{p}), "BF16", &.{c.index_dim});
         }
         if (l < c.layers and c.index_sources.contains(l)) {
@@ -262,7 +259,7 @@ test "a synthetic pack: unknown names are leftovers, missing ones and wrong shap
     try testing.expectError(error.UnexpectedShape, tinyPlanOf(a, &wide, &c, "", "", 0));
 }
 
-test "a synthetic pack on disk: every planned tensor named in the Python loader's form" {
+test "a synthetic pack on disk: every planned tensor named in the reference loader's form" {
     const a = testing.allocator;
     const io = testing.io;
     const c = config.tiny();
@@ -291,6 +288,17 @@ test "a synthetic pack on disk: every planned tensor named in the Python loader'
     try b.all(&pl, c.o_groups);
     try testing.expectEqual(named.Kind.i16, b.find("L2.moe.w2.data").?.kind);
     try testing.expect(b.find("L3.moe.w2.trellis") != null and b.find("L3.moe.w2.data") == null);
+    var schema: named.Builder = .{ .gpa = a, .io = io, .pack = &p, .metadata_only = true };
+    defer schema.deinit();
+    try schema.all(&pl, c.o_groups);
+    try testing.expectEqual(b.out.items.len, schema.out.items.len);
+    for (b.out.items, schema.out.items) |actual, expected| {
+        try testing.expectEqualStrings(actual.name, expected.name);
+        try testing.expectEqual(actual.kind, expected.kind);
+        try testing.expectEqual(actual.rank, expected.rank);
+        try testing.expectEqual(actual.shape, expected.shape);
+        try testing.expectEqual(@as(usize, 0), expected.bytes.len);
+    }
     try testing.expectEqualSlices(usize, &.{ 8, 8, 16, 32 }, b.find("L3.moe.w2.trellis").?.shape[0..4]);
     const qk = b.find("L1.engram.qk").?;
     try testing.expect(qk.kind == .f32 and qk.bytes.len == 4 * c.hc_mult * c.hidden);
@@ -413,7 +421,7 @@ test "a synthetic pack on disk: an fp16 confidence head is accepted and widened 
 test "the q28 pack: rank 0's routed + shared trellis bytes of every block match the Python loader's listing" {
     const a = testing.allocator;
     const c: Config = .{};
-    var lines = std.mem.tokenizeScalar(u8, @embedFile("fixtures/q28-widths.txt"), '\n');
+    var lines = std.mem.tokenizeScalar(u8, @embedFile("fixtures/widths-exl3-2p8.txt"), '\n');
     var blocks: u32 = 0;
     var ragged: u32 = 0;
     while (lines.next()) |line| {

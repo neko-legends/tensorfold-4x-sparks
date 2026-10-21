@@ -1,28 +1,4 @@
-//! The served engine's draft pricing from prod's own calibration (Python calib.costs_for, depth.env_mode / env_skip,
-//! joint.env_*), with Python's knob names:
-//!
-//! - **TF_DSV41_CALIB** (`cached`, the default | `real` | `default` | `measure` | `zig`): `cached` reads a
-//!   `calib-<key>.json` from **TF_DSV41_CALIB_DIR** (default ~/.cache/tensorfold/dsv41-calib), the file Python's boot
-//!   measured and stored; `default` prices from depth.default_costs. `real` measures at every boot in Python (prod:
-//!   `real`, the dir /cache/dsv41-calib), and the boot stores the table; Zig's `real` reads the newest stored Python
-//!   table as `cached` does: prod's last boot's. `cached` / `real` never pick a Zig-measured entry.
-//! - Zig's own measurement (Zig knob values, no Python twin): `measure` times this engine's windows at boot on every
-//!   rank (calib_gpu.zig: Python's calib.measure, calib_measure.zig) and stores the table as
-//!   `calib-zig-<shape hash>.json` (`"engine": "zig"`, `meta.shape` / `time` / `method`) in the same directory; `zig`
-//!   reads the newest Zig entry for the shape (`pick`'s rules over `"engine": "zig"` entries only) and measures when
-//!   there is none. `load` answers `.measure` for both when the engine has to measure (the defaults until it has).
-//! - Python's key hashes its own image digest, which Zig cannot reproduce, so the entry is chosen by the shape Python
-//!   stores beside it (`meta.shape`): the same world and DSpark, at least our slots (a table timed on more slots
-//!   prices a lone window's rows the same: prod's 4-slot table for a 1-slot engine); the same slots, then the same
-//!   context preferred, then the newest (`meta.time`). **TF_DSV41_CALIB_FILE** names one entry outright (a Zig knob:
-//!   no Python twin).
-//! - The table is used as Python's ranks use it: rank 0's entry goes through `Costs.encode` / `decode` (microsecond
-//!   ints, round half to even) before the depth sees it, so a cached table prices with the shared bits, not the
-//!   file's decimals.
-//! - Nothing found (no directory, no matching entry): depth.default_costs, as before this knob, and a log line.
-//! - The depth's knobs: TF_DSV41_DEPTH (cost | static), TF_DSV41_DRAFT_DEPTH (cap 5 / static k 3; 0-15),
-//!   TF_DSV41_DRAFT_SKIP, TF_DSV41_DEPTH_JOINT (0 | 1 | 2), TF_DSV41_DEPTH_FAIR, TF_DSV41_DEPTH_HOST_MS,
-//!   TF_DSV41_GRAPH_ROWS_MAX.
+//! The served engine's draft pricing: a stored calibration table picked by engine shape (TF_DSV41_CALIB), or defaults.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const costs_mod = @import("costs.zig");
@@ -33,14 +9,13 @@ const Costs = costs_mod.Costs;
 
 pub const Mode = enum { cached, default, real, measure, zig };
 
-/// The engine the table must have been measured on (Python's `shape`: slots, world, DSpark; context preferred).
+/// The engine the table must have been measured on (slots, world, DSpark; context preferred).
 pub const Shape = struct { slots: u32, world: u32, dspark: bool, context: ?u64 = null };
 
-/// `measure`: the engine must measure (TF_DSV41_CALIB=measure, or `zig` without a Zig entry); the costs are the
-/// defaults until it has. `measured`: the engine's own measurement at this boot.
+/// `measure`: the engine must measure (defaults until it has); `measured`: this boot's own measurement.
 pub const Source = enum { default, cached, measure, measured };
 
-/// Whose measurement an entry is: Python's boot (no "engine" key) or Zig's (`"engine": "zig"`).
+/// Whose measurement an entry is: the reference engine's (no "engine" key) or Zig's (`"engine": "zig"`).
 pub const Engine = enum { python, zig };
 
 pub const Loaded = struct {
@@ -74,14 +49,13 @@ pub fn mode(raw: ?[]const u8) !Mode {
     return std.meta.stringToEnum(Mode, std.ascii.lowerString(&buf, v)) orelse error.CalibMode;
 }
 
-/// The cost table for `want` per `k`; `default_rows`: the defaults' rows (depth.default_costs: 16; the served
-/// engine's lanes have priced 64 since M4).
+/// The cost table for `want` per `k`; `default_rows`: the defaults' row count (16, the served engine prices 64).
 pub fn load(gpa: Allocator, io: std.Io, k: Knobs, want: Shape, default_rows: usize) !Loaded {
     const m = try mode(k.mode);
     switch (m) {
         .default => return defaults(gpa, default_rows),
         .measure => return measure(gpa, default_rows),
-        .cached, .real, .zig => {}, // real: the newest stored Python measurement
+        .cached, .real, .zig => {}, // real: the newest stored reference measurement
     }
     if (trimmed(k.file)) |f| return .{ .costs = try readEntry(gpa, io, f), .source = .cached, .path = try gpa.dupe(u8, f) };
     // nothing to read: the defaults, or (zig) a measurement
@@ -114,7 +88,7 @@ pub fn readEntry(gpa: Allocator, io: std.Io, path: []const u8) !Costs {
     return shared(gpa, raw);
 }
 
-/// `c` after rank 0's share: microsecond ints and back (Python `Costs.decode(costs.encode())`).
+/// `c` after rank 0's share: microsecond ints and back (`Costs.decode(costs.encode())`).
 pub fn shared(gpa: Allocator, c: Costs) !Costs {
     const ints = try c.encode(gpa);
     defer gpa.free(ints);
@@ -129,7 +103,7 @@ const Meta = struct {
     } = .{},
 };
 
-/// The directory's `calib-*.json` measured by Python on `want`'s engine (see the top); null: none.
+/// The directory's reference-engine `calib-*.json` for `want`'s engine shape; null: none.
 pub fn pick(gpa: Allocator, io: std.Io, dir: []const u8, want: Shape) !?[]u8 {
     return pickOf(gpa, io, dir, want, .python);
 }
@@ -175,8 +149,7 @@ pub fn pickOf(gpa: Allocator, io: std.Io, dir: []const u8, want: Shape, engine: 
     return best;
 }
 
-/// The file a Zig measurement for `want` is stored as: calib-zig-<the shape's SHA-256, 16 hex>.json (one a shape; a
-/// new measurement replaces it).
+/// A Zig measurement's file: calib-zig-<shape SHA-256, 16 hex>.json (one per shape; a new one replaces it).
 pub fn zigName(buf: []u8, want: Shape) ![]const u8 {
     var key: [96]u8 = undefined;
     const k = try std.fmt.bufPrint(&key, "slots={d} world={d} dspark={d} context={d}", .{ want.slots, want.world, @intFromBool(want.dspark), want.context orelse 0 });
@@ -185,7 +158,7 @@ pub fn zigName(buf: []u8, want: Shape) ![]const u8 {
     return std.fmt.bufPrint(buf, "calib-zig-{x}.json", .{h[0..8]});
 }
 
-/// What a Zig measurement stores beside its table (Python's meta: method, seconds; rank 0's kept rows).
+/// What a Zig measurement stores beside its table (meta: method, seconds; rank 0's kept rows).
 pub const Record = struct {
     method: measure_mod.Method,
     seconds: f64,
@@ -195,8 +168,7 @@ pub const Record = struct {
     tokens: usize = 0,
 };
 
-/// Writes `c` for `want` into `dir` (created when missing) as zigName, atomically (a temporary file renamed);
-/// returns its path (gpa-owned). `now_s`: the wall clock (seconds since the epoch) for `meta.time`, UTC.
+/// Writes `c` for `want` into `dir` as zigName atomically; returns its path (gpa-owned); `now_s` stamps meta.time.
 pub fn store(gpa: Allocator, io: std.Io, dir: []const u8, want: Shape, c: Costs, rec: Record, now_s: i64) ![]u8 {
     try std.Io.Dir.cwd().createDirPath(io, dir);
     var nb: [64]u8 = undefined;
@@ -234,7 +206,7 @@ pub fn store(gpa: Allocator, io: std.Io, dir: []const u8, want: Shape, c: Costs,
     return path;
 }
 
-/// The depth's knobs as Python's depth.env_mode / env_skip and joint.env_mode / env_fair / env_host_ms / rows_cap.
+/// The depth's knobs (TF_DSV41_DEPTH, _DRAFT_DEPTH, _DRAFT_SKIP, _DEPTH_JOINT, _DEPTH_FAIR, _DEPTH_HOST_MS, rows cap).
 pub fn depthSettings(get: *const fn ([*:0]const u8) ?[]const u8) !depth.Settings {
     var s: depth.Settings = .{};
     if (trimmed(get("TF_DSV41_CODE_ACCEPT"))) |v| s.code_accept = try flag(v, error.CodeAccept);

@@ -136,7 +136,7 @@ const Harness = struct {
         const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(h.port) };
         const stream = try addr.connect(h.io, .{ .mode = .stream });
         defer stream.close(h.io);
-        const head = try std.fmt.allocPrint(a, "POST {s} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ path, body.len, body });
+        const head = try std.fmt.allocPrint(a, "POST {s} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ path, body.len, body });
         var wbuf: [4096]u8 = undefined;
         var w = std.Io.net.Stream.Writer.init(stream, h.io, &wbuf);
         try w.interface.writeAll(head);
@@ -437,7 +437,7 @@ fn abortMidStream(h: *Harness, a: Allocator, body: []const u8) !void {
     const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(h.port) };
     const stream = try addr.connect(h.io, .{ .mode = .stream });
     defer stream.close(h.io);
-    const head = try std.fmt.allocPrint(a, "POST /v1/chat/completions HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
+    const head = try std.fmt.allocPrint(a, "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {d}\r\n\r\n{s}", .{ body.len, body });
     var wbuf: [4096]u8 = undefined;
     var w = std.Io.net.Stream.Writer.init(stream, h.io, &wbuf);
     try w.interface.writeAll(head);

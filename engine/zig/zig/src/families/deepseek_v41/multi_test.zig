@@ -1,16 +1,10 @@
-//! Host tests of the multi-segment prefill run (block_prefill.emitMulti: several slots' prompt segments in one run,
-//! Python's slots.prefill_runs / forward._run over several contexts), run by `zig build test-dsv41-knobs`:
-//! - one segment is the one-segment program (full mode without the head, and CED's encoder pass), launch for launch
-//!   and tensor for tensor (only the positions' glue is the run's);
-//! - several segments are the run's rows' launches of a one-segment program of all their rows (embedding, mHC sites,
-//!   projections, experts, exchanges) with each segment's CSA2 steps (SWA store, compressor, selection, fused core) as
-//!   that segment's own program runs them, at its rows of the run (offsets) and on its slot (glue pf_seg).
+//! Host tests of the multi-segment prefill run (block_prefill.emitMulti), run by `zig build test-dsv41-knobs`.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const ced = @import("ced.zig");
 const buffers = @import("buffers.zig");
 const Config = @import("config.zig").Config;
@@ -19,8 +13,8 @@ const limit: i64 = 8192;
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     for (0..40) |L| try w.gm.put(a, @intCast(L), .{ (1 << 3) | (1 << 4), (1 << 3) | (1 << 4) });
     return w;
 }
@@ -224,7 +218,7 @@ test "a run refuses what one segment's program must run alone" {
 }
 
 test "every role a run reads is in the buffer plan, at its run's rows (forward_prefill.plan: the one-segment programs + planRuns)" {
-    // Spark 2026-10-09: the runs' positions "w.mpos64" were in no planned program: every run failed with Unbound
+    // regression: the runs' positions "w.mpos64" were in no planned program, so every run failed with Unbound
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
@@ -263,9 +257,7 @@ test "every role a run reads is in the buffer plan, at its run's rows (forward_p
     }
 }
 
-/// The first tensor argument of a Triton launch in `cs` whose view is not 16-byte aligned from its role's base (the
-/// runner's bases are 256-aligned, block.zig's pool too), or null. Triton specializes a pointer on 16-byte alignment (and
-/// aot-needs keys on it); the extension calls are compiled CUDA and take any offset (x3gm's per-width views).
+/// The first Triton tensor argument in `cs` not 16-byte aligned from its role's base, or null (Triton specializes).
 pub fn misaligned(cs: []const calls.Call) ?struct { call: []const u8, arg: []const u8, offset: i64 } {
     for (cs) |c| {
         if (!c.triton) continue;
@@ -278,8 +270,7 @@ pub fn misaligned(cs: []const calls.Call) ?struct { call: []const u8, arg: []con
 }
 
 test "every tensor a piece run or replay run hands Triton is 16-byte aligned (Triton's specialization, aot-needs' key)" {
-    // Spark 2026-10-09: a run's second segment read its selection counts (4-byte rows) at row0 * 4: _fused's CNT
-    // pointer was not 16-aligned, a variant no fill had
+    // regression: a run's second segment read selection counts at row0 * 4, leaving _fused's CNT not 16-aligned
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();

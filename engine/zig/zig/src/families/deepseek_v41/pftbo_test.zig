@@ -1,17 +1,12 @@
-//! Host tests of the prefill two-batch overlap (TF_DSV41_PF_TBO; `zig build test-dsv41-knobs`): the knobs' readers,
-//! the pair split, and block_prefill.emitTbo on the real emitter: the main stream's calls are segment A's encoder
-//! program (but its CED stash) and the side stream's are segment B's with B's scratch renamed, so each row runs a
-//! consecutive segment's arithmetic; every B attention part is forked behind A's, A hands each ratio-2 carry to the
-//! slot before B's layer reads it, an Engram layer's A part joins B, the program ends joined; inside a fork region
-//! the streams share no role but constant tables (branches.shared).
+//! Host tests of the prefill two-batch overlap (TF_DSV41_PF_TBO): readers, pair split, and emitTbo's two streams.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const branches = @import("branches.zig");
-const check = @import("m1_check.zig");
-const pk = @import("prod_knobs.zig");
+const check = @import("calls_check.zig");
+const pk = @import("serve_knobs.zig");
 const fp = @import("forward_prefill.zig");
 const Config = @import("config.zig").Config;
 
@@ -47,8 +42,8 @@ test "TF_DSV41_PF_TBO and _GM_SMS: 0 / 1; 0 or 8-48 SMs, 0 (every SM) by default
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     return w;
 }
 
@@ -79,8 +74,7 @@ fn sameCall(a: std.mem.Allocator, x: calls.Call, y: calls.Call, b_side: bool) !v
     }
 }
 
-/// Constant tables both streams read (weights' forms, x3gm's pointer tables, rope, Hadamard, the pool's page tables,
-/// L2 prefetch lists): the only roles a fork region may share.
+/// Constant tables both streams read (weight forms, pointer tables, rope, page tables): all a fork may share.
 fn constant(r: []const u8) bool {
     if (std.mem.eql(u8, r, "s.pf.had") or std.mem.eql(u8, r, "s.kv.pt") or std.mem.eql(u8, r, "s.kv.ct")) return true;
     if (std.mem.startsWith(u8, r, "s.rope.")) return true;
@@ -89,8 +83,7 @@ fn constant(r: []const u8) bool {
     return false;
 }
 
-/// A kv source's compressed rows (contiguous "s.L<i>.comp.v / .s", or the pool's "s.kv.comp.L<i>"): A's later layers
-/// read them up to A's positions while B's source layer appends rows past A's last (emitTbo's even boundary).
+/// A kv source's compressed rows: A's later layers read them up to A's positions while B appends past A's last.
 fn sourceRows(cfg: *const Config, r: []const u8) bool {
     const pre = if (std.mem.startsWith(u8, r, "s.kv.comp.L")) "s.kv.comp.L" else if (std.mem.startsWith(u8, r, "s.L")) "s.L" else return false;
     const rest = r[pre.len..];
@@ -116,8 +109,7 @@ test "TF_DSV41_PF_TBO on the emitter: A's program on main, B's renamed on the si
         const pair = try bp.emitTbo(aa, &cfg, &w, o, &enc, na, nb, start);
         const pa = try bp.emitReplay(aa, &cfg, &w, o, &enc, na, start, .encoder);
         const pb = try bp.emitReplay(aa, &cfg, &w, o, &enc, nb, start + na, .encoder);
-        // the streams' calls, in order: A's program but its stash on main (+ the carries and the closing join), B's
-        // renamed on the side
+        // the streams' calls in order: A's program but its stash on main (+ carries, closing join), B's renamed on side
         var ia: usize = 0;
         var ib: usize = 0;
         var carries: usize = 0;
@@ -156,8 +148,7 @@ test "TF_DSV41_PF_TBO on the emitter: A's program on main, B's renamed on the si
         while (ia < pa.len and std.mem.eql(u8, pa[ia].name, "glue.ced_stash")) ia += 1;
         try testing.expectEqual(pa.len, ia);
         try testing.expectEqual(pb.len, ib);
-        // the ratio-2 kv sources among layers 0 .. 19 (2, 8, 14 in this model) hand their carry over; Engram's layer
-        // 14 part of A joins B (B ran its layer 1 Engram step since; A.s layer 1 joins nothing)
+        // the ratio-2 kv sources among layers 0 .. 19 hand their carry over; A's Engram layer 14 part joins B
         var r2: usize = 0;
         for (enc) |L| r2 += @intFromBool(cfg.isKvSource(L) and cfg.compressRatio(L) == 2);
         try testing.expect(r2 > 0);

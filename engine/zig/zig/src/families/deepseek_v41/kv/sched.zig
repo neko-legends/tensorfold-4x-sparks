@@ -1,24 +1,4 @@
-//! Prod's round planner (Python 8474f31 batch.py, the batcher's `_plan`) for the served engine's lane host: which queued
-//! request starts this round and which prompt rows run between the decode rounds. Rank 0's decisions only; the host
-//! (core/lane_host.zig with a `Rounds`, serve_engine.zig) runs them through the lanes, and the followers replay the
-//! leader's forward operations as before. The rules, each as prod's:
-//! - **Admission** (`admit`, batch.py `_admit` 383-447): foreground before background, FIFO (the host's queue order); a
-//!   request needs a free slot; one with more than `long_prompt` tokens left to prefill waits while `concurrent` such
-//!   prompts are admitted and still prefilling (a `.skip`: shorter prompts behind it go); the memory floor (`Floor`, when
-//!   a memory source is set: the prompt's priced prefill transient plus what admitted prompts still owe, against the
-//!   usable memory less the hard floor) else a `.wait` (FIFO: nothing behind it either), refused (503) only when nothing
-//!   is live and it waited `refuse_s`; a request past the whole pool is refused; the pool's pages (`sess.admit` with the
-//!   round's resumed entries kept and at most one round of spills) else a `.wait`.
-//! - **Pieces** (`plan`, batch.py `_pieces` 476-501): prompts with at most `short` tokens left always, the others when the
-//!   fair share allows (`Fairness`, GLM batchplan), fewest tokens left first (then the earliest submitted), as many as
-//!   the round's rows hold (`rows`, or G19's adaptive step: `Adapt`, `roundNeed`); a piece ends at the prompt's replay
-//!   point (its snapshot runs right after it, rounds.py `_save`) or at the prompt's last token less one, on the 16-token
-//!   grid (`pieceEnd`); a prompt whose rows are all in is a final this round (the prompt's last token is the first
-//!   verify window's pending row).
-//! - **A damaged NVMe entry** (`started(.., damaged)`, batch.py `_sample` 561-568): the plan was made from the entry's
-//!   length, so its piece is planned (the round's rows spent) and not run; after the round the request prefills from 0,
-//!   its snapshot point unconditional (prod's reset).
-//! - **After the round** (`after`): the fair share's debt from the pieces' and the decode's seconds.
+//! The served engine's round planner (rank 0): which queued request starts and which prompt rows run between rounds.
 
 const std = @import("std");
 const sess = @import("sess.zig");
@@ -26,8 +6,7 @@ const sess = @import("sess.zig");
 pub const grid: u64 = 16;
 pub const GiB: f64 = @floatFromInt(@as(u64, 1) << 30);
 
-/// plan.py `piece_end`: the end of a slot's next piece from `done` toward `target` with `budget` rows: `target` when it
-/// fits, else the last grid point within the budget (at least one grid step: a piece is never empty).
+/// End of a slot's next piece from `done` toward `target` in `budget` rows: `target` if it fits, else last grid point.
 pub fn pieceEnd(done: u64, target: u64, budget: u64, g: u64) u64 {
     if (target - done <= budget) return target;
     var end = (done + budget) / g * g;
@@ -35,13 +14,12 @@ pub fn pieceEnd(done: u64, target: u64, budget: u64, g: u64) u64 {
     return end;
 }
 
-/// sessions.snapshot_point: the last grid point strictly before a prompt's end.
+/// The last grid point strictly before a prompt's end.
 pub fn snapshotPoint(n: u64) u64 {
     return if (n > 0) (n - 1) / grid * grid else 0;
 }
 
-/// GLM batchplan.Fairness: a piece of t seconds is followed by at least t (1 - share) / share seconds of decode rounds
-/// (and at least one round) before the next piece; with nothing decoding, pieces run back to back.
+/// A piece of t s is followed by >= t (1 - share) / share s (and a round) of decode; none decoding: no wait.
 pub const Fairness = struct {
     share: f64 = 0.5,
     debt: f64 = 0.0,
@@ -68,7 +46,7 @@ pub const Fairness = struct {
     }
 };
 
-/// memory.py's prefill price knobs (TF_DSV41_FLOOR_PF_*_GIB, TF_DSV41_INDEX_BUDGET_MIB, TF_DSV41_FLOOR_PRICE).
+/// Prefill price knobs (TF_DSV41_FLOOR_PF_*_GIB, TF_DSV41_INDEX_BUDGET_MIB, TF_DSV41_FLOOR_PRICE).
 pub const PriceKnobs = struct {
     on: bool = true,
     chunk_gib: f64 = 0.533,
@@ -79,8 +57,7 @@ pub const PriceKnobs = struct {
     budget_mib: u64 = 256,
 };
 
-/// memory.Price: a prompt's prefill transient in bytes (`once` with its first piece, `index` over its positions below
-/// `index_positions`, from `start` to `end`).
+/// A prompt's prefill transient in bytes: `once` with its first piece, `index` below `index_positions`, start..end.
 pub const Price = struct {
     once: i64 = 0,
     index: i64 = 0,
@@ -97,14 +74,13 @@ pub const Price = struct {
         const once: i64 = if (done <= p.start) p.once else 0;
         const span = p.end - p.start;
         const left = p.end -| @max(done, p.start);
-        // int(index * left / span): the exact quotient is at least 1/span from the next integer, so the integer
-        // division is Python's truncated float
+        // int(index * left / span): the exact quotient is >= 1/span from the next integer, so truncation matches
         const idx: i64 = if (span > 0) @intCast(@divTrunc(@as(i128, p.index) * left, span)) else 0;
         return once + idx;
     }
 };
 
-/// memory.prefill_price: the transient of prefilling tokens [cached, n - 1) in windows of `rows`.
+/// The transient of prefilling tokens [cached, n - 1) in windows of `rows`.
 pub fn prefillPrice(k: PriceKnobs, n: u64, cached: u64, rows: u64) Price {
     if (!k.on) return .{};
     if (n < 1 + cached + 1) return .{}; // todo = n - 1 - cached <= 0
@@ -118,8 +94,7 @@ pub fn prefillPrice(k: PriceKnobs, n: u64, cached: u64, rows: u64) Price {
     return .{ .once = @intFromFloat(once * GiB), .index = @intFromFloat(index * GiB), .start = start, .end = @max(start, end) };
 }
 
-/// memory.round_need: bytes the next prefill round takes at `rows` rows: one window's `once` + each prefilling prompt's
-/// index growth still ahead (`left`: (prompt length, tokens done)).
+/// Bytes the next prefill round takes at `rows`: one window's `once` + each prompt's index growth (`left`: (n, done)).
 pub fn roundNeed(k: PriceKnobs, rows: u64, left: []const [2]u64) i64 {
     if (left.len == 0) return 0;
     const once = prefillPrice(k, rows + 1, 0, rows).once;
@@ -128,8 +103,7 @@ pub fn roundNeed(k: PriceKnobs, rows: u64, left: []const [2]u64) i64 {
     return once + index;
 }
 
-/// memory.Adapt (G19): TF_DSV41_PREFILL_ADAPT (on), _GIB (what the tighter rank keeps after the round's transient; the
-/// floor target), _UP_GIB (more to step back up), _MIN (the smallest rows a round).
+/// Adaptive rows: TF_DSV41_PREFILL_ADAPT (on), _GIB (floor target), _UP_GIB (to step back up), _MIN (smallest rows).
 pub const Adapt = struct {
     gib: f64 = 5.0,
     up_gib: f64 = 0.5,
@@ -163,19 +137,15 @@ pub const Adapt = struct {
 /// The /proc/meminfo lines the floor reads (bytes).
 pub const Meminfo = struct { free: i64, available: i64, dirty: i64 = 0, writeback: i64 = 0, mapped: i64 = 0 };
 
-/// memory.Floor on rank 0 (rank 1's reports: none, as prod when they are stale): MemAvailable kept above the hard
-/// floor by accounting. `usable` = MemFree + the page cache the kernel can hand over (memsafe.view "available").
+/// The rank-0 memory floor: MemAvailable kept above the hard floor; `usable` = MemFree + reclaimable page cache.
 pub const Floor = struct {
     target_gib: f64 = 5.0,
     hard_gib: f64 = 4.0,
     /// TF_DSV41_ADMIT_FREE_FLOOR_GIB: immediately free on top (default 0)
     free_gib: f64 = 0.0,
-    /// TF_DSV41_FLOOR_REFUSE_S: nothing live this long -> refused
-    refuse_s: f64 = 30.0,
-    /// GLM53_TF_ADMIT_CACHE_KEEP_GB: page cache never counted as available
-    keep_gib: f64 = 2.0,
-    /// the usable bytes of the last check (the refusal's test)
-    last: i64 = 0,
+    refuse_s: f64 = 30.0, // TF_DSV41_FLOOR_REFUSE_S: nothing live this long -> refused
+    keep_gib: f64 = 2.0, // TF_DSV41_ADMIT_CACHE_KEEP_GB: page cache never counted as available
+    last: i64 = 0, // the usable bytes of the last check (the refusal's test)
 
     pub fn usable(f: *const Floor, mi: Meminfo) i64 {
         const keep: i64 = @intFromFloat(f.keep_gib * GiB);
@@ -197,23 +167,15 @@ pub const Floor = struct {
 };
 
 pub const Settings = struct {
-    /// TF_DSV41_PREFILL_ROWS: rows of prompt a round (the forward's segment)
-    rows: u64 = 2048,
-    /// TF_DSV41_BATCH_SHORT: prompts with at most this many tokens left go every round
-    short: u64 = 512,
-    /// TF_DSV41_PREFILL_SHARE
-    share: f64 = 0.5,
-    /// TF_DSV41_LONG_PROMPT / TF_DSV41_PREFILL_CONCURRENT (0: no limit)
-    long_prompt: u64 = 32768,
+    rows: u64 = 2048, // TF_DSV41_PREFILL_ROWS: rows of prompt a round (the forward's segment)
+    short: u64 = 512, // TF_DSV41_BATCH_SHORT: prompts with at most this many tokens left go every round
+    share: f64 = 0.5, // TF_DSV41_PREFILL_SHARE
+    long_prompt: u64 = 32768, // TF_DSV41_LONG_PROMPT / TF_DSV41_PREFILL_CONCURRENT (0: no limit)
     concurrent: u64 = 1,
-    /// rounds.py session_min: shorter prompts are not snapshotted
-    session_min: u64 = 64,
-    /// a session store is open (prompt snapshots at the replay point)
-    sessions: bool = true,
-    /// G19's adaptive rows (prod: on whenever the floor is): null = the fixed rows
-    adapt: ?Adapt = null,
-    /// the memory floor (null: no memory source, as prod's rank 1 / a floor-less batcher)
-    floor: ?Floor = null,
+    session_min: u64 = 64, // shorter prompts are not snapshotted
+    sessions: bool = true, // a session store is open (prompt snapshots at the replay point)
+    adapt: ?Adapt = null, // adaptive rows (on whenever the floor is): null = the fixed rows
+    floor: ?Floor = null, // the memory floor (null: no memory source)
     price: PriceKnobs = .{},
 
     pub fn fromEnv() !Settings {
@@ -233,7 +195,7 @@ pub const Settings = struct {
         return s;
     }
 
-    /// The floor and G19's rows as prod's rank 0 runs them (memory.Floor.from_env, memory.Adapt.from_env).
+    /// The floor and adaptive rows from the environment.
     pub fn withFloorFromEnv(s: *Settings) !void {
         var f: Floor = .{};
         if (envFloat("TF_DSV41_FLOOR_GIB")) |v| f.target_gib = v;
@@ -241,7 +203,7 @@ pub const Settings = struct {
         if (!(f.hard_gib > 0 and f.hard_gib <= f.target_gib)) return error.BadSettings;
         if (envFloat("TF_DSV41_ADMIT_FREE_FLOOR_GIB")) |v| f.free_gib = v;
         if (envFloat("TF_DSV41_FLOOR_REFUSE_S")) |v| f.refuse_s = v;
-        if (envFloat("GLM53_TF_ADMIT_CACHE_KEEP_GB")) |v| f.keep_gib = v;
+        if (envFloat("TF_DSV41_ADMIT_CACHE_KEEP_GB")) |v| f.keep_gib = v;
         s.floor = f;
         const off = if (std.c.getenv("TF_DSV41_PREFILL_ADAPT")) |v| std.mem.eql(u8, std.mem.trim(u8, std.mem.span(v), " "), "0") else false;
         if (off) return;
@@ -281,38 +243,31 @@ pub const Store = struct {
     pub const VTable = struct {
         /// The longest saved entry that strictly prefixes the job's prompt (null: none).
         find: *const fn (ctx: *anyopaque, job: usize) anyerror!?Hit,
-        /// batch.py's pool decision for the job (`sess.admit`: the entries in `keep` never spilled, `extra` pages
-        /// taken by the round's earlier admissions).
+        /// The pool decision for the job (`sess.admit`: `keep` entries never spilled, `extra` pages already taken).
         pool: *const fn (ctx: *anyopaque, job: usize, hit: ?Hit, keep: []const u32, extra: u32, spills: *std.ArrayList(u32)) anyerror!sess.Plan,
     };
 };
 
-/// An admitted request's plan: its pages and the entry it resumes (the round's spills are in `Round.spills`: every
-/// rank evicts them before the round's admissions run).
+/// An admitted request's plan: its pages and resumed entry (spills in `Round.spills`, evicted first on every rank).
 pub const Admission = struct { need: u32, hit: ?Store.Hit };
 
 pub const Verdict = union(enum) {
-    /// start it (its admission); the host begins the stream, then `started`
-    admit: Admission,
-    /// it and every request behind it stay queued this round (prod's FIFO `break`)
-    wait,
-    /// it stays queued; the next one may start (a long prefill in flight)
-    skip,
-    /// it cannot run on this server: the request fails with these words
-    refuse: Refusal,
+    admit: Admission, // start it (its admission); the host begins the stream, then `started`
+    wait, // it and every request behind it stay queued this round (FIFO)
+    skip, // it stays queued; the next one may start (a long prefill in flight)
+    refuse: Refusal, // it cannot run on this server: the request fails with these words
 };
 
 pub const Refusal = enum { too_large, memory };
 
-/// One request in the slots: its prompt's progress (batch.py `Seq`).
+/// One request in the slots: its prompt's progress.
 pub const Seq = struct {
     key: usize,
     n: u64,
     submitted: f64,
-    /// prompt tokens in the slot's state (prefill progress)
-    done: u64,
-    /// the replay point still to snapshot at
-    save_at: ?u64,
+    done: u64, // prompt tokens in the slot's state (prefill progress)
+    cached: u64 = 0, // the tokens its saved prefix gave it at admission
+    save_at: ?u64, // the replay point still to snapshot at
     decoding: bool = false,
     long: bool = false,
     price: ?Price = null,
@@ -320,8 +275,7 @@ pub const Seq = struct {
     damaged: bool = false,
 };
 
-/// A prompt piece: rows [start, end) of `key`'s prompt; `save`: its snapshot right after; `run`: false for a damaged
-/// entry's planned piece (prod plans it, the executor skips it).
+/// Rows [start, end) of `key`'s prompt; `save`: snapshot after; `run`: false for a damaged entry's planned piece.
 pub const Piece = struct { key: usize, start: u64, end: u64, save: bool, run: bool = true };
 
 pub const Counts = struct {
@@ -331,8 +285,7 @@ pub const Counts = struct {
     mem_refused: u64 = 0,
     rows_down: u64 = 0,
     rows_up: u64 = 0,
-    /// rounds at each adaptive step (rows_<rows>): (rows, count)
-    rows: [8][2]u64 = @splat(.{ 0, 0 }),
+    rows: [8][2]u64 = @splat(.{ 0, 0 }), // rounds at each adaptive step (rows_<rows>): (rows, count)
 
     fn rowsAt(c: *Counts, r: u64) void {
         for (&c.rows) |*x| {
@@ -348,7 +301,7 @@ pub const Counts = struct {
     }
 };
 
-/// One admission pass's running state (batch.py `_admit`'s locals).
+/// One admission pass's running state.
 pub const Round = struct {
     longs: u64 = 0,
     owed: i64 = 0,
@@ -372,13 +325,10 @@ pub const Planner = struct {
     gpa: std.mem.Allocator,
     s: Settings,
     fair: Fairness,
-    /// the requests in the slots, in admission order
-    seqs: std.ArrayList(Seq) = .empty,
-    /// the rows of the last prefill round (adaptive rows)
-    rows_now: ?u64 = null,
+    seqs: std.ArrayList(Seq) = .empty, // the requests in the slots, in admission order
+    rows_now: ?u64 = null, // the rows of the last prefill round (adaptive rows)
     counts: Counts = .{},
-    /// a request the floor holds back: since when (seconds)
-    mem_since: std.AutoHashMapUnmanaged(usize, f64) = .empty,
+    mem_since: std.AutoHashMapUnmanaged(usize, f64) = .empty, // a request the floor holds back: since when (seconds)
 
     pub fn init(gpa: std.mem.Allocator, s: Settings) Planner {
         return .{ .gpa = gpa, .s = s, .fair = .{ .share = s.share } };
@@ -418,9 +368,7 @@ pub const Planner = struct {
         return r;
     }
 
-    /// batch.py `_admit` for one queued request: start it, keep it (and those behind) queued, look past it, or refuse
-    /// it. `queued`: requests in the queue (the floor's log); `now`: seconds (the floor's refusal clock); `mem`: the
-    /// memory reading when a floor is set.
+    /// Start, hold (with those behind), skip or refuse one queued request; `now`: seconds, `mem` when a floor is set.
     pub fn admit(p: *Planner, r: *Round, job: Job, store: ?Store, now: f64, mem: ?Meminfo) !Verdict {
         const hit: ?Store.Hit = if (store) |st| try st.vtable.find(st.ctx, job.key) else null;
         const cached: u64 = if (hit) |h| h.pos else 0;
@@ -462,7 +410,7 @@ pub const Planner = struct {
         r.longs += @intFromBool(long);
         if (price) |pr| r.owed += pr.total();
         r.admitted += 1;
-        try p.seqs.append(p.gpa, .{ .key = job.key, .n = job.n, .submitted = job.submitted, .done = cached, .save_at = p.savePoint(job.n, cached), .long = long, .price = price });
+        try p.seqs.append(p.gpa, .{ .key = job.key, .n = job.n, .submitted = job.submitted, .done = cached, .cached = cached, .save_at = p.savePoint(job.n, cached), .long = long, .price = price });
         return .{ .admit = .{ .need = pp.need, .hit = hit } };
     }
 
@@ -472,8 +420,7 @@ pub const Planner = struct {
         return if (s > cached and s >= p.s.session_min) s else null;
     }
 
-    /// batch.py `_never_fits`: refused only when nothing is live (none admitted, none this round) and it has waited
-    /// `refuse_s` while its price still exceeds the usable memory less the hard floor.
+    /// Refused only when nothing is live and it waited `refuse_s` with its price still past usable less the hard floor.
     fn neverFits(p: *Planner, job: Job, pr: Price, r: *const Round, now: f64) !bool {
         const f = &p.s.floor.?;
         _ = r;
@@ -489,14 +436,22 @@ pub const Planner = struct {
         return true;
     }
 
-    /// The admitted request's entry failed to restore (a damaged NVMe file): this round's plan stands, its pieces do
-    /// not run; after the round it prefills from 0 (batch.py `_sample`).
+    /// A prompt whose client left: the grid point to keep its rows at for a retry, or null (nothing new, or saved).
+    pub fn leaving(p: *const Planner, key: usize) ?u64 {
+        for (p.seqs.items) |x| if (x.key == key) {
+            if (x.decoding or x.damaged or x.save_at == null) return null;
+            if (x.done % grid != 0 or x.done < p.s.session_min or x.done <= x.cached) return null;
+            return x.done;
+        };
+        return null;
+    }
+
+    /// The admitted request's entry failed to restore: the plan stands, its pieces do not run, then it prefills from 0.
     pub fn damaged(p: *Planner, key: usize) void {
         if (p.find(key)) |x| x.damaged = true;
     }
 
-    /// batch.py `_pieces`: this round's pieces (`out`, in order) and the requests whose prompts are in (`finals`).
-    /// `mem`: the memory reading when adaptive rows are on.
+    /// This round's pieces (`out`, in order) and the requests whose prompts are in (`finals`); `mem` for adaptive rows.
     pub fn plan(p: *Planner, mem: ?Meminfo, out: *std.ArrayList(Piece), finals: *std.ArrayList(usize)) !void {
         out.clearRetainingCapacity();
         finals.clearRetainingCapacity();
@@ -521,8 +476,7 @@ pub const Planner = struct {
             const end = pieceEnd(x.done, target, budget, grid);
             const save = x.save_at != null and end == x.save_at.?;
             try out.append(p.gpa, .{ .key = x.key, .start = x.done, .end = end, .save = save, .run = !x.damaged });
-            // a piece is at least one grid step, so it can cost more than the budget left: batch.py's budget goes
-            // negative and the next `budget <= 0` ends the round; saturating to 0 does the same
+            // a piece is at least one grid step and may overrun the budget: saturating to 0 ends the round
             budget -|= end - x.done;
             x.done = end;
             if (save) x.save_at = null;
@@ -533,8 +487,7 @@ pub const Planner = struct {
         };
     }
 
-    /// batch.py `_round_rows` (G19): the full rows while the usable memory covers the round's priced transient with
-    /// `adapt.gib` to spare, else a smaller step.
+    /// Full rows while usable memory covers the round's priced transient with `adapt.gib` spare, else a smaller step.
     fn roundRows(p: *Planner, waiting: []const *Seq, mem: ?Meminfo) !u64 {
         const a = p.s.adapt orelse return p.s.rows;
         const f = p.s.floor orelse return p.s.rows;
@@ -566,8 +519,7 @@ pub const Planner = struct {
         _ = p.mem_since.remove(key);
     }
 
-    /// After the round (batch.py `_sample`'s damaged-entry reset, then the fair share): the pieces' and the decode's
-    /// seconds. Ended requests are gone first (`ended`).
+    /// After the round (damaged reset, then fair share): the pieces' and decode's seconds; `ended` goes first.
     pub fn after(p: *Planner, piece_s: f64, decode_s: f64) void {
         for (p.seqs.items) |*x| if (x.damaged) {
             x.damaged = false;
@@ -603,9 +555,7 @@ test "piece_end, snapshot_point and the fair share as plan.py / sessions.py / ba
 }
 
 test "a round whose last piece rounds up past the budget left ends the round (batch.py: budget <= 0)" {
-    // Prod 2026-10-10: a prompt mid-prefill and two arrivals in one round. The first piece left 4 rows; the next,
-    // at row 3, rounds up to the grid (13 rows): batch.py's budget goes negative and the round takes no more
-    // pieces, where an unsigned budget overflowed and the planner panicked.
+    // a piece rounding up past the budget left ends the round (an unsigned budget once overflowed here)
     var p = Planner.init(std.testing.allocator, .{});
     defer p.deinit();
     try p.seqs.append(p.gpa, .{ .key = 1, .n = 2045, .submitted = 1, .done = 0, .save_at = null });
@@ -620,6 +570,24 @@ test "a round whose last piece rounds up past the budget left ends the round (ba
     try std.testing.expectEqual(Piece{ .key = 1, .start = 0, .end = 2044, .save = false }, out.items[0]);
     try std.testing.expectEqual(Piece{ .key = 2, .start = 3, .end = 16, .save = false }, out.items[1]);
     try std.testing.expectEqualSlices(usize, &.{1}, finals.items);
+}
+
+test "a prompt that leaves mid-prefill is kept at its last grid point, if that is new and before its replay point" {
+    var p = Planner.init(std.testing.allocator, .{});
+    defer p.deinit();
+    try p.seqs.append(p.gpa, .{ .key = 1, .n = 9000, .submitted = 0, .done = 4096, .cached = 0, .save_at = snapshotPoint(9000) });
+    try p.seqs.append(p.gpa, .{ .key = 2, .n = 9000, .submitted = 0, .done = 4096, .cached = 4096, .save_at = snapshotPoint(9000) });
+    try p.seqs.append(p.gpa, .{ .key = 3, .n = 9000, .submitted = 0, .done = 4100, .cached = 0, .save_at = snapshotPoint(9000) });
+    try p.seqs.append(p.gpa, .{ .key = 4, .n = 9000, .submitted = 0, .done = 8992, .cached = 0, .save_at = null });
+    try p.seqs.append(p.gpa, .{ .key = 5, .n = 9000, .submitted = 0, .done = 48, .cached = 0, .save_at = snapshotPoint(9000) });
+    try p.seqs.append(p.gpa, .{ .key = 6, .n = 9000, .submitted = 0, .done = 4096, .cached = 0, .save_at = snapshotPoint(9000), .decoding = true });
+    try std.testing.expectEqual(@as(?u64, 4096), p.leaving(1));
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(2)); // nothing past what it resumed from
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(3)); // off the grid
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(4)); // its replay point is saved already
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(5)); // under session_min
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(6)); // its prompt is in
+    try std.testing.expectEqual(@as(?u64, null), p.leaving(99));
 }
 
 test {

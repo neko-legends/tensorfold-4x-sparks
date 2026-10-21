@@ -1,14 +1,10 @@
-//! Host tests of CED replay's programs (TF_DSV41_PREFILL=replay; ced.zig, block_prefill.emitReplay), run by
-//! `zig build test-dsv41-knobs`: on the real prefill emitter, the encoder pass followed by the decoder pass is the
-//! whole segment's calls, in order, with layer 20's compressor moved from its attention to the encoder's end, the
-//! decoder's windows from R0 and its boundaries in place (replay.finish), the stash written and read through the ring.
-//! For a prompt of at most 128 tokens (R0 = 0) that is replay == full, as Python's test_dsv41_replay.py checks on GPUs.
+//! Host tests of CED replay's programs (TF_DSV41_PREFILL=replay): encoder pass + decoder pass == the full segment.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const ced = @import("ced.zig");
 const Config = @import("config.zig").Config;
 const dspark_emit = @import("dspark_emit.zig");
@@ -21,8 +17,8 @@ const limit: i64 = 4096;
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     for (0..40) |L| try w.gm.put(a, @intCast(L), .{ (1 << 3) | (1 << 4), (1 << 3) | (1 << 4) });
     return w;
 }
@@ -72,13 +68,12 @@ test "CED: the encoder pass + the decoder pass are the whole segment's calls, la
     const cfg: Config = .{};
     var w = try widths(a);
     const d = try ced.decoderStart(&cfg);
-    // M2b's layers (0-24): the encoder 0 .. 20, the decoder 20 .. 24
+    // the fixture's layers (0-24): the encoder 0 .. 20, the decoder 20 .. 24
     var layers: [25]u32 = undefined;
     for (&layers, 0..) |*l, i| l.* = @intCast(i);
     const enc_layers = layers[0 .. d + 1];
     const dec_layers = layers[d..];
-    // a short segment (mhc_cuda, the decode kernels' paths), the split boundaries (<= 32 rows), the attn_cuda top-k
-    // (<= 64), the replay's 127 rows; contiguous, pooled and split KV; R0 = 0 and past it
+    // short segments, split boundaries, top-k, replay rows; contiguous, pooled and split KV; R0 = 0 and past it
     for ([_]?block.Pool{ null, poolOf(false), poolOf(true) }) |pool| for ([_]i64{ 12, 30, 64, 100, ced.keep }) |n| for ([_]i64{ 0, 1000 }) |start| {
         var o: block.Options = .{ .limit = limit, .rope_rows = limit + 2048 };
         o.pool = pool;
@@ -88,8 +83,7 @@ test "CED: the encoder pass + the decoder pass are the whole segment's calls, la
         // the encoder: the whole segment's calls through layer 20's attention site, then its compressor, the stash
         const stash = enc[enc.len - 1];
         try testing.expectEqualStrings("glue.ced_stash", stash.name);
-        // the common prefix (layer 20's site included), then the compressor's projection (comp_wkv's GEMM and the
-        // fp32 widening, up to glue.proj), then _compress's calls
+        // the common prefix (layer 20's site included), the compressor's projection, then _compress's calls
         var c0: usize = 0;
         while (c0 < enc.len and c0 < whole.len and same(enc[c0], whole[c0])) c0 += 1;
         const proj_end = for (enc[c0..], c0..) |c, i| {
@@ -159,7 +153,7 @@ test "CED: the decoder pass needs the decoder's first layer first, the encoder e
     try testing.expectError(error.Unsupported, bp.emitReplay(a, &cfg, &w, o, &.{}, 40, 0, .decoder));
 }
 
-test "CED: the decoder pass emits for every tail shape up to prod's 1M limit (pooled and split KV)" {
+test "CED: the decoder pass emits for every tail shape up to the served 1M limit (pooled and split KV)" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const cfg: Config = .{};
@@ -216,7 +210,7 @@ test "CED: the decoder pass writes the tail's DSpark taps (layers 37-39, rows 0 
         for (enc) |c| for (c.args) |x| try testing.expect(!std.mem.eql(u8, roleOf(x.arg), "w.taps"));
         // the hand-off: all m rows from taps row 0, at R0; the pass's ingest reads exactly them
         const h = ced.handoff(1000, @intCast(m), cfg.window).?;
-        // the ingest's main_proj (not in the backbone fixture): a width of the DSpark blocks' own, as mdraft_test
+        // the ingest's main_proj (not in the backbone fixture): a width of the DSpark blocks' own, as slot_drafts_test
         if (w.dense.get("dspark.main_proj") == null) try w.dense.put(a, "dspark.main_proj", try w.k2("L40.attn.wkv"));
         try testing.expectEqual(ced.Handoff{ .start = 1000, .row0 = 0, .n = @intCast(m) }, h);
         const ing = try dspark_emit.emitIngest(a, &cfg, &w, o, h.n, h.row0);

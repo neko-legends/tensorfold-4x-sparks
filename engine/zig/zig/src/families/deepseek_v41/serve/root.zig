@@ -1,5 +1,4 @@
-//! DeepSeek-V4.1's serving side, host only: the release tokenizer, the chat encoding, DSML tool calls and the exact
-//! sampler. The HTTP server (zig/src/server) reaches the model through these; the engine, through ``sampling``.
+//! DeepSeek-V4.1's host-only serving side: tokenizer, chat encoding, DSML tool calls, exact sampler (zig/src/server).
 pub const tokenizer = @import("tokenizer.zig");
 pub const template = @import("template.zig");
 pub const tools = @import("tools.zig");

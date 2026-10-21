@@ -6,6 +6,7 @@ const json = @import("json");
 const errors = @import("errors.zig");
 const fields = @import("fields.zig");
 const auth = @import("auth.zig");
+const request_guard = @import("request_guard.zig");
 const metrics = @import("metrics.zig");
 const model_text = @import("model_text.zig");
 const reply_text = @import("reply_text.zig");
@@ -36,6 +37,8 @@ pub const CompactAt = union(enum) { auto, fraction: f64 };
 pub const Identity = @import("identity.zig").Identity;
 
 pub const Config = struct {
+    browser: request_guard.Policy = .{},
+    sse_keepalive_s: f64 = 15,
     served_name: []const u8,
     model_dir: []const u8 = "",
     /// The served name first, then aliases, without repeats.
@@ -54,6 +57,8 @@ pub const Config = struct {
     /// --vision-urls: image parts may name public HTTPS URLs, fetched before admission (media_fetch.zig).
     vision_urls: bool = false,
     seed_salt: i64 = 0,
+    /// --prompt-seed keeps historical prompt-keyed sampling when a request omits its seed.
+    prompt_seed: bool = false,
     /// TENSORFOLD_REQUEST_LOG: where chat and completion bodies are appended; null: nowhere.
     request_log: ?[]const u8 = null,
     /// Null keeps every reply identical to a server that has no compaction.
@@ -184,10 +189,15 @@ pub const Server = struct {
         return srv;
     }
 
+    pub fn stopKeepalive(srv: *Server) void {
+        if (srv.keepalive) |k| k.stop();
+        srv.keepalive = null;
+    }
+
     pub fn deinit(srv: *Server) void {
         if (srv.health) |h| h.deinit();
         if (srv.reqlog) |l| l.deinit();
-        if (srv.keepalive) |k| k.stop(); // before the engine's queue goes away
+        srv.stopKeepalive(); // before the engine's queue goes away
         if (srv.grammars) |g| g.close();
         srv.metrics.deinit();
         srv.arena.deinit();
@@ -204,7 +214,7 @@ pub const Server = struct {
         return fields.coerceEffort(e, srv.effort_levels);
     }
 
-    /// ``_resolve_sampling``: omitted or null fields keep the defaults; an omitted seed is keyed to the prompt.
+    /// Request seeds override configured keys; otherwise use prompt keying or fresh entropy.
     pub fn resolveSampling(srv: *Server, cx: *Cx, f: Value, temperature: f64, prompt_ids: []const u32) errors.Refused!?api.Sampling {
         _ = temperature; // the request's own temperature field decides, as in the Python server
         const options = try json.newObject(cx.a);
@@ -222,7 +232,14 @@ pub const Server = struct {
             "this engine decodes greedily only and this server samples by default: send temperature 0, or serve with --temperature 0"
         else
             "this engine decodes greedily only: send temperature 0 or leave it out");
-        const seed: u64 = if (options.get("seed")) |s| seedBits(s) else api.seedFor(prompt_ids, srv.config.seed_salt);
+        const seed: u64 = if (options.get("seed")) |s| seedBits(s) else if (srv.config.prompt_seed)
+            api.seedFor(prompt_ids, srv.config.seed_salt)
+        else fresh: {
+            var bits: u64 = undefined;
+            srv.io.randomSecure(std.mem.asBytes(&bits)) catch
+                return cx.fail(.server, "could not obtain a random request seed", .{});
+            break :fresh bits & 0x7fff_ffff_ffff_ffff;
+        };
         return .{
             .seed = seed,
             .temperature = @floatCast(temp),
@@ -318,7 +335,7 @@ pub const Server = struct {
             var err: [512]u8 = undefined;
             const c = a.create(api.grammar.Compiler) catch break :blk "out of memory";
             c.* = api.grammar.Compiler.open(srv.io, a, tok, vocab, srv.eos, &err) catch |e| break :blk switch (e) {
-                error.NoGrammarLibrary => "the server cannot load " ++ api.grammar.library ++ " (xgrammar; zig build grammar)",
+                error.NoGrammarLibrary => @import("sys").optional_libraries.spec(.grammar).message,
                 else => a.dupe(u8, std.mem.sliceTo(&err, 0)) catch "out of memory",
             };
             srv.grammars = c;
@@ -337,10 +354,11 @@ pub const Server = struct {
 
     /// Accepts connections until ``stop`` is set, each on its own thread.
     pub fn serve(srv: *Server, listener: listener_mod.Listener, stop: *const std.atomic.Value(bool)) void {
+        const loopback_bind = if (listener.boundAddress()) |a| auth.loopbackAddress(a) else true;
         while (listener.accept(stop)) |c| {
             // counted before its thread runs, so a zero count once this loop ends means no connection is left
             _ = srv.open_connections.fetchAdd(1, .acq_rel);
-            const t = std.Thread.spawn(.{ .stack_size = 8 << 20 }, connection, .{ srv, c }) catch {
+            const t = std.Thread.spawn(.{ .stack_size = 8 << 20 }, connection, .{ srv, c, loopback_bind }) catch {
                 _ = srv.open_connections.fetchSub(1, .acq_rel);
                 _ = platform.posix.system.close(c.fd);
                 continue;
@@ -349,7 +367,7 @@ pub const Server = struct {
         }
     }
 
-    fn connection(srv: *Server, accepted: listener_mod.Listener.Accepted) void {
+    fn connection(srv: *Server, accepted: listener_mod.Listener.Accepted, loopback_bind: bool) void {
         defer _ = srv.open_connections.fetchSub(1, .acq_rel);
         defer _ = platform.posix.system.close(accepted.fd);
         var peer_buf: [64]u8 = undefined;
@@ -358,6 +376,8 @@ pub const Server = struct {
         defer conn.deinit();
         conn.timeouts = srv.config.timeouts;
         conn.spark_wire = srv.config.wire == .spark;
+        var browser = srv.config.browser;
+        browser.loopback_bind = loopback_bind;
         conn.auth_enabled = srv.keys != null and srv.keys.?.enabled();
         if (conn.auth_enabled) conn.hook = .{ .ctx = srv, .call = countReply };
         var arena: std.heap.ArenaAllocator = .init(srv.gpa);
@@ -371,6 +391,7 @@ pub const Server = struct {
                 .handled => if (conn.close) break else continue,
                 .ready => {},
             }
+            if (!request_guard.allow(&conn, browser, a)) break;
             if (!srv.authenticate(&conn, a)) break;
             if (conn.header("Expect")) |expect| if (std.ascii.eqlIgnoreCase(expect, "100-continue") and std.mem.order(u8, conn.version, "HTTP/1.1") != .lt) conn.sendContinue();
             routes.dispatch(srv, &conn, a);
@@ -388,7 +409,7 @@ pub const Server = struct {
         const keys = srv.keys orelse return true;
         if (std.mem.eql(u8, conn.method, "OPTIONS") or !keys.enabled()) return true;
         conn.key_label = keys.match(a, single(conn, "Authorization"), single(conn, "x-api-key"));
-        if (!auth.gated(conn.path, keys.metrics_open) or conn.key_label != null) return true;
+        if (!auth.gatedRequest(conn.method, conn.path, keys.metrics_open) or conn.key_label != null) return true;
         const path = auth.routePath(conn.path);
         const messages = for ([_][]const u8{ "/v1/messages", "/v1/messages/count_tokens", "/messages", "/messages/count_tokens" }) |p| {
             if (std.mem.eql(u8, path, p)) break true;
@@ -404,7 +425,7 @@ pub const Server = struct {
         var len: [24]u8 = undefined;
         conn.addHeader("Content-Length", std.fmt.bufPrint(&len, "{d}", .{body.len}) catch unreachable) catch return false;
         conn.addHeader("Connection", "close") catch return false;
-        conn.finish(body) catch {};
+        conn.finish(if (std.mem.eql(u8, conn.method, "HEAD")) "" else body) catch {};
         return false;
     }
 };
@@ -439,7 +460,7 @@ fn lateSystem(a: Allocator, text: model_text.Text) ![]const u8 {
     return if (std.mem.indexOf(u8, rendered, probe_text) != null) "system" else "user";
 }
 
-/// ``needs_user_after_tool``: templates raising "No user query found" gain a user turn after a trailing tool message.
+/// Templates requiring a user query gain a user turn after trailing tool results replace their last user turn.
 fn needsUserAfterTool(source: []const u8) bool {
     return std.mem.indexOf(u8, source, "No user query found") != null;
 }

@@ -1,36 +1,19 @@
-// Device code of src/tensorfold/families/deepseek_v41/cuda/mhc_pf.cu (git blob 8615dbba9caf at dsv41-quant-e2; the whole file, DSV41_MHC_PF_NO_TORCH defined),
-// generated and checked by zig/kernels/cuda/deepseek_v41/sync.py. Do not edit: change the Python source.
+// Copy of src/tensorfold/families/deepseek_v41/cuda/mhc_pf.cu (blob 8615dbba9caf): sass_check.sh
 #define DSV41_MHC_PF_NO_TORCH
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-// G16 TF_DSV41_MHC_PF: the mHC site of a PREFILL segment (R >= 256 rows) as one CUDA pass over the 4 streams; the
-// finish stays Triton's _finish_k (it reads the same PART layout). mhc_pf.py has the design notes and the cost
-// model; tests/dsv41_mhc_pf_emu.py is this file's work placement in numpy (which thread runs which chain, which item).
-//
-// The arithmetic is mhc._site's (POST_ON + COLLAPSE 2 + MIX, or a site: COLLAPSE 1 / 2 + MIX), operation for
-// operation, the same instructions as mhc_cuda.cu's decode kernel (verified bit for bit against Triton in G13):
-//   branch = bf16(g_0 + g_1 + ...)                                   ranks in order, fp32 adds
-//   X'_j   = bf16(post_j * branch + (((c0j X_0 + c1j X_1) + c2j X_2) + c3j X_3))   one rounding an operation
-//   c      = bf16(((pre_0 X'_0 + pre_1 X'_1) + pre_2 X'_2) + pre_3 X'_3)   (COLL 1: X'_0)
-//   tap    = bf16((((X'_0 + X'_1) + X'_2) + X'_3) * 0.25)
-//   the FMA chains of a column block's 128 columns in ascending order from +0.0: mix m of stream j = fma(X'_j,
-//   fn[m], acc), its square sum fma(v, v, acc) (a bf16 squared is exact: Triton's (v * v) + acc), the collapsed
-//   row's square sum likewise; PART [R, 4, NB, 32] fp32 ([24] the stream's square sum, [0, b, 25] the collapsed row's).
-// Rows never mix; no atomics; every output is stored by exactly one thread.
-//
-// CTA = (column block b of NB = 40, a tile of BM = 16 rows), 128 threads, all 4 streams (in place is safe: a CTA
-// reads only the elements it writes). fn's 24 x 4 x 128 slice of block b streams into shared memory by cp.async
-// under phase A. Phase A: 256 items (row, 8 columns) a CTA, 2 a thread, every load issued before any store. Phase B:
-// 16 rows x (4 streams x 25 + 1) = 1,616 chains, 12-13 a thread: thread t = (h = t / 64, stream (t / 16) % 4,
-// row t % 16), h 0 the mixes 0-12, h 1 the mixes 13-23 + the square sum (+ the collapsed row's at stream 0): one
-// shared-memory read of the row's 8 values feeds all of a thread's chains.
+
+
+
+// TF_DSV41_MHC_PF: an mHC site of a prefill segment (R >= 256 rows) as one CUDA pass over the 4 streams.
+
+// mhc_cuda.cu's decode arithmetic, operation for operation; rows never mix, no atomics, one writer an output.
+
 #include <cstdint>
 #include <cuda_runtime.h>
 
 namespace dsv41_mhc_pf {
 
 constexpr int D = 5120;
-constexpr int NB = 40;            // column blocks (mhc.NB): part of the arithmetic
+constexpr int NB = 40;            // column blocks: part of the arithmetic
 constexpr int CB = D / NB;        // 128 columns a block: one FMA chain
 constexpr int G8 = CB / 8;        // 16-byte groups a block row
 constexpr int NMIX = 24;
@@ -100,7 +83,7 @@ __device__ __forceinline__ void cp16(void* s, const void* g) {
 __device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;" ::: "memory"); }
 __device__ __forceinline__ void cp_wait_all() { asm volatile("cp.async.wait_group 0;" ::: "memory"); }
 
-// X'_i of 8 columns of row r: mhc_dec._post1's expression (mhc_cuda.cu post1), one rounding an operation
+// X'_i of 8 columns of row r: mhc_cuda.cu post1's expression, one rounding an operation
 __device__ __forceinline__ void post1(const Args& a, int r, int i, const float (&br)[8], const float (&x)[4][8],
                                       float (&y)[8]) {
     const float p = __ldg(a.post + r * 4 + i);
@@ -225,8 +208,7 @@ __global__ void __launch_bounds__(NT, 2) site_kernel(const Args a) {
     cp_wait_all();
     __syncthreads();
 
-    // ---- phase B: the FMA chains of row rl, stream j: h 0 mixes 0-12; h 1 mixes 13-23, the square sum (kind 24)
-    // and, at stream 0, the collapsed row's square sum (kind 25) ----
+    // ---- phase B: chains of row rl, stream j: h 0 mixes 0-12; h 1 mixes 13-23 + square sums (24; 25 at stream 0)
     const int rl = t % BM, j = (t / BM) % 4, h = t / (4 * BM), r = r0 + rl;
     const bool coll = h == 1 && j == 0;
     const uint16_t* vrow = xs + (j * BM + rl) * PB;

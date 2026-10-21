@@ -1,27 +1,7 @@
-//! Row mode's program (Python rowmode.py / csa2 RowWin, G8): a decode window's calls (block.emit at R rows, its end at
-//! the context bucket's) rewritten so one launch serves rows of any slots. Only the CSA2 steps change; everything else
-//! (mHC, projections, experts, exchanges, head) is per row already.
-//! - Every row's position, read slot, write slot and ratio-2 previous row come from the row table (rowtab.zig), bound as
-//!   the persistent role "s.rows.tab": POS is the table's `pos` column (int64 [R]) in `_rope`, `_kv_store`,
-//!   `_pool_norm`, `_index_k`, `_scores` and the CUDA top-k (its twin) / attention; SL is `wslot` where a kernel writes
-//!   (`_kv_store`, `_pool_norm`, `_index_k`) and `rslot` where it reads (`_scores`, attention); ROWS on.
-//! - The slots' state is stacked (slots.zig): each layer's SWA ring "s.L<i>.swa.v / .s" is [S x ring] rows (slot s's
-//!   ring at s x ring), the ratio-2 carries "s.L<i>.carry" [S, 2D] (slot s's row s), the page tables "s.kv.pt" /
-//!   "s.kv.ct" [S, pts] (PTS = pts where a page table is passed, as compress._row_paging).
-//! - `_pool_norm` at ratio 2 pools [the S carries | the rows] (OFF = S, PREV the table's column); at ratio 1 OFF = 0,
-//!   PREV still the column (Python passes win.prev).
-//! - Split KV's dense exchange (glue "kx_dense") reads the stacked split table with the int32 rslot copy (the glue's
-//!   own args); a union (rows > 16) is refused: row windows stay within the dense exchange.
-//! - Long-context selections (backend.select past attn_cuda.plan, or past the index budget, with a RowWin): dtopk's
-//!   `_dtopk` (`_dtopk_b`) and `_block_keys` take the table's `pos` with ROWS on (dtopk.select / blocks, index.candidate_blocks:
-//!   `rows=win.rows`); `_keys` has no row knobs. A row block of backend._blocked (block.zig's glue "block_pos" with its
-//!   first row and rows) is RowWin.sub: its `_scores` / `_block_keys` read rows [a, a + rows) of `pos` and `rslot`.
-//!   The visible counts (glue "counts", backend.visible_counts) read `pos`.
-//! A call with row-mode knobs this file does not know is refused by name (error.UnknownRowsCall), so a new kernel in
-//! block.zig cannot silently run one slot's arithmetic on every row.
+//! Row mode's program: a decode window's CSA2 steps rewritten to read positions and slots from the row table.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const rowtab = @import("rowtab.zig");
 const Arg = calls.Arg;
 const Tensor = calls.Tensor;
@@ -168,8 +148,7 @@ pub const Rewriter = struct {
         }
         const b = w.rowsOf(args);
         if (eq(c.name, "_dtopk") or eq(c.name, "_dtopk_b") or eq(c.name, "_block_keys")) {
-            // dtopk.select / blocks and index.candidate_blocks with rows=True: q = POS[r] (no slot: the scores are
-            // the row's already)
+            // dtopk select / blocks and candidate blocks with rows on: q = POS[r] (the scores are the row's already)
             const p = find(args, "POS") orelse return error.BadCall;
             const r = find(args, "ROWS") orelse return error.BadCall;
             if (find(args, "SL") != null) return error.UnknownRowsCall;

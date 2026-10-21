@@ -1,27 +1,8 @@
-//! TF_DSV41_ROUND_GRAPH: the decode round's launches without the host's idle gap between the drafter's pass and the
-//! next window (docs DEEPSEEK-V41-CUDA.md section 8).
-//!
-//! The nsys timeline of a served 4-stream round (2026-10-08, rank 0): the GPU idles 2.1 ms a ~106 ms round, 1.36 ms
-//! of it between the pass's end and the window's first kernel: the host's chain (0.64 ms, candidates down, unpack,
-//! chain, keep), the keep's carries and the row table (0.23), then the window graph's `cuGraphLaunch`, 0.48 ms of host
-//! time during which the GPU has nothing queued. Two parts, each on by its word (`1` = every part):
-//! - `split`: the window's graph as a head of its first `TF_DSV41_ROUND_GRAPH_HEAD` layers (1) and the rest: the
-//!   head's launch is ~1/43 of the graph's nodes, and the GPU runs it while the host submits the tail. The calls, their
-//!   order and their buffers are the window's: only a graph boundary moves (at a point no side stream is open; the L2
-//!   prefetchers join there, which orders, never changes, a launch).
-//! - `gate`: the Engram gate's arm waits for the last gated window's end event instead of synchronizing the stream
-//!   (the stream then still held the keep's carries and the row table: the GPU drained before the window's launch).
-//!   The guarantee is the same: every window armed before has read its rows.
-//! Bits: none change (graph boundaries and host waits only); replies, draws and drafts are the unsplit round's.
+//! TF_DSV41_ROUND_GRAPH: the decode round's launches without the host's idle gap before the next window's graph.
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 
-pub const Settings = struct {
-    split: bool = false,
-    gate: bool = false,
-    /// layers in the head graph
-    head: u32 = 1,
-};
+pub const Settings = @import("forward_types.zig").RoundGraph;
 
 pub const Get = *const fn ([:0]const u8) ?[]const u8;
 
@@ -59,10 +40,7 @@ pub fn current() !Settings {
     return s;
 }
 
-/// Where a window's program splits into head and tail: the first call of layer `head` (the window's layers counted
-/// from 0; a layer's first call carries `begin = .layer`, the first layer's none), moved on to the first call before
-/// which neither the branches' side stream nor the mHC deferred stream is open (runner.issue's forks). Null: the
-/// program has no such call (fewer layers), it runs as one graph.
+/// Where a window's program splits: the first call of layer `head`, moved to one with no side stream open; null: none.
 pub fn splitAt(cs: []const calls.Call, head: u32) ?usize {
     var layer: u32 = 0;
     var side = false;

@@ -1,12 +1,4 @@
-//! A session file (format 2): a binary header, then segments whose chunks each start on a 4 KiB boundary and carry their own SHA-256.
-//!
-//!     header (Head | Seg[nseg] | digest[ndigest]), padded to 4 KiB | segments: chunk 0 | pad | chunk 1 | pad | ...
-//!
-//! Segments: `ids` (int32 tokens [first_page x page, pos)), one `pool` segment a family (this rank's rows of logical pages
-//! [first_page, npages), in logical order: a split family keeps the pages this rank owns), one `blob` a piece of bounded state.
-//! A delta file names a base entry whose files hold pages [0, first_page): a newer turn writes only its own pages.
-//! Per-chunk digests let any lane hash any chunk (format 1 hashed a whole segment on one thread), and a restore checks each chunk
-//! before its rows reach the pool.
+//! A session file (format 2): a header, then segments of 4 KiB-aligned chunks, each with its own SHA-256.
 
 const std = @import("std");
 const Sha256 = std.crypto.hash.sha2.Sha256;

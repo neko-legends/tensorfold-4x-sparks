@@ -1,9 +1,4 @@
-//! Replays one recorded Python extension call (dsv41_capture.py's "replay" fixtures) through kernels_replay.call on the
-//! recorded bytes, and compares every storage the call's arguments view with Python's after the call, bit for bit.
-//!
-//! When the Python twin predates R1 (its call has no `split` / `spin`), the same call is also run as R1's variants,
-//! which give the same bits by their contract: attention as split_kernel at P 1 and 4 (a ticket 4x as large), the mHC
-//! boundary with the parallel tail and with the tail + deferred coefficients (coef_kernel after it, a 3-int counter).
+//! Replays one recorded extension call (dsv41_capture.py) on its recorded bytes; every viewed storage bit-compared.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -50,8 +45,7 @@ const Ctx = struct {
             const shape = try c.ints(o.get("shape").?);
             var numel: i64 = 1;
             for (shape) |d| numel *= d;
-            // an empty tensor's data pointer can sit before its storage (a negative offset): a null pointer, as the
-            // launchers expect for numel 0
+            // an empty tensor's pointer can precede its storage: pass null, as launchers expect for numel 0
             const raw = o.get("off").?.integer;
             const base = try c.ptrOf(t.string);
             const ptr: u64 = if (base == 0 or raw < 0 or numel == 0) 0 else base + @as(u64, @intCast(raw));
@@ -94,7 +88,7 @@ fn upload(gpu: Gpu, fx: Fixture, storages: []Storage) !void {
     }
 }
 
-/// Every storage against Python's after-call bytes, except `skip` (a ticket / counter replaced by a variant).
+/// Every storage against the recorded after-call bytes, except `skip` (a ticket / counter replaced by a variant).
 fn compare(gpu: Gpu, fx: Fixture, storages: []Storage, what: []const u8, skip: ?[]const u8) !void {
     var name_buf: [64]u8 = undefined;
     for (storages) |s| {

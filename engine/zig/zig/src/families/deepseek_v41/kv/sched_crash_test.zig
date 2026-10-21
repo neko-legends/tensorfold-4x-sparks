@@ -1,6 +1,4 @@
-//! The 2026-10-10 03:38 rank-0 panic (sched.zig plan: integer overflow): a round's budget left under one grid step,
-//! then a prompt whose piece_end rounds up to the next grid point (prod's batch.py lets the budget go negative and
-//! skips the rest).
+//! Regression: budget under one grid step, then a piece_end rounding up past it, ends the round (no overflow).
 const std = @import("std");
 const sched = @import("sched.zig");
 
@@ -27,7 +25,7 @@ test "a prompt mid-prefill and two arrivals leave the round 5 rows: the next pie
         const r = try planOnce(&p); // B whole, A to its last grid point within the budget, then 5 (or fewer) rows left
         var taken: u64 = 0;
         for (r.pieces) |pc| taken += pc.end - pc.start;
-        // prod: the overshoot is at most one grid step less one row
+        // the overshoot is at most one grid step less one row
         try std.testing.expect(taken <= rows + sched.grid - 1);
         try std.testing.expectEqual(@as(u64, 2), r.pieces[0].key);
     }
@@ -41,7 +39,7 @@ test "the smallest repro: 2040 of 2048 rows to one prompt, a second prompt's min
     try p.seqs.append(p.gpa, seqOf(2, 9000, 0, 1));
     const r = try planOnce(&p);
     try std.testing.expectEqual(@as(usize, 2), r.pieces.len);
-    try std.testing.expectEqual(@as(u64, 16), r.pieces[1].end); // as batch.py: budget 8 -> -8, then skips
+    try std.testing.expectEqual(@as(u64, 16), r.pieces[1].end); // budget 8 -> -8, then skips
 }
 
 test "edge cases: n 1 and cached n - 1 are finals at once; nothing is planned for them" {

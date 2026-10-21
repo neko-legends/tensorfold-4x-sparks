@@ -1,9 +1,10 @@
-//! A rank's weights planned from the pack's headers alone: every group's TP part, every routed projection's layout, byte totals, and a coverage check (each stored tensor read or knowingly left).
+//! A rank's weights planned from the pack's headers alone: group TP parts, routed layouts, byte totals, coverage.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const log = std.log.scoped(.dsv41);
 const Config = @import("config.zig").Config;
-const exl3 = @import("exl3.zig");
+const exl3 = @import("core").exl3_layout;
 const shard = @import("shard.zig");
 const names = @import("names.zig");
 const Pack = @import("pack.zig").Pack;
@@ -48,7 +49,7 @@ pub const LayerPlan = struct {
     /// experts whose gate (w1) and up (w3) widths differ: x3gm cannot fuse them, the block goes to x3pf / grouped
     gate_up_mismatch: u32,
 
-    /// Routed trellis bytes plus the shared expert's: the quant repo's `rank_bytes` (q28-expert.json).
+    /// Routed trellis bytes plus the shared expert's: the quant repo's `rank_bytes`.
     pub fn expertBytes(l: *const LayerPlan) u64 {
         var n: u64 = 0;
         for (l.experts) |e| n += e.layout.trellisBytes();
@@ -111,7 +112,7 @@ pub const Plan = struct {
 pub const Options = struct {
     rank: u32,
     world: u32,
-    /// plan only these blocks (single-layer M1 runs, header dumps): no top tensors, head, DSpark or coverage; null: the whole model
+    /// plan only these blocks (single-layer runs, header dumps): no top tensors, head, DSpark or coverage; null: all
     blocks: ?[]const u32 = null,
     /// with `blocks`: also the vocabulary rows, the final norm and the head (a window's finish)
     top: bool = false,
@@ -136,9 +137,12 @@ const Builder = struct {
     }
 
     fn group(b: *Builder, proj: names.Proj, prefix: []const u8, split: exl3.Split, k: u32, n: u32) !GroupPlan {
-        const g = try b.pack.group(prefix, &b.buf);
+        var shared = try CheckpointPlan.init(b.a, b.pack, &.{prefix});
+        defer shared.deinit();
+        const storage = shared.projections[0].storage;
+        const g = try storage.cudaGroup();
         if ((k != 0 and g.k() != k) or (n != 0 and g.n() != n)) {
-            log.warn("{s}: K={d} N={d}, expected K={d} N={d}", .{ prefix, g.k(), g.n(), k, n });
+            if (!quiet) log.warn("{s}: K={d} N={d}, expected K={d} N={d}", .{ prefix, g.k(), g.n(), k, n });
             return error.UnexpectedShape;
         }
         inline for (.{ "trellis", "suh", "svh" }) |part| try b.mark(try std.fmt.bufPrint(&b.buf, "{s}." ++ part, .{prefix}));
@@ -155,7 +159,7 @@ const Builder = struct {
             ok = ok and w == d;
         };
         if (!ok) {
-            log.warn("{s}: {t} {any}, expected {t} storage of {any}", .{ name, info.dtype, info.dims(), spec.store, want });
+            if (!quiet) log.warn("{s}: {t} {any}, expected {t} storage of {any}", .{ name, info.dtype, info.dims(), spec.store, want });
             return error.UnexpectedTensor;
         }
         try b.mark(name);
@@ -179,7 +183,7 @@ const Builder = struct {
             var nb: [128]u8 = undefined;
             const name = try names.expertName(block, @intCast(e), proj, &nb);
             const g = try b.group(.wq_a, name, proj.split(), kn[0], kn[1]);
-            // the codebook is one a projection (weights.py stack); here the marker's presence, its value at load
+            // the codebook is one a projection; here the marker's presence, its value at load
             const has = g.marker != null;
             if (codebook_marker) |m| if (m != has) return error.CodebooksDiffer;
             codebook_marker = has;
@@ -220,7 +224,7 @@ const Builder = struct {
         return out;
     }
 
-    /// drafter.py _find: the latest mtp.i holding `suffix` (as a tensor, a group or a .weight).
+    /// The latest mtp.i holding `suffix` (as a tensor, a group or a .weight).
     fn findDspark(b: *Builder, suffix: []const u8, buf: []u8) !?[]const u8 {
         var i = b.c.mtp_layers;
         while (i > 0) {
@@ -301,3 +305,21 @@ pub fn build(gpa: std.mem.Allocator, c: *const Config, pack: *const Pack, o: Opt
     };
     return .{ .arena = arena, .rank = o.rank, .world = o.world, .layers = layers, .top = top, .head = head, .dspark = ds, .leftovers = left.items };
 }
+
+/// Shared storage owners borrow the Pack; the plan owns its list and prefixes. Backends check capabilities explicitly.
+pub const CheckpointPlan = struct {
+    arena: std.heap.ArenaAllocator,
+    projections: []const Item,
+    pub const Item = struct { prefix: []const u8, storage: Pack.Projection };
+    pub fn init(a: std.mem.Allocator, pack: *const Pack, prefixes: []const []const u8) !CheckpointPlan {
+        var arena = std.heap.ArenaAllocator.init(a);
+        errdefer arena.deinit();
+        const items = try arena.allocator().alloc(Item, prefixes.len);
+        for (items, prefixes) |*item, prefix| item.* = .{ .prefix = try arena.allocator().dupe(u8, prefix), .storage = try pack.projection(prefix) };
+        return .{ .arena = arena, .projections = items };
+    }
+    pub fn deinit(p: *CheckpointPlan) void {
+        p.arena.deinit();
+        p.* = undefined;
+    }
+};

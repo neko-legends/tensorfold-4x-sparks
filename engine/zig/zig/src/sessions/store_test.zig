@@ -1,5 +1,4 @@
-//! The session store on real parts: a host pool, a real NVMe tier directory, chats over several turns, residency evictions,
-//! resumes from RAM and NVMe compared bit for bit with what the slots wrote, delta parks, and two split ranks deciding alike.
+//! The session store on a host pool and a real NVMe tier: chats, evictions, resumes bit for bit, deltas, two ranks.
 
 const std = @import("std");
 const testing = std.testing;
@@ -100,7 +99,7 @@ fn chatIds(gpa: std.mem.Allocator, chat: u32, n: usize) ![]i32 {
     return v;
 }
 
-/// Prefill-or-resume a chat to len(ids) tokens in slot s, save it, free the slot and enforce residency; returns where it resumed from.
+/// Prefill or resume a chat to len(ids) in slot s, save it, free the slot, enforce residency; returns the resume point.
 fn turn(gpa: std.mem.Allocator, r: *Rank, s: *Slot, chat: u32, ids: []const i32) ![]const u8 {
     var tier: []const u8 = "fresh";
     var from: u32 = 0;
@@ -168,7 +167,7 @@ fn scenario(gpa: std.mem.Allocator, root: []const u8, world: u32, rank: u32, asy
     while (id != store_mod.none) : (id = r.store.entry(id).extra.newer) for (r.store.entry(id).extra.pages) |pg| try trace.append(gpa, pg);
 }
 
-/// After the scenario: a new process (pool, store) on the same tier finds every file and resumes chat 1 through its delta chain.
+/// After the scenario: a new process on the same tier finds every file and resumes chat 1 through its delta chain.
 fn restart(gpa: std.mem.Allocator, root: []const u8, world: u32, rank: u32) !void {
     var r: Rank = undefined;
     try r.init(gpa, root, world, rank, .{ .chats = 1 });
@@ -332,4 +331,68 @@ test "two split ranks make the same decisions on the same calls and each restore
     try restart(gpa, root, 2, 0);
     try restart(gpa, root, 2, 1);
     try testing.expectEqualSlices(u64, t0.items, t1.items);
+}
+
+test "historyOf: a RAM entry's ids come from the index, an NVMe entry's only from the prompt that names it" {
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmpRoot(gpa, &tmp, "history");
+    defer gpa.free(root);
+    var r: Rank = undefined;
+    try r.init(gpa, root, 1, 0, .{ .chats = 1 });
+    defer r.deinit();
+    const s = try r.pool.newSlot(64 * page);
+    const a = try chatIds(gpa, 1, 8 * page);
+    defer gpa.free(a);
+    const b = try chatIds(gpa, 2, 8 * page);
+    defer gpa.free(b);
+    const n = 5 * page + 10;
+    try testing.expectEqualStrings("fresh", try turn(gpa, &r, s, 1, a[0..n]));
+    const hit = (try r.store.find(1, a[0 .. n + 1])).?;
+    try testing.expect(hit.ram and hit.pos == n);
+    var out: [n]i32 = undefined;
+    try r.store.historyOf(hit.id, null, &out);
+    try testing.expectEqualSlices(i32, a[0..n], &out);
+    try testing.expectError(error.BadLength, r.store.historyOf(hit.id, null, out[0 .. n - 1]));
+    // a second idle chat parks chat 1 on NVMe: its ids leave the index with its RAM
+    try testing.expectEqualStrings("fresh", try turn(gpa, &r, s, 2, b[0 .. 6 * page]));
+    const parked = (try r.store.find(1, a[0 .. n + 1])).?;
+    try testing.expect(!parked.ram and parked.pos == n);
+    try testing.expectError(error.NotInRam, r.store.historyOf(parked.id, null, &out));
+    @memset(&out, 0);
+    try r.store.historyOf(parked.id, a, &out); // a longer prompt: its first pos ids, checked against the entry's key
+    try testing.expectEqualSlices(i32, a[0..n], &out);
+    // another chat's ids, or these with the partial page's last id changed, are not this entry
+    try testing.expectError(error.NotTheEntry, r.store.historyOf(parked.id, b[0..n], &out));
+    const edited = try gpa.dupe(i32, a[0..n]);
+    defer gpa.free(edited);
+    edited[n - 1] += 1;
+    try testing.expectError(error.NotTheEntry, r.store.historyOf(parked.id, edited, &out));
+    try testing.expectError(error.BadLength, r.store.historyOf(parked.id, a[0 .. n - 1], &out));
+}
+
+test "zero chat or byte budgets evict idle residency while null remains unlimited" {
+    const gpa = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const root = try tmpRoot(gpa, &tmp, "zero-budget");
+    defer gpa.free(root);
+    var r: Rank = undefined;
+    try r.init(gpa, root, 1, 0, .{});
+    defer r.deinit();
+    const slot = try r.pool.newSlot(64 * page);
+    const ids = try chatIds(gpa, 1, 5 * page);
+    defer gpa.free(ids);
+    _ = try turn(gpa, &r, slot, 1, ids);
+    try testing.expectEqual(@as(u32, 1), r.store.resident().chats);
+    r.store.policy.chats = 0;
+    try testing.expectEqual(@as(u32, 1), try r.store.enforce());
+    try testing.expectEqual(@as(u32, 0), r.store.resident().chats);
+    r.store.policy.chats = null;
+    _ = try turn(gpa, &r, slot, 1, ids);
+    try testing.expect(r.store.resident().bytes > 0);
+    r.store.policy.resident_bytes = 0;
+    try testing.expectEqual(@as(u32, 1), try r.store.enforce());
+    try testing.expectEqual(@as(u64, 0), r.store.resident().bytes);
 }

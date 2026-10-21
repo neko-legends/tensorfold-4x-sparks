@@ -10,7 +10,7 @@ const Config = @import("config.zig").Config;
 const Pack = @import("pack.zig").Pack;
 const plan = @import("plan.zig");
 const named = @import("named.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const prepared = @import("prepared.zig");
 const pipe = @import("pipe.zig");
 const names = @import("pipe_names.zig");
@@ -36,7 +36,13 @@ pub fn loadStage(gpa: std.mem.Allocator, io: std.Io, d: *const cuda.Driver, pack
         defer b.deinit();
         var tag_buf: [16]u8 = undefined;
         const tag = try std.fmt.bufPrint(&tag_buf, "L{d}", .{i});
-        if (cache == null or !try cache.?.get(&b, tag)) {
+        var schema: named.Builder = .{ .gpa = gpa, .io = io, .pack = pack, .metadata_only = true };
+        defer schema.deinit();
+        if (cache != null) {
+            try schema.layer(l, cfg.o_groups, 0, 1);
+            try names.keepSharded(&schema);
+        }
+        if (cache == null or !try cache.?.get(&b, tag, schema.out.items)) {
             try b.layer(l, cfg.o_groups, 0, 1);
             try names.keepSharded(&b);
             if (cache) |*c| c.put(&b, tag) catch |e| log.warn("dsv41 prepared: pipeline stage {s} not written ({t})", .{ tag, e });

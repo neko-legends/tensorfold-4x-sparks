@@ -1,18 +1,51 @@
-//! M2's call executor: block.zig's calls issued on our own buffers, nothing seeded. The buffer plan (buffers.zig) is
-//! bound once: a persistent role ("s.") gets its own allocation, the window and layer roles one zeroed arena at
-//! 256-byte offsets (counters start at zero, as Python allocates them). Extension calls go through dsv41_kernels'
-//! bindings; Triton calls through the engine's AOT set by name (triton_call.zig: the variant Triton would pick).
-//! State (pools, rings, carries) and the window's glue fill these buffers from outside (state.zig, forward.zig).
+//! The call executor: block.zig's calls issued on our own buffers, the plan bound once (persistent roles + one arena).
 
 const std = @import("std");
 const cuda = @import("cuda");
 const dk = @import("dsv41_kernels");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const buffers = @import("buffers.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const tc = @import("triton_call.zig");
 const rp = dk.replay;
-const profile = @import("profile.zig");
+
+/// A call timer behind the runner (profile.zig's Profile.timer); its methods forward to the timer's own.
+pub const Timer = struct {
+    ptr: *anyopaque,
+    vtable: *const VTable,
+
+    pub const VTable = struct {
+        begin: *const fn (ptr: *anyopaque) void,
+        beginPrefill: *const fn (ptr: *anyopaque) void,
+        prefillRows: *const fn (ptr: *anyopaque, rows: u64, tail: bool) void,
+        before: *const fn (ptr: *anyopaque, s: cuda.Stream, c: *const calls.Call) anyerror!void,
+        after: *const fn (ptr: *anyopaque, s: cuda.Stream) anyerror!void,
+        end: *const fn (ptr: *anyopaque, s: cuda.Stream) anyerror!void,
+        close: *const fn (ptr: *anyopaque, io: std.Io) void,
+    };
+
+    pub fn begin(t: Timer) void {
+        t.vtable.begin(t.ptr);
+    }
+    pub fn beginPrefill(t: Timer) void {
+        t.vtable.beginPrefill(t.ptr);
+    }
+    pub fn prefillRows(t: Timer, rows: u64, tail: bool) void {
+        t.vtable.prefillRows(t.ptr, rows, tail);
+    }
+    pub fn before(t: Timer, s: cuda.Stream, c: *const calls.Call) !void {
+        return t.vtable.before(t.ptr, s, c);
+    }
+    pub fn after(t: Timer, s: cuda.Stream) !void {
+        return t.vtable.after(t.ptr, s);
+    }
+    pub fn end(t: Timer, s: cuda.Stream) !void {
+        return t.vtable.end(t.ptr, s);
+    }
+    pub fn close(t: Timer, io: std.Io) void {
+        t.vtable.close(t.ptr, io);
+    }
+};
 
 pub const Runner = struct {
     gpa: std.mem.Allocator,
@@ -27,27 +60,26 @@ pub const Runner = struct {
     scratch: ?cuda.DeviceBuffer = null,
     /// the forward's glue steps (forward.zig: positions, exchanges over the Collective, Engram rows, kit roundings)
     glue: ?Glue = null,
-    /// TF_DSV41_PROFILE: the eager decode windows' calls timed (profile.zig)
-    prof: ?*profile.Profile = null,
-    /// TF_DSV41_L2PF (l2pf.zig): the L2 prefetch launches on a side stream forked at their site and joined at the
-    /// window's end, as l2pf.py; null: skipped (their tables unfilled)
+    /// TF_DSV41_PROFILE: the eager decode windows' calls timed (profile.zig's Profile, set at engine open)
+    prof: ?Timer = null,
+    /// TF_DSV41_L2PF (l2pf.zig): L2 prefetch launches on a side stream forked at their site; null: skipped
     l2pf: ?*Side = null,
     /// rows of the window being issued (0: unknown): a window wider than `Side.rows` skips every prefetch site
     rows: u32 = 0,
-    /// TF_DSV41_BRANCHES (branches.zig): the side stream of the calls the emitter tagged `side`, forked / joined at
-    /// their marks (the ext launchers take no scratch: kernels_replay.call leaves it unused). null: every call on main
+    /// TF_DSV41_BRANCHES (branches.zig): the side stream of calls tagged `side`; null: every call on main
     br: ?*Side = null,
-    /// TF_DSV41_MHC_DEFER (branches.zig): the stream of the mHC coefficient launches tagged `defer_side`, joined by the
-    /// next mHC call (`defer_join`, mhc.await_coefs)
+    /// TF_DSV41_MHC_DEFER (branches.zig): the stream of mHC coefficient launches, joined by the next mHC call
     dfr: ?*Side = null,
-    /// TF_DSV41_DRAFT_OVERLAP (dspark_slots.zig): the event a row window records (an event record node in its graph)
-    /// right after its last call that writes "w.taps", the drafter's ingests on their own stream wait on it; `armed`
-    /// for the next window only (batch.zig sets it before the row window, eager or captured, and clears it after)
+    /// TF_DSV41_DRAFT_OVERLAP: the event a row window records after its last "w.taps" writer, for the next window only
     taps_mark: ?TapsMark = null,
+    /// Runner.guard: the programs (programKey) whose every Triton call the AOT set resolved
+    verified: std.AutoHashMapUnmanaged(u64, void) = .empty,
+    /// Runner.guard: each Triton function's runtime parameters (built at the first window)
+    params: ?Params = null,
 
     pub const TapsMark = struct { ev: cuda.Event, armed: bool = false, recorded: u64 = 0 };
 
-    /// l2pf.py's Prefetcher on the device: the side stream, the fork / join events, whether a fork is open.
+    /// The L2 prefetcher on the device: the side stream, the fork / join events, whether a fork is open.
     pub const Side = struct {
         stream: cuda.Stream,
         fork: cuda.Event,
@@ -57,8 +89,7 @@ pub const Runner = struct {
         open: bool = false,
         launches: u64 = 0,
         skipped_rows: u64 = 0,
-        /// TF_DSV41_PF_OVERLAP_SITE (the branches' side only): a call's `mark` m records marks[m - 1] on this stream,
-        /// a call's `wait` m makes the main stream wait for it
+        /// TF_DSV41_PF_OVERLAP_SITE (branches only): `mark` m records marks[m - 1]; `wait` m makes main wait for it
         marks: [max_marks]?cuda.Event = @splat(null),
     };
 
@@ -76,22 +107,50 @@ pub const Runner = struct {
         var it = r.addrs.keyIterator();
         while (it.next()) |k| r.gpa.free(k.*);
         r.addrs.deinit(r.gpa);
+        r.verified.deinit(r.gpa);
+        if (r.params) |*p| freeParams(r.gpa, p);
     }
 
-    /// A persistent role whose memory another owner holds (M5: the KV pool's family tensors and tables): bind leaves it.
+    /// A persistent role whose memory another owner holds (the KV pool's tensors and tables): bind leaves it.
     pub fn external(r: *Runner, role: []const u8, addr: u64) !void {
-        // Triton specializes pointers on 16-byte alignment and the AOT sets hold the aligned variants (aot-needs keys
-        // offsets from 16-aligned bases): a misaligned base fails here by name, not later as a missing variant
+        // Triton specializes pointers on 16-byte alignment: a misaligned base fails here by name, not later
         if (addr % 16 != 0) {
             std.log.scoped(.dsv41).err("role {s} bound at 0x{x}: not 16-byte aligned", .{ role, addr });
             return error.MisalignedRole;
         }
-        const g = try r.addrs.getOrPut(r.gpa, role);
-        if (!g.found_existing) g.key_ptr.* = try r.gpa.dupe(u8, role);
-        g.value_ptr.* = addr;
+        if (r.addrs.getPtr(role)) |value| {
+            value.* = addr;
+            return;
+        }
+        const key = try r.gpa.dupe(u8, role);
+        errdefer r.gpa.free(key);
+        try r.addrs.put(r.gpa, key, addr);
     }
 
-    /// Allocates every role of `plan`: persistent roles one buffer each (but the external ones), the rest one zeroed arena.
+    pub const External = struct { role: []const u8, addr: u64 };
+    pub fn externals(r: *Runner, bindings: []const External) !void {
+        const keys = try r.gpa.alloc(?[]u8, bindings.len);
+        defer r.gpa.free(keys);
+        @memset(keys, null);
+        defer for (keys) |key| if (key) |k| r.gpa.free(k);
+        try r.addrs.ensureUnusedCapacity(r.gpa, @intCast(bindings.len));
+        for (bindings, keys) |b, *key| {
+            if (b.addr % 16 != 0) return error.MisalignedRole;
+            if (!r.addrs.contains(b.role)) key.* = try r.gpa.dupe(u8, b.role);
+        }
+        for (bindings, keys) |b, *key| {
+            if (r.addrs.getPtr(b.role)) |value| value.* = b.addr else {
+                r.addrs.putAssumeCapacity(key.*.?, b.addr);
+                key.* = null;
+            }
+        }
+    }
+    /// An external role's address gone (an on-demand role released): a later use fails as error.Unbound.
+    pub fn forget(r: *Runner, role: []const u8) void {
+        if (r.addrs.fetchRemove(role)) |kv| r.gpa.free(kv.key);
+    }
+
+    /// Allocates every role of `plan`: persistent roles one buffer each (but external ones), the rest one zeroed arena.
     pub fn bind(r: *Runner, plan: *const buffers.Plan) !void {
         var arena_bytes: u64 = 0;
         for (plan.sizes.keys(), plan.sizes.values()) |k, v| {
@@ -136,24 +195,22 @@ pub const Runner = struct {
         };
     }
 
-    /// The first Triton call of `cs` the AOT set has no variant for (its function's name), null when every one has:
-    /// a program's launches resolved without issuing them (a boot-time probe), every tensor taken 16-aligned as the
-    /// runner's buffers are.
+    /// The first Triton call of `cs` the AOT set has no variant for (16-aligned tensors), null when every one has.
     pub fn missingTriton(r: *const Runner, cs: []const calls.Call) !?[]const u8 {
-        var arena = std.heap.ArenaAllocator.init(r.gpa);
-        defer arena.deinit();
-        const a = arena.allocator();
-        for (cs) |*c| if (c.triton) {
-            var mine: std.ArrayList(cuda.aot.Spec) = .empty;
-            for (r.triton.variants) |v| if (std.mem.eql(u8, v.spec.@"fn", c.name)) try mine.append(a, v.spec);
-            const sp = tc.split(a, c, mine.items, .{ .ctx = @constCast(r), .of = alignedAddr }) catch return c.name;
-            _ = r.triton.find(c.name, sp.args, sp.consts) catch return c.name; // error.MissingTritonVariant
-        };
-        return null;
+        return missingIn(r.gpa, r.triton, cs);
     }
 
-    fn alignedAddr(_: *anyopaque, _: calls.Tensor) anyerror!u64 {
-        return 1 << 20;
+    /// Before a window's first launch: each Triton call of `cs` has a variant, else MissingTritonVariant (AOT guard).
+    pub fn guard(r: *Runner, cs: []const calls.Call) !void {
+        if (!guardOn()) return;
+        if (r.params == null) r.params = try paramsOf(r.gpa, r.triton);
+        const k = programKey(cs, &r.params.?);
+        if (r.verified.contains(k)) return;
+        if (try missingIn(r.gpa, r.triton, cs)) |name| {
+            std.log.err("aot guard: no Triton variant of {s} in this window of {d} calls: nothing issued, its request fails", .{ name, cs.len });
+            return error.MissingTritonVariant;
+        }
+        try r.verified.put(r.gpa, k, {});
     }
 
     fn addrOf(ctx: *anyopaque, t: calls.Tensor) anyerror!u64 {
@@ -176,9 +233,7 @@ pub const Runner = struct {
         };
     }
 
-    /// Issues one call on the runner's stream. The L2 prefetchers (they read weights into L2 and write nothing) go to
-    /// the side stream, forked here so they start after every launch before them (l2pf.py `mark`); without
-    /// TF_DSV41_L2PF they are skipped.
+    /// Issues one call on the runner's stream; L2 prefetchers go to the side stream (skipped without TF_DSV41_L2PF).
     pub fn issue(r: *Runner, c: *const calls.Call) !void {
         if (r.br) |b| {
             if (c.join) try r.joinBranch();
@@ -250,8 +305,7 @@ pub const Runner = struct {
         try r.stream.wait(b.join);
     }
 
-    /// The main stream waits for the side stream's prefetches (l2pf.py `join`): every window joins before it returns,
-    /// so a captured graph holds no open fork.
+    /// The main stream waits for the side stream's prefetches, so a captured graph holds no open fork.
     pub fn join(r: *Runner) !void {
         try r.joinBranch();
         try r.joinDeferred();
@@ -290,9 +344,9 @@ pub const Runner = struct {
         if (!try rp.call(r.kernels, stream, c.name[0..dot], c.name[dot + 1 ..], args, &.{}, &scratch)) return error.NoBinding;
     }
 
-    /// Issues a window's calls in order. TF_DSV41_SYNC_EACH=1 (diagnosis): the stream synced after every call, and a
-    /// failing call named with its index and row count (an asynchronous fault otherwise surfaces windows later).
+    /// Issues a window's calls in order (TF_DSV41_SYNC_EACH=1: synced after every call, a failing call named).
     pub fn window(r: *Runner, cs: []const calls.Call) !void {
+        try r.guard(cs);
         if (syncEach()) return r.windowChecked(cs);
         errdefer r.dropForks(); // a failed window (or capture) leaves no fork for the next one to join
         const mark = r.markAt(cs);
@@ -303,10 +357,9 @@ pub const Runner = struct {
         try r.join();
     }
 
-    /// Issues `cs` on `stream` instead of the runner's (TF_DSV41_DRAFT_OVERLAP: the drafter's ingests beside a row
-    /// window): a drafter program has no branch, deferral or prefetch marks, and no glue step; the runner's stream is
-    /// this one while they issue. Nothing joins: the caller orders `stream` with its own events.
+    /// Issues `cs` on `stream` instead of the runner's (a drafter program beside a row window); nothing joins.
     pub fn windowOn(r: *Runner, stream: cuda.Stream, cs: []const calls.Call) !void {
+        try r.guard(cs);
         const main = r.stream;
         r.stream = stream;
         defer r.stream = main;
@@ -316,20 +369,14 @@ pub const Runner = struct {
         }
     }
 
-    /// The index of the call after which an armed window records the taps mark (its last "w.taps" writer); null: not
-    /// armed, or no call writes taps. The arming lasts until its owner clears it (a capture that falls back to an
-    /// eager issue records again).
+    /// The index of the call after which an armed window records the taps mark; null: not armed, or no taps writer.
     fn markAt(r: *Runner, cs: []const calls.Call) ?usize {
         const m = r.taps_mark orelse return null;
         if (!m.armed) return null;
         return lastTaps(cs);
     }
 
-    /// The mark after call `c`, on the stream `c` ran on (a branch's side stream when the emitter put it there). In a
-    /// capture it is an external record node (each launch of the graph records it at that point); an eager window (a
-    /// capture that fell back, or a key the row graphs had no room for under TF_DSV41_GRAPH_FLOOR_GIB) records it as a
-    /// plain record at the same point: CU_EVENT_RECORD_EXTERNAL is invalid outside a capture (cuEventRecordWithFlags:
-    /// CUDA_ERROR_ILLEGAL_STATE, Spark P4 2026-10-09: the first eager row window with TF_DSV41_DRAFT_OVERLAP=1).
+    /// The mark after call `c` on its stream: an external record node in a capture, a plain record when eager.
     fn recordMark(r: *Runner, c: *const calls.Call) !void {
         const m = &r.taps_mark.?;
         const s = if (c.side and r.br != null) r.br.?.stream else if (c.defer_side and r.dfr != null) r.dfr.?.stream else r.stream;
@@ -356,6 +403,7 @@ pub const Runner = struct {
     /// An eager decode window, each call timed when TF_DSV41_PROFILE is set (never inside a graph capture).
     pub fn timedWindow(r: *Runner, cs: []const calls.Call) !void {
         const p = r.prof orelse return r.window(cs);
+        try r.guard(cs);
         if (syncEach()) return r.windowChecked(cs);
         p.begin();
         errdefer r.dropForks();
@@ -371,8 +419,7 @@ pub const Runner = struct {
     }
 };
 
-/// The last call of `cs` with a "w.taps" tensor argument (the boundary that writes the last DSpark target's taps);
-/// null when none does.
+/// The last call of `cs` with a "w.taps" tensor argument; null when none does.
 pub fn lastTaps(cs: []const calls.Call) ?usize {
     var at: ?usize = null;
     for (cs, 0..) |c, i| for (c.args) |x| switch (x.arg) {
@@ -385,6 +432,111 @@ pub fn lastTaps(cs: []const calls.Call) ?usize {
 }
 
 var sync_each: ?bool = null;
+/// The first Triton call of `cs` that `set` has no variant for, every role's base 16-aligned (Runner.missingTriton).
+pub fn missingIn(gpa: std.mem.Allocator, set: *const cuda.aot.Set, cs: []const calls.Call) !?[]const u8 {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const a = arena.allocator();
+    for (cs) |*c| if (c.triton) {
+        var mine: std.ArrayList(cuda.aot.Spec) = .empty;
+        for (set.variants) |v| if (std.mem.eql(u8, v.spec.@"fn", c.name)) try mine.append(a, v.spec);
+        const sp = tc.split(a, c, mine.items, .{ .ctx = undefined, .of = alignedOf }) catch return c.name;
+        _ = set.find(c.name, sp.args, sp.consts) catch return c.name; // error.MissingTritonVariant
+    };
+    return null;
+}
+
+/// A tensor's address with its role's base 16-aligned (aot-needs' rule); an empty tensor or role is 0 (tensorAddr's).
+fn alignedOf(_: *anyopaque, t: calls.Tensor) anyerror!u64 {
+    return if (emptyTensor(t)) 0 else (1 << 20) + @as(u64, @intCast(t.offset));
+}
+
+fn emptyTensor(t: calls.Tensor) bool {
+    var numel: i64 = 1;
+    for (t.shape) |n| numel *= n;
+    return numel == 0 or t.role == .empty;
+}
+
+/// Each Triton function's runtime parameter names over its variants (tc.split: other ints are constexprs).
+pub const Params = std.StringHashMapUnmanaged([]const []const u8);
+
+pub fn paramsOf(gpa: std.mem.Allocator, set: *const cuda.aot.Set) !Params {
+    var specs: std.ArrayList(cuda.aot.Spec) = .empty;
+    defer specs.deinit(gpa);
+    for (set.variants) |v| try specs.append(gpa, v.spec);
+    return paramsOfSpecs(gpa, specs.items);
+}
+
+pub fn paramsOfSpecs(gpa: std.mem.Allocator, specs: []const cuda.aot.Spec) !Params {
+    var lists: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .empty;
+    defer {
+        for (lists.values()) |*l| l.deinit(gpa);
+        lists.deinit(gpa);
+    }
+    for (specs) |sp| {
+        const got = try lists.getOrPut(gpa, sp.@"fn");
+        if (!got.found_existing) got.value_ptr.* = .empty;
+        for (sp.params) |q| if (!named(got.value_ptr.items, q.name)) try got.value_ptr.append(gpa, q.name);
+    }
+    var p: Params = .empty;
+    errdefer freeParams(gpa, &p);
+    for (lists.keys(), lists.values()) |k, *l| try p.put(gpa, k, try l.toOwnedSlice(gpa));
+    return p;
+}
+
+pub fn freeParams(gpa: std.mem.Allocator, p: *Params) void {
+    var it = p.valueIterator();
+    while (it.next()) |v| gpa.free(v.*);
+    p.deinit(gpa);
+}
+
+/// A program's Triton lookups hashed as `find` tells them apart (launch ints by class, tensors by dtype and alignment).
+pub fn programKey(cs: []const calls.Call, params: *const Params) u64 {
+    var h = std.hash.Wyhash.init(0x5d41);
+    for (cs) |*c| if (c.triton) {
+        h.update(c.name);
+        const ps = params.get(c.name) orelse &.{};
+        for (c.args) |x| {
+            h.update(x.name);
+            if (x.arg == .i and named(ps, x.name)) {
+                const v = x.arg.i;
+                h.update(&.{ @intFromBool(v == 1), @intFromBool(@mod(v, 16) == 0), @intFromBool(std.math.cast(i32, v) != null) });
+            } else hashArg(&h, x.arg);
+        }
+        h.update("|");
+    };
+    return h.final();
+}
+
+fn named(ps: []const []const u8, name: []const u8) bool {
+    for (ps) |p| if (std.mem.eql(u8, p, name)) return true;
+    return false;
+}
+
+fn hashArg(h: *std.hash.Wyhash, x: calls.Arg) void {
+    h.update(&.{@backingInt(std.meta.activeTag(x))});
+    switch (x) {
+        .t, .opaque_table => |t| {
+            h.update(@tagName(t.dt));
+            h.update(&.{ @intFromBool(emptyTensor(t)), @intFromBool(@mod(t.offset, 16) == 0) });
+        },
+        .i => |v| h.update(std.mem.asBytes(&v)),
+        .f => |v| h.update(std.mem.asBytes(&v)),
+        .b => |v| h.update(&.{@intFromBool(v)}),
+        .none => {},
+        .list => |items| for (items) |y| hashArg(h, y),
+    }
+}
+
+var guard_on: ?bool = null;
+
+fn guardOn() bool {
+    if (guard_on) |v| return v;
+    const v = if (std.c.getenv("TF_DSV41_AOT_GUARD")) |x| !std.mem.eql(u8, std.mem.span(x), "0") else true;
+    guard_on = v;
+    return v;
+}
+
 fn syncEach() bool {
     if (sync_each) |v| return v;
     const v = if (std.c.getenv("TF_DSV41_SYNC_EACH")) |x| std.mem.eql(u8, std.mem.span(x), "1") else false;

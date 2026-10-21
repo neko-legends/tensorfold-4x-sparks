@@ -1,15 +1,11 @@
-//! Host tests of 4,096-row prefill segments (TF_DSV41_PF_4K, G16 4K; `zig build test-dsv41-knobs`): the knob's rules
-//! against pf4k.py's (refused without the memory acknowledgement, 4K means 4,096-row segments), and the real prefill
-//! emitter under it: a 4,096-row segment is the 2,048-row program's calls over twice the rows, with the router in two
-//! CHUNK launches (router_gemv.route's loop) and x3gm one block (pf4k.gm_rows: the trellis streamed once a segment);
-//! a segment of 2,048 rows or fewer is the 2K program's, launch for launch, but for the staging ring's size.
+//! Host tests of 4,096-row prefill segments (TF_DSV41_PF_4K): the knob's rules and the emitter's 4K program.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
-const check = @import("m1_check.zig");
-const pk = @import("prod_knobs.zig");
+const check = @import("calls_check.zig");
+const pk = @import("serve_knobs.zig");
 const Config = @import("config.zig").Config;
 
 const Fake = struct {
@@ -42,7 +38,7 @@ test "TF_DSV41_PF_4K: 0 / 1 only, refused without TF_DSV41_PF_4K_MEMORY_OK=1, 4,
     try testing.expectEqual(@as(?u32, 4096), try pk.prefillRows(&Fake.get));
     Fake.pairs = &.{ on, ok, .{ "TF_DSV41_PREFILL_CHUNK", "4096" }, .{ "TF_DSV41_PREFILL_ROWS", "4096" } };
     try testing.expectEqual(@as(?u32, 4096), try pk.prefillRows(&Fake.get));
-    // prod's words (2,048 both) with 4K on: refused, not 2,048-row segments under a 4K label
+    // the default words (2,048 both) with 4K on: refused, not 2,048-row segments under a 4K label
     Fake.pairs = &.{ on, ok, .{ "TF_DSV41_PREFILL_CHUNK", "2048" } };
     try testing.expectError(error.BadKnob, pk.prefillRows(&Fake.get));
     Fake.pairs = &.{ on, ok, .{ "TF_DSV41_PREFILL_ROWS", "2048" } };
@@ -56,8 +52,8 @@ test "TF_DSV41_PF_4K: 0 / 1 only, refused without TF_DSV41_PF_4K_MEMORY_OK=1, 4,
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     return w;
 }
 
@@ -79,8 +75,7 @@ fn count(cs: []const calls.Call, name: []const u8) usize {
     return n;
 }
 
-/// `big`'s calls are `small`'s (names, argument kinds, roles and dtypes, in order), with each route launch of `small`
-/// a run of `routes` route launches in `big`.
+/// `big`'s calls are `small`'s in order, with each route launch of `small` a run of `routes` route launches in `big`.
 fn sameCalls(small: []const calls.Call, big: []const calls.Call, routes: usize) !void {
     var j: usize = 0;
     for (small) |c| {
@@ -156,8 +151,7 @@ test "a 4,096-row segment under TF_DSV41_PF_4K: the 2K program over twice the ro
         }
         try testing.expectEqual(2 * moes, routes);
     }
-    // a ragged last segment: the second launch's 8 rows at config(E, 8) = (8, 1) and row tile 8 (route's use_narrow is
-    // the call's 2,056 rows)
+    // a ragged last segment: the second launch's 8 rows at config(E, 8) = (8, 1), row tile 8 (use_narrow: 2,056 rows)
     const r = try bp.emitPrefill(aa, &cfg, &w, four, &layers, 2056, 0, false);
     var k: usize = 0;
     for (r) |c| if (isRoute(c)) {
@@ -234,7 +228,7 @@ const fp = @import("forward_prefill.zig");
 const branches = @import("branches.zig");
 
 test "TF_DSV41_PF_4K adds no byte to the forward's buffer plan: the 4K program's own roles are its workspace's, the rest the 2K plan's at their sizes" {
-    // the forward's options under 4K are its 2K ones (prod_knobs.apply leaves them); 4K segments emit with k4Options
+    // the forward's options under 4K are its 2K ones (the knob apply step leaves them); 4K segments use k4Options
     try planWithin(.{ .gm_v2 = .one, .limit = 1 << 20, .rope_rows = (1 << 20) + 2048, .index_budget = 64 << 20, .taps = true });
 }
 
@@ -270,8 +264,7 @@ fn planWithin(base: block.Options) !void {
             try testing.expect(xr);
             const sh = try branches.shared(aa, c4);
             try testing.expectEqual(@as(usize, if (base.pf_overlap_site) 4 else 2), sh.len);
-            // the partials (and the gathered buffers the site pieces read) both streams touch are the workspace's
-            // (ownCalls tags them in place)
+            // the partials (and gathered buffers the site pieces read) both streams touch are the workspace's
             for (sh) |r| try testing.expect(std.mem.eql(u8, r, "L.k4~part") or std.mem.eql(u8, r, "L.k4~moe16") or
                 (base.pf_overlap_site and (std.mem.eql(u8, r, "L.k4~recv.attn") or std.mem.eql(u8, r, "L.k4~recv.moe"))));
         }
@@ -299,9 +292,7 @@ fn planWithin(base: block.Options) !void {
     if (base.pf_overlap == 0) try shared4k(aa, &p2, &p4, own);
 }
 
-/// TF_DSV41_PF_4K alone (forward_prefill.k4Trim): the roles the 2K plan holds at least as large leave the workspace,
-/// and the 4K program as the segment runs it (ownCallsKeep) names them bare. Every role it names is then the
-/// workspace's (in the trimmed plan, at no more than its size) or the forward's (in the 2K plan, at no less).
+/// TF_DSV41_PF_4K alone: every role the 4K program names is the workspace's (no larger) or the 2K plan's (no smaller).
 fn shared4k(aa: std.mem.Allocator, p2: *const buffers.Plan, p4: *const buffers.Plan, own: u64) !void {
     var wp: buffers.Plan = .{ .a = aa };
     for (p4.sizes.keys(), p4.sizes.values()) |k, v| try wp.sizes.put(aa, k, v);

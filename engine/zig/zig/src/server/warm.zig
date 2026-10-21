@@ -50,7 +50,7 @@ fn start(srv: *Server, input: chat.Input, message: Value, thinking: bool, effort
     // its states count as the reply's request's: they supersede none of that turn's own until a later turn does
     p.request = .{ .prompt = prompt, .max_tokens = 0, .background = true, .born = @intCast(prompt_len), .history_len = @intCast(prompt.len), .rewind_len = if (pictures != null) 0 else @intCast(prompt_mod.rewindLen(srv, &cx, .{ .array = warm_prompt.messages }, input.messages.array.len, input.tools, prompt, thinking, effort)), .chunks = try srv.chunks.starts(a, prompt), .decode_spans = try prompt_mod.replySpans(srv, &cx, prompt) };
     if (pictures) |x| {
-        p.request.images = null; // the fork passes images through the family (vision/held), not the typed set
+        p.request.image_handle = null; // the fork passes images through the family (vision/held), not the typed set
         p.request.cache_key = x.cache_key;
     }
     const id = srv.next_id.fetchAdd(1, .monotonic);

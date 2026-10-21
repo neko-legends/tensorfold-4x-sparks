@@ -1,7 +1,7 @@
-//! A rank's EXL3 bytes read into host images the device buffers copy as is: a group's part, and a routed projection's experts packed as weights.py ragged() / torch.stack pack them.
+//! A rank's EXL3 bytes read into host images the device buffers copy as is: group parts and ragged routed experts.
 
 const std = @import("std");
-const exl3 = @import("exl3.zig");
+const exl3 = @import("core").exl3_layout;
 const plan = @import("plan.zig");
 const Pack = @import("pack.zig").Pack;
 const Io = std.Io;
@@ -33,7 +33,7 @@ pub fn group(gpa: std.mem.Allocator, io: Io, pack: *const Pack, g: plan.GroupPla
     return out;
 }
 
-/// A routed projection: every expert's trellis back to back at the layout's offsets, suh [E, K part] and svh [E, N part] stacked, K2 a expert.
+/// A routed projection: experts' trellises back to back, suh [E, K part] and svh [E, N part] stacked, K2 per expert.
 pub const ExpertsImage = struct {
     trellis: []align(16) u8,
     suh: []u8,

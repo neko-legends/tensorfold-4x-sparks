@@ -1,6 +1,7 @@
 //! Method and path dispatch, as ``do_GET``, ``do_POST`` and ``do_DELETE`` route them.
 const speech = @import("speech.zig");
 const std = @import("std");
+const api = @import("engine_api");
 const json = @import("json");
 const http_conn = @import("http_conn.zig");
 const http_body = @import("http_body.zig");
@@ -78,20 +79,16 @@ fn discardBody(conn: *Conn, a: Allocator) void {
 
 fn post(srv: *Server, conn: *Conn, a: Allocator) void {
     const route = auth.routePath(conn.path);
-    if (std.mem.eql(u8, route, "/v1/audio/speech")) return speech.post(srv, conn, a) catch {};
-    if (std.mem.eql(u8, route, "/v1/slide/learn")) return slide.learn(srv, conn, a);
-    if (std.mem.eql(u8, route, "/v1/imprint/resume")) return imprint.post(srv, conn, a, .where);
-    if (std.mem.eql(u8, route, "/v1/imprint/load")) return imprint.post(srv, conn, a, .load);
-    if (std.mem.endsWith(u8, route, "/decisions")) return decisions.post(srv, conn, a);
-    if (std.mem.endsWith(u8, route, "/systemone")) return systemone.post(srv, conn, a);
-    // (no early anthropic dispatch: the drain gate below must refuse new requests first — the fork's drain contract)
-    if (responses.route(route)) |rid| if (rid.len == 0) return responses.post(srv, conn, a);
     for (tokens.paths) |r| if (std.mem.eql(u8, route, r)) return tokens.post(srv, conn, a, std.mem.endsWith(u8, route, "/detokenize"));
+    const is_speech = std.mem.eql(u8, route, "/v1/audio/speech");
     const is_anthropic = anthropic.route(conn.path);
     const is_responses = if (responses.route(route)) |rid| rid.len == 0 else false;
     const is_decisions = std.mem.endsWith(u8, route, "/decisions");
+    const is_systemone = std.mem.endsWith(u8, route, "/systemone");
+    const is_slide = std.mem.eql(u8, route, "/v1/slide/learn");
+    const imprint_op: ?api.ImprintOp = if (std.mem.eql(u8, route, "/v1/imprint/resume")) .where else if (std.mem.eql(u8, route, "/v1/imprint/load")) .load else null;
     const is_chat = std.mem.endsWith(u8, route, "/chat/completions");
-    if (!is_anthropic and !is_responses and !is_decisions and !is_chat and !std.mem.endsWith(u8, route, "/completions")) {
+    if (!is_speech and !is_slide and imprint_op == null and !is_anthropic and !is_responses and !is_decisions and !is_systemone and !is_chat and !std.mem.endsWith(u8, route, "/completions")) {
         discardBody(conn, a);
         return unknown(conn, a);
     }
@@ -103,7 +100,11 @@ fn post(srv: *Server, conn: *Conn, a: Allocator) void {
         discardBody(conn, a);
         return draining(conn, is_anthropic);
     }
+    if (std.mem.eql(u8, route, "/v1/audio/speech")) return speech.post(srv, conn, a) catch {};
+    if (is_slide) return slide.learn(srv, conn, a);
+    if (imprint_op) |op| return imprint.post(srv, conn, a, op);
     if (is_decisions) return decisions.post(srv, conn, a);
+    if (is_systemone) return systemone.post(srv, conn, a);
     if (is_anthropic) return anthropic.post(srv, conn, a);
     if (is_responses) return responses.post(srv, conn, a);
     openai.post(srv, conn, a, is_chat);

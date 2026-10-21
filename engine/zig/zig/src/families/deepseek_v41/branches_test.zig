@@ -1,13 +1,12 @@
-//! TF_DSV41_BRANCHES / TF_DSV41_MHC_DEFER on the real decode emitter (`zig build test-dsv41-rows`): the same launches
-//! in the same order, the plan's marks, and the roles the streams share before their join (branches.zig).
+//! TF_DSV41_BRANCHES / TF_DSV41_MHC_DEFER on the real decode emitter: same launches, order, marks and shared roles.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const br = @import("branches.zig");
 
 const testing = std.testing;
 const block = @import("block.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const rowmode = @import("rowmode.zig");
 const Config = @import("config.zig").Config;
 
@@ -16,8 +15,8 @@ test "TF_DSV41_BRANCHES on the decode emitter: the same launches in the same ord
     defer arena.deinit();
     const a = arena.allocator();
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     const cfg: Config = .{};
     var backbone: [40]u32 = undefined;
     for (&backbone, 0..) |*l, i| l.* = @intCast(i);
@@ -43,7 +42,7 @@ test "TF_DSV41_BRANCHES on the decode emitter: the same launches in the same ord
             forks += @intFromBool(y.fork);
             joins += @intFromBool(y.join);
         }
-        // MHC_DEFER (R1): every coefficient launch deferred and joined by the next mHC call, at any window size
+        // MHC_DEFER: every coefficient launch deferred and joined by the next mHC call, at any window size
         var deferred: usize = 0;
         for (on) |y| {
             if (y.defer_side) {
@@ -63,9 +62,7 @@ test "TF_DSV41_BRANCHES on the decode emitter: the same launches in the same ord
         try testing.expect(forks > joins and sides > 2 * joins);
         for (try br.shared(a, on)) |role| try seen.put(a, role, {});
     };
-    // reviewed: each is only read inside the region - the rope tables, the window's positions (written before its
-    // layers), the sublayer's input (mHC's, before the fork), q's low-rank rows (the x group / `_rms2` on main before
-    // the second fork, then read by the side's indexer and main's q group); a new role here fails until reviewed
+    // read only inside the region (rope, positions, mHC input, q low-rank rows); a new role here fails until reviewed
     const read_only = [_][]const u8{ "s.rope.main", "s.rope.comp", "w.pos", "w.pos64", "w.out", "L.qa", "L.qn" };
     for (seen.keys()) |k| {
         const ok = for (read_only) |r| {

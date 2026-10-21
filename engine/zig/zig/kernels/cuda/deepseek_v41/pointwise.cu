@@ -1,12 +1,8 @@
-// The torch pointwise ops of DeepSeek-V4.1's fast prefill MoE (tensorfold-dsquant prefill_moe.py), each element
-// computed as torch's CUDA kernels compute it (fp32 opmath, NaN propagating clamps, silu = x / (1 + exp(-x))):
-//
-//   swiglu:  act = silu(min(g, limit)) * clamp(u, -limit, limit)       (shared_expert: clamp_, clamp_, silu, mul_)
-//   add:     out += b                                                  (forward: out += shared)
-//   add_bf16: y = bf16_rn(a + b)                                       (forward: torch.add(out, shared, out=bf16))
-//
-// Built with --fmad=false (zig/build/cuda.zig): torch runs these as separate kernels, every intermediate rounded to
-// fp32, and none of them has a multiply-add to contract.
+// Torch pointwise ops of DeepSeek-V4.1's fast prefill MoE, bit-exact: fp32 opmath, NaN-propagating clamps.
+
+// swiglu: act = silu(min(g, limit)) * clamp(u, -limit, limit); add: out += b; add_bf16: y = bf16_rn(a + b).
+
+// Built with --fmad=false: torch runs each op as its own kernel with fp32 rounding, so nothing may contract.
 
 #include <cstdint>
 #include <cuda_bf16.h>

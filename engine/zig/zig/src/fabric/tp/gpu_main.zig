@@ -1,4 +1,5 @@
-//! `tf-tp-test suite | bench | failfast RANK fatal|kill | roce-host`: one rank of a TP test on real GPUs, any world (settings from TF_TP_*).
+//! `tf-tp-test suite | bench | failfast RANK fatal|kill|transport [N [HOLD_S]] | roce-host | hca | kernel`: one rank
+//! of a TP test on real GPUs, 2 to 16 ranks (world and the rest from TF_TP_*).
 const std = @import("std");
 const cuda = @import("cuda");
 const tp = @import("tp");
@@ -11,11 +12,25 @@ const max_bytes = (4 << 20) + 4096;
 pub fn main(init: std.process.Init) !u8 {
     const args = try init.minimal.args.toSlice(init.arena.allocator());
     if (args.len < 2) {
-        std.debug.print("usage: tf-tp-test suite | bench | failfast RANK fatal|kill | roce-host\n", .{});
+        std.debug.print("usage: tf-tp-test suite | bench | failfast RANK fatal|kill|transport [N [HOLD_S]] | roce-host | hca | kernel\n", .{});
         return 2;
+    }
+    // `kernel`: whether the build embeds the mailbox kernel (-Dtp-nvcc or -Dtp-fatbin), for scripts to check first
+    if (std.mem.eql(u8, args[1], "kernel")) {
+        std.debug.print("mailbox kernel {d} B\n", .{tp_kernel.mailbox.len});
+        return if (tp_kernel.mailbox.len > 0) 0 else 1;
     }
     const cfg = try tp.Config.fromEnv();
     if (std.mem.eql(u8, args[1], "roce-host")) return @import("roce_host.zig").run(cfg, init.gpa);
+    if (std.mem.eql(u8, args[1], "hca")) return hca(cfg, init.io);
+    if (std.mem.eql(u8, args[1], "failfast") and (!cfg.failfast or args.len > 5) and !hostOnlyAllowed(cfg)) {
+        std.debug.print("REFUSED: failfast with TF_TP_FAILFAST=0 or a hold is host-only: TF_TP_ALLOW_HOST_ONLY=1 and no RDMA wire\n", .{});
+        return 2;
+    }
+    if (cfg.backend != .nccl and tp_kernel.mailbox.len == 0) {
+        std.debug.print("FAIL TF_COMM_BACKEND={t} needs the mailbox kernel: rebuild with -Dtp-nvcc or -Dtp-fatbin\n", .{cfg.backend});
+        return 2;
+    }
     var driver = try cuda.Driver.open();
     defer driver.close();
     var ctx = try cuda.Context.init(&driver, @intCast(cfg.device));
@@ -28,6 +43,11 @@ pub fn main(init: std.process.Init) !u8 {
     std.debug.print("INFO rank {d}/{d} on {s} (sm_{d}), backend {t}, mailbox kernel {d} B, bootstrap + NCCL init {d:.0} ms\n", .{ cfg.rank, cfg.world, try ctx.name(&name_buf), try ctx.capability(), s.comm().kind(), tp_kernel.mailbox.len, up_ms });
     if (std.mem.eql(u8, args[1], "suite")) return suite(&s, &driver, init.gpa, cfg, true);
     if (std.mem.eql(u8, args[1], "bench")) return suite(&s, &driver, init.gpa, cfg, false);
+    if (std.mem.eql(u8, args[1], "failfast") and args.len >= 4 and std.mem.eql(u8, args[3], "transport")) {
+        const n = if (args.len > 4) try std.fmt.parseInt(u32, args[4], 10) else 50;
+        const hold = if (args.len > 5) try std.fmt.parseInt(u32, args[5], 10) else 0;
+        return @import("gpu_transport.zig").run(&s, &driver, init.gpa, cfg, try std.fmt.parseInt(u32, args[2], 10), n, hold);
+    }
     if (std.mem.eql(u8, args[1], "failfast") and args.len == 4) return failfast(&s, &driver, init.gpa, cfg, try std.fmt.parseInt(u32, args[2], 10), args[3]);
     std.debug.print("unknown command {s}\n", .{args[1]});
     return 2;
@@ -37,6 +57,7 @@ pub fn main(init: std.process.Init) !u8 {
 /// sizes and one decode window on NCCL and on the session's route (RoCE / mailbox).
 fn suite(s: *tp.Session, d: *const cuda.Driver, gpa: std.mem.Allocator, cfg: tp.Config, run_checks: bool) !u8 {
     var c = try checks.Ctx.init(d, gpa, cfg.rank, cfg.world, max_bytes);
+
     defer c.deinit();
     var backends: [2]struct { comm: tp.Collective, label: []const u8 } = undefined;
     var n_backends: usize = 1;
@@ -67,7 +88,47 @@ fn suite(s: *tp.Session, d: *const cuda.Driver, gpa: std.mem.Allocator, cfg: tp.
     return if (c.failures == 0) 0 else 1;
 }
 
-fn realNow() f64 {
+/// `hca` (host only, no GPU): both ranks' RoCE pick over the bootstrap; this rank's `NCCL_IB_HCA=...` line on stdout.
+fn hca(cfg: tp.Config, io: std.Io) !u8 {
+    var b = tp.Bootstrap.open(cfg) catch |e| {
+        const secs = @as(f64, @floatFromInt(cfg.connect_timeout_ns)) / std.time.ns_per_s;
+        switch (e) {
+            error.Timeout => std.debug.print("FAIL hca rank {d}: no peer joined within TF_TP_PLAN_TIMEOUT ({d:.1} s): is its runner up, and leaving TF_TP_ROCE_HCA and NCCL_IB_HCA unset as this one does?\n", .{ cfg.rank, secs }),
+            error.AddressInUse => std.debug.print("FAIL hca rank {d}: port {d} (TF_TP_PORT + 7) is in use on this host\n", .{ cfg.rank, cfg.link_port }),
+            error.Closed => std.debug.print("FAIL hca rank {d}: the peer closed the bootstrap connection\n", .{cfg.rank}),
+            else => std.debug.print("FAIL hca rank {d}: bootstrap: {t}\n", .{ cfg.rank, e }),
+        }
+        return 1;
+    };
+    defer b.close();
+    var specs: [tp.roce_verbs.max_hcas]tp.roce_verbs.HcaSpec = undefined;
+    const pick = tp.roce_pick.select(cfg, &b, &specs) catch |e| {
+        std.debug.print("FAIL hca rank {d}: {t} while picking the ports with the peer\n", .{ cfg.rank, e });
+        return 1;
+    };
+    var buf: [tp.roce_pick.list_bytes + 16]u8 = undefined;
+    const line = tp.roce_pick.hcaLine(pick, &specs, &buf) catch |e| {
+        const why = switch (e) {
+            error.NoRoceDevice => "no active Ethernet RDMA port with an IPv4 RoCE v2 GID on this host",
+            error.NoSharedSubnet => "no RoCE port here shares an IPv4 /24 with the peer's",
+        };
+        std.debug.print("FAIL hca rank {d}: {s}: name the peer's ports in TF_TP_ROCE_HCA or NCCL_IB_HCA\n", .{ cfg.rank, why });
+        return 1;
+    };
+    var names: [tp.roce_pick.list_bytes]u8 = undefined;
+    const how = if (pick.explicit) "TF_TP_ROCE_HCA" else "on a /24 the peer shares";
+    std.debug.print("INFO hca rank {d}: {s} ({s})\n", .{ cfg.rank, try tp.roce_pick.joinNames(specs[0..pick.n], true, &names), how });
+    try std.Io.File.stdout().writeStreamingAll(io, line);
+    return 0;
+}
+
+/// The failed-transport check's host-only forms (fail-fast off, a hold): TF_TP_ALLOW_HOST_ONLY=1 and no RDMA wire.
+fn hostOnlyAllowed(cfg: tp.Config) bool {
+    const flag = std.mem.eql(u8, std.mem.span(std.c.getenv("TF_TP_ALLOW_HOST_ONLY") orelse ""), "1");
+    return flag and (cfg.backend != .roce or cfg.roce_wire == .shm);
+}
+
+pub fn realNow() f64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.REALTIME, &ts);
     return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) / 1e9;

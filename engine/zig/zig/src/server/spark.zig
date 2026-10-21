@@ -43,10 +43,6 @@ pub const Settings = struct {
     stall_s: f64 = 0,
     stall_prefill_tps: f64 = 200,
     log: ?LogSettings = null,
-    /// TF_DSV41_DRAIN_S / GLM53_TF_DRAIN_S: seconds requests in progress may finish after a stop signal (serve.zig).
-    drain_s: f64 = 20,
-    /// TF_DSV41_SSE_KEEPALIVE_S / GLM53_TF_SSE_KEEPALIVE_S: a silent stream's keepalive period (0: none)
-    keepalive_s: f64 = 15,
     /// TF_DSV41_VLLM_METRICS / GLM53_TF_VLLM_METRICS=1 (the four-Spark fork's patches/0003, default off): /metrics adds
     /// the vLLM-named series fleet dashboards read (`Health.vllm`)
     vllm_metrics: bool = false,
@@ -65,8 +61,6 @@ pub const Settings = struct {
             s.health = if (std.ascii.eqlIgnoreCase(t, "basic")) .basic else if (std.ascii.eqlIgnoreCase(t, "strict")) .strict else return bad(problem, "GLM53_TF_HEALTH / TF_DSV41_HEALTH: expected one of basic, strict");
         }
         if (knob(m, "STALL_S")) |v| s.stall_s = try nonNegative(v, 0, problem, "GLM53_TF_STALL_S: must be a number >= 0");
-        if (knob(m, "SSE_KEEPALIVE_S")) |v| s.keepalive_s = try nonNegative(v, 15, problem, "TF_DSV41_SSE_KEEPALIVE_S / GLM53_TF_SSE_KEEPALIVE_S: seconds, a number >= 0");
-        if (knob(m, "DRAIN_S")) |v| s.drain_s = try nonNegative(v, 20, problem, "TF_DSV41_DRAIN_S / GLM53_TF_DRAIN_S: seconds, a number >= 0");
         if (knob(m, "VLLM_METRICS")) |v| {
             const t = trimmed(v, "0");
             if (!std.mem.eql(u8, t, "0") and !std.mem.eql(u8, t, "1")) return bad(problem, "TF_DSV41_VLLM_METRICS / GLM53_TF_VLLM_METRICS: expected 0 or 1");

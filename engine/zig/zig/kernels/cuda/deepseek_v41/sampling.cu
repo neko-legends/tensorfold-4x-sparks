@@ -1,13 +1,6 @@
-// DeepSeek-V4.1's keyed sampling, its device part (tensorfold-dsquant nucleus.py / slots.py, prod path). Built with
-// --fmad=false: torch runs v / t, the subtraction and exp as separate float64 kernels, each result rounded.
-//
-//   stats  out[i] = (m, s): m = max_c f64(lg[i][c]), s = sum_c exp(f64(lg[i][c]) / t - m / t)   (nucleus.row_stats, one
-//          temperature a window; each term as torch computes it, the sum's order is not torch's: nucleus.keep_count's
-//          GUARD (1e-9) is what makes the choice independent of it). stats_kernel is one CTA a row; the split launches
-//          below (dsv41_sampling_stats_*) are the same values over every SM: a row's float64 exp work on one SM is
-//          ~0.4 ms on GB10 (FP64 at 1/64 rate), once a sampled segment, where torch spreads it over the whole GPU
-//   pack   out[i] = [vals[i][0 .. k], f32 bits of int32 (cols[i][j] + id0)]                     (slots.cand_gather's
-//          packed rows: topk_keys.cu's values and columns, the rank's first id added)
+// DeepSeek-V4.1 keyed sampling, device part; --fmad=false: torch rounds v / t, the subtraction and exp separately.
+
+// stats: per-row (m, s) in float64, sum order not torch's (the keep-count guard absorbs it); pack: [vals, cols + id0].
 
 #include <cstdint>
 
@@ -79,11 +72,7 @@ __global__ void __launch_bounds__(256) pack_kernel(const float* __restrict__ val
 
 }  // namespace dsv41_sampling
 
-// The split statistics (the same (m, s) as stats_kernel, the sum in another fixed order): rows [rows, C] cut into
-// `chunks` column chunks of `chunk`, grid (chunks, rows) for the first two, (rows) for the last.
-//   max  pmax[i][j] = max of chunk j in fp32 (f64 of it is stats_kernel's max: the conversion is exact and monotone)
-//   sum  psum[i][j] = sum over chunk j of exp(f64(v) / t - m / t), m the row's max from pmax (every CTA alike)
-//   fin  out[i] = (m, psum[i][0] + psum[i][1] + ... in chunk order)
+// Split stats: same (m, s) as stats_kernel, sum in fixed chunk order; max, sum per chunk, fin adds chunks in order.
 namespace dsv41_sampling_split {
 
 constexpr int NT = 256;

@@ -1,18 +1,12 @@
-//! Host tests of the prefill exchange overlap (TF_DSV41_PF_OVERLAP; `zig build test-dsv41-knobs`): the knob's reader,
-//! and the real prefill emitter with it on: each layer's two exchanges become `k` row pieces (glue exchange_rows), the
-//! first k - 1 on the side stream right after their producer's piece (wo_a's groups + wo_b, or the shared expert +
-//! bf16(routed + shared)), the last on the main stream after a join; the pieces tile the segment's rows in order;
-//! the only roles both streams touch inside a fork region are the partials themselves, at disjoint rows (the side
-//! reads rows the main stream wrote before the fork, the main stream writes later rows); every other call is the
-//! knob-off program's, in order.
+//! Host tests of the prefill exchange overlap (TF_DSV41_PF_OVERLAP): the reader, and each exchange in `k` row pieces.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const branches = @import("branches.zig");
-const check = @import("m1_check.zig");
-const pk = @import("prod_knobs.zig");
+const check = @import("calls_check.zig");
+const pk = @import("serve_knobs.zig");
 const Config = @import("config.zig").Config;
 
 const Fake = struct {
@@ -39,8 +33,8 @@ test "TF_DSV41_PF_OVERLAP: unset / 0 / 1 off, 2-8 row pieces, anything else refu
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     return w;
 }
 
@@ -52,12 +46,11 @@ fn roleOf(x: calls.Arg) []const u8 {
     };
 }
 
-/// A call the overlap re-emits per piece: the producers' projections (rot_in + GEMM, `_gemm`'s unpacks) on wo_a / wo_b
-/// / the shared expert, their glue, and the exchanges.
+/// A call the overlap re-emits per piece: wo_a / wo_b / shared-expert projections, their glue, and the exchanges.
 fn isPieced(c: calls.Call) bool {
     if (std.mem.startsWith(u8, c.name, "glue.exchange")) return true;
     if (std.mem.eql(u8, c.name, "glue.swiglu") or std.mem.eql(u8, c.name, "glue.moe_sum")) return true;
-    // a projection's rot_in, unpack and GEMM read the producer's weights (suh / svh / trellis) or its words ("s.<w>.lanes")
+    // a projection's rot_in, unpack and GEMM read the producer's weights or its words ("s.<w>.lanes")
     for (c.args) |x| if (x.arg == .t and x.arg.t.role != .empty) {
         const r = roleOf(x.arg);
         for ([_][]const u8{ ".attn.wo_a.", ".attn.wo_b", ".shared.0." }) |w| if (std.mem.indexOf(u8, r, w) != null) return true;
@@ -137,9 +130,7 @@ test "TF_DSV41_PF_OVERLAP on the prefill emitter: k pieces an exchange behind th
     }
 }
 
-/// Each exchange's pieces: rows [r0, r0 + m) tiling [0, n) in order, the 16-row grid, the first k - 1 forked onto the
-/// side stream, the last joined on the main stream; each piece right after the producer that wrote its rows (wo_b's
-/// output or moe_sum's), and into the whole gathered buffer [2, n, D].
+/// Each exchange's pieces tile [0, n) on the 16-row grid: k - 1 forked, the last joined, each after its producer.
 fn pieces(cs: []const calls.Call, n: i64, k: i64, D: i64) !void {
     var next: i64 = 0;
     var seen: i64 = 0;
@@ -253,10 +244,7 @@ test "TF_DSV41_PF_OVERLAP_SITE on the prefill emitter: every exchange piece on t
     }
 }
 
-/// Under TF_DSV41_PF_OVERLAP_SITE: exchange piece p of k is on the side stream (forked) with mark p + 1; the next site
-/// is k mhc_pf.run + `_finish_k` pairs over the same rows in order, piece p < k - 1 waiting for mark p + 1 and the last
-/// joining, each reading its own rows of the gathered buffer [2, n, D] and writing its rows of "w.out". The program's
-/// last exchange (no site after it) ends as without the knob: its last piece on the main stream, joined.
+/// Under TF_DSV41_PF_OVERLAP_SITE: piece p forks with mark p + 1 and the next site's k pairs wait on those marks.
 fn sitePieces(cs: []const calls.Call, n: i64, k: i64, D: i64) !void {
     var xp: i64 = 0; // exchange pieces seen in the current exchange
     var sp: i64 = 0; // site pieces seen in the current site

@@ -1,5 +1,7 @@
-//! Tensor parallelism across processes (DGX Sparks, one GPU each: two or four): bootstrap, collectives, fail-fast; `Session.open` brings a rank up.
+//! Tensor parallelism across processes, one GPU each (the DGX Sparks: two or four; up to sixteen ranks): bootstrap,
+//! collectives, fail-fast; `Session.open` brings a rank up.
 const std = @import("std");
+const log = @import("log.zig");
 const cuda = @import("cuda");
 
 pub const collective = @import("collective.zig");
@@ -14,6 +16,7 @@ pub const mailbox = @import("mailbox.zig");
 pub const hybrid = @import("hybrid.zig");
 pub const roce = @import("roce.zig");
 pub const roce_verbs = @import("roce_verbs.zig");
+pub const roce_pick = @import("roce_pick.zig");
 pub const planlink = @import("planlink.zig");
 pub const replay = @import("replay.zig");
 pub const Verbs = @import("verbs").Verbs;
@@ -22,6 +25,7 @@ pub const Collective = collective.Collective;
 pub const DType = collective.DType;
 pub const Op = collective.Op;
 pub const Config = config.Config;
+pub const existing = @import("existing.zig");
 pub const Bootstrap = bootstrap.Bootstrap;
 pub const Fate = fate.Fate;
 
@@ -36,13 +40,12 @@ pub const Session = struct {
     plan: planlink.PlanLink = undefined,
     fate: ?Fate = null,
 
-    /// Brings this rank up (in place: the session's address must not change afterwards). `kernel_image` is
-    /// mailbox.cu's fatbin (the mailbox and RoCE kernels), empty when the build has none: those backends then use
-    /// NCCL.
-    pub fn open(s: *Session, d: *const cuda.Driver, cfg: Config, kernel_image: []const u8) !void {
+    /// Brings this rank up in place; `kernel_image` is mailbox.cu's fatbin, empty sends those backends to NCCL.
+    pub fn open(s: *Session, d: *const cuda.Driver, requested: Config, kernel_image: []const u8) !void {
+        const cfg = requested.resolved();
         var b = try Bootstrap.open(cfg);
         defer b.close();
-        try b.agree(&cfg.digest(), "settings (TF_TP_WORLD, TF_COMM_BACKEND, TF_TP_MAILBOX_MAX_KB, TF_DSV41_FAILFAST, TF_TP_ROCE_WIRE / _FALLBACK)");
+        try b.agree(&cfg.digest(), "settings (TF_TP_WORLD, TF_COMM_BACKEND, TF_TP_MAILBOX_MAX_KB, TF_TP_ROCE_CHUNKED_KB, TF_TP_FAILFAST, TF_TP_ROCE_WIRE / _FALLBACK, TF_GRAPH_CACHE)");
         var lib = try cuda.nccl.Library.openPath(cfg.nccl_lib);
         errdefer lib.close();
         const v = try lib.version();
@@ -53,48 +56,49 @@ pub const Session = struct {
         s.* = .{ .cfg = cfg, .lib = lib, .nccl = undefined };
         s.nccl = try nccl.Nccl.init(&s.lib, d, id, cfg.rank, cfg.world);
         errdefer s.nccl.deinit();
+        errdefer if (s.mail) |*m| m.deinit();
+        errdefer if (s.roce) |rr| rr.deinit();
         switch (cfg.backend) {
             .nccl => {},
             .mailbox => if (try mailboxPossible(&b, kernel_image)) {
                 s.mail = try mailbox.Mailbox.init(d, &b, kernel_image, cfg.mailbox_max_bytes, cfg.mailbox_timeout_ns);
                 s.route = .{ .small = .{ .mailbox = &s.mail.? }, .nccl = &s.nccl, .max_bytes = cfg.mailbox_max_bytes };
             } else if (cfg.rank == 0) {
-                std.log.warn("[tensorfold] tp: TF_COMM_BACKEND=mailbox needs two ranks on one host and the kernel; every rank uses NCCL", .{});
+                log.warn("[tensorfold] tp: TF_COMM_BACKEND=mailbox needs two ranks on one host and the kernel; every rank uses NCCL", .{});
             },
             .roce => try s.openRoce(d, &b, kernel_image),
         }
         try s.agreeVar(&b);
         s.plan = planlink.PlanLink.init(cfg.rank, cfg.world, b.releasePlan());
+        errdefer s.plan.close();
         s.plan.spin_ns = cfg.plan_spin_ns;
         s.plan.pin = cfg.plan_pin;
         s.plan.avoid = cfg.roce_cpu;
         if (cfg.failfast) {
             s.fate = Fate.init(cfg, b.release());
+            errdefer s.fate.?.close();
             s.fate.?.onFail(.{ .ctx = s, .call = abortHook });
             try s.fate.?.start();
         }
-        std.log.info("[tensorfold] tp: rank {d} of {d} up ({t}, NCCL {d}, fail-fast {s}, roce fast {s}: {d} poller(s), stagger {d} ns)", .{ cfg.rank, cfg.world, s.comm().kind(), v, if (cfg.failfast) "on" else "off", if (cfg.roce_fast & 1 != 0) "on" else "off", (cfg.roce_fast >> 8) & 0xff, cfg.roce_fast >> 16 });
+        log.info("[tensorfold] tp: rank {d} of {d} up ({t}, NCCL {d}, fail-fast {s}, roce fast {s}: {d} poller(s), stagger {d} ns)", .{ cfg.rank, cfg.world, s.comm().kind(), v, if (cfg.failfast) "on" else "off", if (cfg.roce_fast & 1 != 0) "on" else "off", (cfg.roce_fast >> 8) & 0xff, cfg.roce_fast >> 16 });
     }
 
-    /// RoCE for the small exchanges: a collective setup, then a load-time probe against NCCL's bytes; a failure on
-    /// any rank puts every rank on NCCL (TF_TP_ROCE_FALLBACK=nccl) or stops them all (=error).
+    /// RoCE for the small exchanges, probed against NCCL at load; on failure every rank obeys TF_TP_ROCE_FALLBACK.
     fn openRoce(s: *Session, d: *const cuda.Driver, b: *Bootstrap, image: []const u8) !void {
         const cfg = s.cfg;
         var specs: [roce_verbs.max_hcas]roce_verbs.HcaSpec = undefined;
         var n_specs: usize = 0;
-        if (cfg.roce_wire == .verbs) {
-            if (cfg.roce_hca) |text| {
-                n_specs = try roce_verbs.parseSpecs(text, &specs);
-            } else if (Verbs.open(null)) |vb| {
-                var v = vb;
-                defer v.close();
-                n_specs = roce_verbs.autoSpecs(&v, &specs, cfg.roce_hcas);
-            } else |_| {}
-        }
+        if (cfg.roce_wire == .verbs) n_specs = try roce_pick.resolve(cfg, b, &specs);
         const opts: roce.Options = .{ .wire = if (cfg.roce_wire == .shm) .shm else .verbs, .hcas = specs[0..n_specs], .traffic_class = cfg.roce_tc, .cpu = cfg.roce_cpu, .max_bytes = cfg.mailbox_max_bytes, .timeout_ns = cfg.mailbox_timeout_ns, .fast = cfg.roce_fast, .blocks = cfg.roce_blocks };
         const r = roce.Roce.init(d, b, image, opts) catch |e| return s.roceFallback(e);
         s.roce = r;
-        s.route = .{ .small = .{ .roce = r }, .nccl = &s.nccl, .max_bytes = cfg.mailbox_max_bytes };
+        if (cfg.roce_chunked_bytes > 0 and !r.chunk_abi) {
+            log.warn("TF_TP_ROCE_CHUNKED_KB={d}: the RoCE kernel image has no chunked ABI (tp_roce_chunk_abi); refusing to start", .{cfg.roce_chunked_bytes / 1024});
+            r.deinit();
+            s.roce = null;
+            return error.ChunkAbiMissing;
+        }
+        s.route = .{ .small = .{ .roce = r }, .nccl = &s.nccl, .max_bytes = cfg.mailbox_max_bytes, .chunked_bytes = cfg.roce_chunked_bytes };
         const good = probe(s, d) catch false;
         var blobs: [bootstrap.max_ranks][]const u8 = undefined;
         var buf: [bootstrap.max_ranks]u8 = undefined;
@@ -106,8 +110,7 @@ pub const Session = struct {
         };
     }
 
-    /// `Collective.varAgreed`: whether every rank's transport moves device lengths (`varFits(16)` on all), one all-gather
-    /// over the bootstrap a session, kept on the route (NCCL alone never does).
+    /// `Collective.varAgreed`: whether every rank's transport moves device lengths, agreed once a session.
     fn agreeVar(s: *Session, b: *Bootstrap) !void {
         var blobs: [bootstrap.max_ranks][]const u8 = undefined;
         var buf: [bootstrap.max_ranks]u8 = undefined;
@@ -119,7 +122,7 @@ pub const Session = struct {
 
     fn roceFallback(s: *Session, e: anyerror) !void {
         if (s.cfg.roce_fallback == .@"error") return e;
-        if (s.cfg.rank == 0) std.log.warn("[tensorfold] tp: RoCE unavailable ({t}); every rank uses NCCL (TF_TP_ROCE_FALLBACK=error refuses instead)", .{e});
+        if (s.cfg.rank == 0) log.warn("[tensorfold] tp: RoCE unavailable ({t}); every rank uses NCCL (TF_TP_ROCE_FALLBACK=error refuses instead)", .{e});
     }
 
     /// One 4 KiB all-gather and one bf16 sum through RoCE and through NCCL: the gathers' bytes must be equal, and the
@@ -160,7 +163,7 @@ pub const Session = struct {
         const sums = std.mem.eql(u8, got[2 * w * n ..][0..n], &want);
         const nccl_sums = std.mem.eql(u8, got[2 * w * n + n ..][0..n], &want);
         const ok = gathers and sums and (w > 2 or nccl_sums);
-        if (!ok or !nccl_sums) std.log.warn("[tensorfold] tp roce probe ({d} ranks): gather {s} against NCCL, sum {s} against the rank-order reference (NCCL's: {s}{s})", .{ w, if (gathers) "equal" else "DIFFERS", if (sums) "equal" else "DIFFERS", if (nccl_sums) "equal" else "differs", if (w > 2) ", its ring order; not used by the decision" else "" });
+        if (!ok or !nccl_sums) log.warn("[tensorfold] tp roce probe ({d} ranks): gather {s} against NCCL, sum {s} against the rank-order reference (NCCL's: {s}{s})", .{ w, if (gathers) "equal" else "DIFFERS", if (sums) "equal" else "DIFFERS", if (nccl_sums) "equal" else "differs", if (w > 2) ", its ring order; not used by the decision" else "" });
         return ok;
     }
 
@@ -194,15 +197,12 @@ pub const Session = struct {
         s.comm().abort();
     }
 
-    /// A clean stop of every rank, announced by rank 0 (Forward.stop) before it closes: the followers end with no
-    /// fail-fast exit; elsewhere this rank's own hang-ups are expected. Without fail-fast: nothing.
+    /// A clean stop announced by rank 0 before it closes: followers end with no fail-fast exit.
     pub fn announceStop(s: *Session) void {
         if (s.fate) |*f| f.announceStop();
     }
 
-    /// This rank failed after `open`, before serving (a model's load, its assets, its buffers): the other ranks learn
-    /// why and go down (fail-fast), and nothing of the session runs on once its owner frees it (the fate thread read a
-    /// freed session: rank 1's segfault in fate.report, Spark 2026-10-09).
+    /// This rank failed after `open`, before serving: the other ranks learn why and go down (fail-fast).
     pub fn bootFailed(s: *Session, err: anyerror) void {
         if (s.fate) |*f| f.failBoot("boot", err);
         s.close();
@@ -210,6 +210,8 @@ pub const Session = struct {
 
     /// A normal stop: every rank calls it (rank 0 first marks the stop as expected with `fate.expectStop`).
     pub fn close(s: *Session) void {
+        // a failed transport: every rank goes down (the peers stop posting) before this one lets go of anything
+        if (s.roce) |r| if (r.failed()) if (s.fate) |*f| f.fatal("transport", error.BackendFailed);
         if (s.fate) |*f| f.close();
         s.plan.close();
         if (s.roce) |r| r.deinit();
@@ -227,9 +229,13 @@ test {
     _ = bootstrap;
     _ = mailbox;
     _ = roce_verbs;
+    _ = roce_pick;
     _ = planlink;
     _ = replay;
+    _ = @import("roce_guard.zig");
     _ = @import("roce_test.zig");
+    _ = @import("roce_post_test.zig");
+    _ = @import("roce_inflight_test.zig");
     _ = @import("host_test.zig");
     _ = @import("fate_test.zig");
 }

@@ -1,6 +1,4 @@
-//! calib_env.zig against Python prod's own calib.load + Costs.encode / decode + depth (fixtures/calib-golden.json,
-//! tools/calib_golden.py on tensorfold-decode1 8474f31): the same entry picked from a directory of calib-*.json, the
-//! same shared table bit for bit, and the same draft depth and tree for every ask.
+//! calib_env.zig against fixtures/calib-golden.json: same entry picked, same shared table bits, same depth and tree.
 const std = @import("std");
 const Value = std.json.Value;
 const calib_env = @import("calib_env.zig");
@@ -19,7 +17,7 @@ fn num(v: Value) f64 {
     };
 }
 
-test "prod's cached calibration: the entry, the shared table and every depth choice equal Python's" {
+test "a served cached calibration: the entry, the shared table and every depth choice equal Python's" {
     var parsed = try std.json.parseFromSlice(Value, gpa, golden, .{});
     defer parsed.deinit();
     const g = parsed.value.object;
@@ -45,7 +43,7 @@ test "prod's cached calibration: the entry, the shared table and every depth cho
     for (verify, got.costs.verify) |x, y| try std.testing.expectEqual(num(x), y);
     try std.testing.expectEqual(num(c.get("draft").?), got.costs.draft);
     try std.testing.expectEqual(num(c.get("slot").?), got.costs.slot);
-    // every ask on a fresh depth (Python: Depth(costs, block=5, mode="cost", cap=5, skip=True, joint=1))
+    // every ask on a fresh depth (block=5, mode="cost", cap=5, skip=True, joint=1)
     var trees: usize = 0;
     for (g.get("asks").?.array.items) |ask| {
         const o = ask.object;
@@ -88,12 +86,12 @@ test "no entry for this engine: the defaults; more slots fit; a named file wins;
     var dflt = try calib_env.load(gpa, io, .{ .mode = "Default", .dir = root }, want, 16);
     defer dflt.deinit(gpa);
     try std.testing.expectEqual(calib_env.Source.default, dflt.source);
-    // prod's own: TF_DSV41_CALIB=real, a 4-slot table: a 1-slot engine reads its newest
+    // TF_DSV41_CALIB=real with a 4-slot table: a 1-slot engine reads its newest
     try tmp.dir.writeFile(io, .{ .sub_path = "calib-p.json", .data = "{\"verify\": [21.0, 26.0], \"draft\": 3.6, \"meta\": {\"shape\": {\"slots\": 4, \"world\": 2, \"dspark\": true}, \"time\": \"2026-10-07T12:00:00\"}}" });
     try tmp.dir.writeFile(io, .{ .sub_path = "calib-q.json", .data = "{\"verify\": [22.0, 27.0], \"draft\": 3.6, \"meta\": {\"shape\": {\"slots\": 4, \"world\": 2, \"dspark\": true}, \"time\": \"2026-10-06T12:00:00\"}}" });
-    var prod = try calib_env.load(gpa, io, .{ .mode = "real", .dir = root }, want, 16);
-    defer prod.deinit(gpa);
-    try std.testing.expectEqualStrings("calib-p.json", std.fs.path.basename(prod.path.?));
+    var served = try calib_env.load(gpa, io, .{ .mode = "real", .dir = root }, want, 16);
+    defer served.deinit(gpa);
+    try std.testing.expectEqualStrings("calib-p.json", std.fs.path.basename(served.path.?));
     try std.testing.expectError(error.CalibMode, calib_env.load(gpa, io, .{ .mode = "measured" }, want, 16));
 }
 
@@ -141,7 +139,7 @@ test "TF_DSV41_CALIB=measure / zig: the engine measures; a stored Zig table is r
     var none = try calib_env.load(gpa, io, .{ .mode = "zig", .dir = root }, want, 64);
     defer none.deinit(gpa);
     try std.testing.expectEqual(calib_env.Source.measure, none.source);
-    // a Python entry for the shape: cached reads it, zig does not
+    // a reference-engine entry for the shape: cached reads it, zig does not
     try tmp.dir.writeFile(io, .{ .sub_path = "calib-py.json", .data = "{\"verify\": [21.0, 26.0], \"draft\": 3.6, \"meta\": {\"shape\": {\"slots\": 4, \"world\": 2, \"dspark\": true}, \"time\": \"2026-10-07T12:00:00\"}}" });
     var verify = [_]f64{ 20.0004999, 24.5, 24.25, 30.0 };
     const c: costs_mod.Costs = .{ .verify = &verify, .draft = 3.5005, .slot = 0.611 };
@@ -165,7 +163,7 @@ test "TF_DSV41_CALIB=measure / zig: the engine measures; a stored Zig table is r
     var real = try calib_env.load(gpa, io, .{ .mode = "real", .dir = root }, .{ .slots = 1, .world = 2, .dspark = true }, 64);
     defer real.deinit(gpa);
     try std.testing.expectEqualStrings("calib-py.json", std.fs.path.basename(real.path.?));
-    // the stored file: Python's keys, the engine, a UTC time
+    // the stored file: the reference keys, the engine, a UTC time
     const bytes = try tmp.dir.readFileAlloc(io, name, gpa, .limited(1 << 20));
     defer gpa.free(bytes);
     const F = struct { engine: []const u8, meta: struct { time: []const u8, seconds: f64, prompt_tokens: u64, shape: struct { slots: u32, context: ?u64 }, method: struct { stat: []const u8, shape: []const u8, reps: u32 } } };

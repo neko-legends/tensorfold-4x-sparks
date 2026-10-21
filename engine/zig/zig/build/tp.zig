@@ -1,5 +1,4 @@
-//! Tensor parallelism's build (zig/src/fabric/tp): host tests on any OS, and on Linux the `tf-tp-test` GPU runner with
-//! the mailbox kernel, built by `-Dtp-nvcc=` or embedded from a prebuilt `-Dtp-fatbin=`.
+//! Tensor parallelism's build: Linux host tests, and on Linux the `tf-tp-test` GPU runner with the mailbox kernel.
 
 const std = @import("std");
 
@@ -8,6 +7,7 @@ fn runtime(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builti
     const options = b.addOptions();
     options.addOption(bool, "with_kernels", false);
     const cuda = b.createModule(.{ .root_source_file = b.path("zig/src/cuda/root.zig"), .target = target, .optimize = optimize, .link_libc = true });
+    cuda.addImport("gpu_memory", @import("gpu_memory.zig").module(b, target));
     cuda.addOptions("kernel_options", options);
     cuda.addImport("stagger", b.createModule(.{ .root_source_file = b.path("zig/src/core/stagger.zig"), .target = target, .optimize = optimize }));
     return cuda;
@@ -42,9 +42,22 @@ fn kernelModule(b: *std.Build, image: ?std.Build.LazyPath) *std.Build.Module {
 
 pub fn add(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, test_step: *std.Build.Step) void {
     const host = b.graph.host;
-    const tests = b.addRunArtifact(b.addTest(.{ .root_module = module(b, host, .debug, runtime(b, host, .debug)) }));
-    b.step("test-tp", "Tensor parallelism's host tests: bootstrap, fate channel, in-process ranks (no GPU)").dependOn(&tests.step);
+    const portable = b.createModule(.{ .root_source_file = b.path("zig/src/fabric/tp/portable_test.zig"), .target = host, .optimize = .debug, .link_libc = true, .imports = &.{.{ .name = "cuda", .module = runtime(b, host, .debug) }} });
+    const tests = b.addRunArtifact(b.addTest(.{ .root_module = if (host.result.os.tag == .linux)
+        module(b, host, .debug, runtime(b, host, .debug))
+    else
+        portable }));
+    b.step("test-tp", "TP bootstrap, failure, settings and in-process transport tests").dependOn(&tests.step);
     test_step.dependOn(&tests.step);
+    const linux = b.resolveTargetQuery(.{ .cpu_arch = host.result.cpu.arch, .os_tag = .linux, .abi = .gnu });
+    const check_cuda = runtime(b, linux, .debug);
+    const object = b.addObject(.{ .name = "tp_host_compile", .root_module = b.createModule(.{
+        .root_source_file = b.path("zig/tests/tp_compile.zig"),
+        .target = linux,
+        .link_libc = true,
+        .imports = &.{ .{ .name = "cuda", .module = check_cuda }, .{ .name = "tp", .module = module(b, linux, .debug, check_cuda) } },
+    }) });
+    tests.step.dependOn(&object.step);
     if (target.result.os.tag != .linux) return;
     const nvcc = b.option([]const u8, "tp-nvcc", "nvcc that builds the TP mailbox kernel");
     const prebuilt = b.option([]const u8, "tp-fatbin", "absolute path of a prebuilt tp_mailbox.fatbin to embed");

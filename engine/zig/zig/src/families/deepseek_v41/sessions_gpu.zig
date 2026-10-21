@@ -1,48 +1,19 @@
-//! M5: sessions on the GPU path (sessions.py / residency.py / sessdisk.py over the Zig forward). The family-neutral store
-//! (zig/src/sessions: prefix entries, the RAM tier with its residency budget, the streamed NVMe tier) runs over the paged
-//! pool (kv_state.zig); this file is DeepSeek's side of it:
-//! - the slot's bounded state as the store snapshots it (`Snap`, store.Bounded): every backbone layer's SWA ring
-//!   ("s.L<i>.swa.v" / ".s"), the ratio-2 carries ("s.L<i>.carry"), the position and the Engram tail. A RAM entry keeps
-//!   a host copy; a park writes the same pieces as named blobs next to the entry's pages;
-//! - `save`: an entry for the slot's committed ids (its pages shared, not copied), then the slot lets go of its pages;
-//! - the served shape (own prefill, verify tail; Python prod's fast prefill tag): no turn entries; `savePrompt` keeps an
-//!   entry at the prompt's replay point while the slot goes on prefilling (CED replay, ced.zig: its bounded state with
-//!   the stash ring "s.ced.*" and the stash's positions and ids); entries carry the fast tag, replay's its own
-//!   (ced.tag), so full and replay entries never resume each other, nor the old exact-tag turn entries;
-//! - `resume`: the request's pool admission first (batch.py `_admit`, kv/sess.zig: its pages reserved for the slot, the
-//!   coldest RAM entries parked or dropped when the pool is short), then the longest saved entry that strictly prefixes
-//!   a prompt, from RAM (full pages adopted, the partial last one copied) or NVMe (streamed into fresh pages through the
-//!   staging set), its bounded state uploaded: the slot continues at the entry's position, and the caller prefills the
-//!   rest of the prompt;
-//! - the RAM tier's budget counts each entry as prod's snapshot arrays would (kv/sess.zig Measure: the SWA rows below
-//!   the decoder in replay mode, the stash, the float32 carries, the drafter's rows), so it trims at prod's saves;
-//! - the residency budget (`Store.enforce`: idle chats / pool bytes held by entries alone) parks or drops the least
-//!   recently used chat after every save.
-//! Several live slots (TF_DSV41_SLOTS > 1, slots.zig): one store over the pool's slots, the operations on the slot
-//!   slots.zig activated (its views of the stacked rings and carries, its `Forward.Slot`, the pool's current slot),
-//!   each slot's committed ids and drafter context its own; row windows commit through `commitAt`.
-//! Both ranks make the same calls in the same order (the leader's operations: forward.zig `op_sess_*`), so entries,
-//! pages and evictions agree; a split rank parks and restores only the comp rows it owns.
-//! Knobs as Python's: TF_DSV41_SESSIONS (0: no store), TF_DSV41_SESSION_DISK (the NVMe tier's directory; unset: RAM
-//! only), TF_DSV41_SESSION_DISK_GIB (64: the tier's files, least recently used deleted past it),
-//! TF_DSV41_SESSION_DISK_MIN (1024: shorter entries are dropped, not parked), TF_DSV41_SESSION_RAM_MIB (256),
-//! TF_DSV41_SESSION_RESIDENT (idle chats kept), TF_DSV41_SESSION_RESIDENT_GIB, TF_DSV41_SESSION_STAGING_MIB;
-//! TF_DSV41_SESSION_SKIP_COVERED=1 (drop, never park, an entry a newer one of its chat covers) and
-//! TF_DSV41_SESSION_DELTA=1 (park a newer turn as a delta on its older file) are off by default, as prod (8474f31)
-//! has neither. TF_DSV41_SESSION_SLOTS=1 opens the store with several live slots (default off: model.zig says so at
-//! boot and serves without sessions, as before).
+//! Sessions on the GPU path: DeepSeek-V4.1's side of the family-neutral store over the paged pool (snapshot, resume).
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
+const pf = @import("forward_prefill.zig");
 const cuda = @import("cuda");
 const kv = @import("kv");
 const fwd = @import("forward.zig");
 const eh = @import("engram_host.zig");
-const kvs = @import("kv_state.zig");
+const kvs = @import("cuda_kv.zig");
 const buffers = @import("buffers.zig");
 const ced = @import("ced.zig");
 const rowmode = @import("rowmode.zig");
 const slots_mod = @import("slots.zig");
 const graphs = @import("graphs.zig");
+const lockstep = @import("lockstep.zig");
 const dspark_emit = @import("dspark_emit.zig");
 
 const sessions = kv.sessions;
@@ -52,26 +23,40 @@ const Blob = sessions.disk.Blob;
 pub const Error = error{ NoPool, BadBlob, SlotNotActive };
 
 pub const Options = struct {
-    /// TF_DSV41_SESSIONS (default 0; explicit 1 enables reuse)
-    enabled: bool = false,
+    /// TF_DSV41_SESSIONS (default 1)
+    enabled: bool = true,
     disk: ?[]const u8 = null,
     disk_budget: u64 = 64 << 30,
     disk_min_tokens: u64 = 1024,
-    resident: u32 = 0,
-    resident_bytes: u64 = 0,
-    /// TF_DSV41_SESSION_RAM_MIB (stack.py's default 256)
+    /// TF_DSV41_SESSION_RESIDENT / _RESIDENT_GIB: idle chats and bytes kept in RAM (null: unlimited; 0: none idle)
+    resident: ?u32 = null,
+    resident_bytes: ?u64 = null,
+    /// TF_DSV41_SESSION_RAM_MIB (default 256)
     ram_bytes: u64 = 256 << 20,
     staging_mib: u32 = 128,
     skip_covered: bool = false,
     delta: bool = false,
-    /// TF_DSV41_SESSION_SLOTS=1: the store with several live slots too (default off until the sess4 gate passes on
-    /// hardware: tools/zig/dsv41_sess4/job.sh, the port doc's NEXT SPARK WINDOW S4x)
+    /// TF_DSV41_SESSION_SLOTS=1: the store with several live slots too (default off)
     several: bool = false,
 };
 
 fn flag(name: [*:0]const u8) bool {
     const v = std.c.getenv(name) orelse return false;
     return std.mem.eql(u8, std.mem.trim(u8, std.mem.span(v), " "), "1");
+}
+
+/// The store's policy from the family's options: an unset residency stays unlimited, as sessions.Policy reads null.
+fn policy(o: Options) sessions.store.Policy {
+    return .{ .ram_bytes = o.ram_bytes, .chats = o.resident, .resident_bytes = o.resident_bytes, .skip_covered = o.skip_covered, .delta = o.delta };
+}
+
+test "the default session options keep idle chats unlimited; an explicit 0 keeps none" {
+    const unset = policy(.{});
+    try std.testing.expectEqual(@as(?u32, null), unset.chats);
+    try std.testing.expectEqual(@as(?u64, null), unset.resident_bytes);
+    const zero = policy(.{ .resident = 0, .resident_bytes = 0 });
+    try std.testing.expectEqual(@as(?u32, 0), zero.chats);
+    try std.testing.expectEqual(@as(?u64, 0), zero.resident_bytes);
 }
 
 pub fn optionsFromEnv() !Options {
@@ -98,15 +83,11 @@ pub fn optionsFromEnv() !Options {
     return o;
 }
 
-/// What the store is opened over: the live slots (TF_DSV41_SLOTS) and the drafter's blocks (0: drafts off), the latter
-/// for the RAM measure only (prod's snapshot carries the drafter's rows).
-pub const Shape = struct { slots: u32 = 1, ds_blocks: u32 = 0 };
+/// What the store is opened over: the live slots and the drafter's blocks (0: drafts off; for the RAM measure only).
+pub const Shape = struct { slots: u32 = 1, ds_blocks: u32 = 0, checkpoint: ?[32]u8 = null };
 
-/// One device role of the bounded state: a slot's bytes (a stacked role's per-slot view, slots.zig), at the role's
-/// address when the operation runs (the activated slot's view).
-/// `stride`: a role stacked over the slots that no activation views (the drafter's rings): the slot's bytes at
-/// base + slot x stride.
-const Piece = struct { role: []const u8, len: usize, stride: u64 = 0 };
+/// One device role of the bounded state at its address when run; `stride`: unviewed stacked role, base + slot x stride.
+pub const Piece = struct { role: []const u8, len: usize, stride: u64 = 0 };
 
 pub const Sessions = struct {
     gpa: std.mem.Allocator,
@@ -119,22 +100,20 @@ pub const Sessions = struct {
     bounded_bytes: u64,
     /// each slot's committed ids (prefill and kept windows append): a saved entry's ids
     hist: []std.ArrayList(i32),
-    /// each slot's drafter context start (drafter.valid: 0 after a reset, pos - n after restoring n rows), for the measure
+    /// each slot's drafter context start (0 after a reset, pos - n after restoring n rows), for the measure
     ds_valid: []u64,
     measure: kv.sess.Measure,
     /// several slots: the operations run on the activated slot (checked)
     slot_set: ?*slots_mod.SlotSet = null,
     names: std.heap.ArenaAllocator,
     stats: struct { admits: u64 = 0, spills: u64 = 0, waits: u64 = 0, damaged: u64 = 0 } = .{},
-    /// several ranks: a restore's verdict agreed (a rank's NVMe files are its own: one damaged file sends every rank's
-    /// slot back to a fresh prefill)
+    /// several ranks: a restore's verdict agreed (one rank's damaged file sends every rank to a fresh prefill)
     agreement: ?graphs.Agreement = null,
-    /// full mode: the drafter's rings ride in the snapshot (drafter.py `snapshot` / `restore`); a restore sets the
-    /// pass's context start through `ds_set` (model.zig: the pass the lanes drive)
+    /// full mode: the drafter's rings ride in the snapshot; a restore sets the pass's context start through `ds_set`
     ds_rings: bool = false,
     ds_set: ?DsSet = null,
 
-    pub const DsSet = struct { ctx: *anyopaque, set: *const fn (ctx: *anyopaque, slot: u32, valid: u64) void };
+    pub const DsSet = struct { ctx: *anyopaque, set: *const fn (ctx: *anyopaque, slot: u32, valid: u64) void, get: ?*const fn (*anyopaque, u32) u64 = null };
 
     /// The store over the forward's pool (after Runner.bind: the bounded roles have addresses).
     pub fn init(gpa: std.mem.Allocator, io: std.Io, f: *fwd.Forward, plan: *const buffers.Plan, o: Options, shape: Shape) !*Sessions {
@@ -149,8 +128,7 @@ pub const Sessions = struct {
         @memset(s.hist, .empty);
         s.ds_valid = try na.alloc(u64, shape.slots);
         @memset(s.ds_valid, 0);
-        // the bounded roles in a fixed order (both ranks; a park's blobs carry their names); the rings and carries are
-        // stacked over the slots in row mode (slots.zig): a slot's bytes are the plan's / S
+        // the bounded roles in a fixed order (both ranks); in row mode a slot's bytes are the plan's / S
         var list: std.ArrayList(Piece) = .empty;
         var la = std.heap.ArenaAllocator.init(gpa);
         defer la.deinit();
@@ -173,10 +151,8 @@ pub const Sessions = struct {
             try list.append(na, .{ .role = role, .len = len });
             s.bounded_bytes += len;
         };
-        // full mode with drafts: the drafter's rings (prod's snapshot holds their rows [max(pos - window, valid), pos)
-        // and its restore puts them back: drafter.py 296-317); replay mode: the decoder replay rewrites every row the
-        // drafter reads after a resume (ced.handoff), as prod's does over its restored rows
-        const replay = f.prefill_state.mode == .replay;
+        // full mode with drafts: the drafter's rings; replay mode: the decoder replay rewrites what the drafter reads
+        const replay = pf.state(f).mode == .replay;
         if (!replay and shape.ds_blocks > 0) {
             const rr: u64 = @intCast(dspark_emit.ringRows(f.cfg));
             for (plan.sizes.keys(), plan.sizes.values()) |role, size| {
@@ -196,7 +172,7 @@ pub const Sessions = struct {
             }
         }
         s.pieces = list.items;
-        // prod's snapshot as the RAM tier measures it (kv/sess.zig): replay keeps the rings below the decoder
+        // the snapshot as the RAM tier measures it (kv/sess.zig): replay keeps the rings below the decoder
         var rings: u64 = 0;
         var carries: u64 = 0;
         const d = if (replay) try ced.decoderStart(f.cfg) else f.cfg.layers;
@@ -210,18 +186,27 @@ pub const Sessions = struct {
             var h = std.crypto.hash.sha2.Sha256.init(.{});
             for (kx.layout.families()) |fam| h.update(std.mem.asBytes(&[_]u32{ fam.ratio, fam.row_bytes, @intFromBool(fam.split) }));
             h.update(std.mem.asBytes(&[_]u32{ kx.world, kx.rank, kx.pool.page }));
+            const checkpoint = shape.checkpoint orelse return error.MissingCheckpointIdentity;
+            const identity = @import("session_identity.zig");
+            const semantics = identity.semantics(.{ .config = f.cfg.*, .options = f.opts, .mode = pf.state(f).mode, .ds_blocks = shape.ds_blocks });
+            identity.bind(&h, checkpoint, layers, s.pieces, &semantics);
             var full: [32]u8 = undefined;
             h.final(&full);
-            // the staging set (TF_DSV41_SESSION_STAGING_MIB) in 8 MiB chunks: a park's or restore's whole host transient
+            // the staging set (TF_DSV41_SESSION_STAGING_MIB) in 8 MiB chunks: a park's or restore's host transient
             s.disk = try sessions.Disk.open(gpa, io, .{ .root = root, .compat = full[0..16].*, .rank = kx.rank, .world = kx.world, .budget = o.disk_budget, .min_tokens = o.disk_min_tokens, .staging = @max(2, o.staging_mib / 8), .chunk = 8 << 20 });
         }
         errdefer if (s.disk) |dd| dd.close();
-        s.store = try Store.init(gpa, io, &kx.pool, kx.dev.store(), s.disk, .{ .ram_bytes = o.ram_bytes, .chats = o.resident, .resident_bytes = o.resident_bytes, .skip_covered = o.skip_covered, .delta = o.delta });
+        s.store = try Store.init(gpa, io, &kx.pool, kx.dev.store(), s.disk, policy(o));
+        errdefer s.store.deinit();
         if (f.comm.world() > 1) s.agreement = try graphs.Agreement.init(f.runner.d, f.comm, f.runner.stream);
-        f.sess = .{ .ptr = s, .commit = commitFn, .save = saveFn, .restore = restoreFn, .reset = resetFn, .prompt = promptFn, .admit = admitFn };
+        f.sess = .{ .ptr = s, .reserve = reserveFn, .commit = commitFn, .save = saveFn, .restore = restoreFn, .reset = resetFn, .prompt = promptFn, .admit = admitFn };
         return s;
     }
 
+    fn reserveFn(ptr: *anyopaque, ids: []const u32) !void {
+        const s: *Sessions = @ptrCast(@alignCast(ptr));
+        try s.reserveAt(s.cur(), ids);
+    }
     fn commitFn(ptr: *anyopaque, ids: []const u32) anyerror!void {
         const s: *Sessions = @ptrCast(@alignCast(ptr));
         try s.commitAt(s.cur(), ids);
@@ -242,9 +227,12 @@ pub const Sessions = struct {
         try s.reset();
     }
 
-    fn restoreFn(ptr: *anyopaque, id: u32) anyerror!void {
+    fn restoreFn(ptr: *anyopaque, id: u32, ids: []const i64) anyerror!void {
         const s: *Sessions = @ptrCast(@alignCast(ptr));
-        _ = try s.restore(id);
+        const p = try s.gpa.alloc(u32, ids.len);
+        defer s.gpa.free(p);
+        for (ids, p) |t, *y| y.* = @intCast(t);
+        _ = try s.restore(id, if (ids.len > 0) p else null);
     }
 
     /// A follower: the leader's admission (forward.zig op_sess_admit: [op, need, n, spilled ids...]).
@@ -259,7 +247,16 @@ pub const Sessions = struct {
         try s.applyAdmit(@intCast(msg[1]), ids.items);
     }
 
-    pub fn deinit(s: *Sessions) void {
+    pub fn drain(s: *Sessions) !void {
+        try s.f.runner.stream.synchronize();
+        try s.kx.dev.io.synchronize();
+        try s.store.settleAll();
+    }
+    pub fn close(s: *Sessions) !void {
+        try s.drain();
+        s.deinitAfterDrain();
+    }
+    pub fn deinitAfterDrain(s: *Sessions) void {
         s.f.sess = null;
         if (s.agreement) |*a| a.deinit();
         s.store.deinit();
@@ -270,7 +267,7 @@ pub const Sessions = struct {
     }
 
     /// The slot the one-slot operations run on (the pool's current slot: slots.zig `activate`).
-    fn cur(s: *const Sessions) u32 {
+    pub fn cur(s: *const Sessions) u32 {
         return s.kx.slot.id;
     }
 
@@ -280,81 +277,34 @@ pub const Sessions = struct {
         if (ss.active != s.cur()) return error.SlotNotActive;
     }
 
-    /// Slot `slot` committed `ids` (prefill segments and kept windows on the active slot; row windows by slot, batch.zig).
+    /// Slot `slot` committed `ids` (prefill segments and kept windows on the active slot; row windows by slot).
     pub fn commitAt(s: *Sessions, slot: u32, ids: []const u32) !void {
-        for (ids) |t| try s.hist[slot].append(s.gpa, @intCast(t));
+        try s.reserveAt(slot, ids);
+        for (ids) |t| s.hist[slot].appendAssumeCapacity(@intCast(t));
     }
 
-    // -------------------------------------------------------------------------------------------------------------
-    // the bounded state (store.Bounded)
+    pub fn reserveAt(s: *Sessions, slot: u32, ids: []const u32) !void {
+        if (slot >= s.hist.len) return error.SlotRange;
+        for (ids) |t| if (t > std.math.maxInt(i32)) return error.BadToken;
+        try s.hist[slot].ensureUnusedCapacity(s.gpa, ids.len);
+    }
+    // -- the bounded state (store.Bounded) ----
 
-    const Snap = struct {
-        owner: *Sessions,
-        bytes: []u8,
-        pos: u64,
-        tail: [eh.max_ngram]u32,
-        tail_len: usize,
-        stash: ced.Stash,
-        /// the drafter's rows prod's snapshot holds (a restore's context start is pos - ds_rows)
-        ds_rows: u64,
-        /// prod's `Bounded.nbytes` of this snapshot: the RAM tier's measure
-        measure: u64,
+    pub const Snap = @import("session_snapshot.zig").Snap;
 
-        fn bounded(p: *Snap) sessions.store.Bounded {
-            return .{ .ptr = p, .vtable = &.{ .nbytes = nbytes, .blobs = blobs, .pieces = pieces, .release = release } };
-        }
-
-        fn nbytes(ptr: *anyopaque) u64 {
-            const p: *Snap = @ptrCast(@alignCast(ptr));
-            return p.measure;
-        }
-
-        /// blobs()' count without the copies (the tier price's per-piece slack): the roles' pieces and "slot".
-        fn pieces(ptr: *anyopaque) u32 {
-            const p: *Snap = @ptrCast(@alignCast(ptr));
-            return @intCast(p.owner.pieces.len + 1);
-        }
-
-        /// The park's blobs: each role's bytes under its name, then "slot" (position, tail).
-        fn blobs(ptr: *anyopaque, gpa: std.mem.Allocator) anyerror![]Blob {
-            const p: *Snap = @ptrCast(@alignCast(ptr));
-            const ps = p.owner.pieces;
-            const out = try gpa.alloc(Blob, ps.len + 1);
-            var at: usize = 0;
-            for (ps, out[0..ps.len]) |pc, *b| {
-                b.* = .{ .name = try gpa.dupe(u8, pc.role), .bytes = try gpa.dupe(u8, p.bytes[at..][0..pc.len]) };
-                at += pc.len;
-            }
-            var slot: [slot_bytes]u8 = undefined;
-            std.mem.writeInt(u64, slot[0..8], p.pos, .little);
-            std.mem.writeInt(u64, slot[8..16], p.tail_len, .little);
-            for (0..eh.max_ngram) |i| std.mem.writeInt(u32, slot[16 + 4 * i ..][0..4], if (i < p.tail_len) p.tail[i] else 0, .little);
-            // CED: the stash's positions and ids (a full-mode entry's are zeros)
-            const c = slot[ced_at..];
-            std.mem.writeInt(u64, c[0..8], p.stash.from, .little);
-            std.mem.writeInt(u64, c[8..16], p.stash.hi, .little);
-            for (p.stash.ids, 0..) |t, i| std.mem.writeInt(u32, c[16 + 4 * i ..][0..4], t, .little);
-            std.mem.writeInt(u64, slot[ds_at..][0..8], p.ds_rows, .little);
-            out[ps.len] = .{ .name = try gpa.dupe(u8, "slot"), .bytes = try gpa.dupe(u8, &slot) };
-            return out;
-        }
-
-        fn release(ptr: *anyopaque) void {
-            const p: *Snap = @ptrCast(@alignCast(ptr));
-            const gpa = p.owner.gpa;
-            gpa.free(p.bytes);
-            gpa.destroy(p);
-        }
-    };
 
     /// The "slot" blob: position, tail length, the tail; then (CED) the stash's from / hi and its ids; then the drafter's
     /// rows of the measure. Older parks have the shorter forms (their stash empty, no drafter rows).
-    const ced_at: usize = 16 + 4 * eh.max_ngram;
-    const ds_at: usize = ced_at + 16 + 4 * ced.ring;
-    const slot_bytes: usize = ds_at + 8;
+    pub const ced_at: usize = 16 + 4 * eh.max_ngram;
+    pub const ds_at: usize = ced_at + 16 + 4 * ced.ring;
+    pub const slot_bytes: usize = ds_at + 8;
 
+    pub fn validStart(s: *const Sessions) u64 {
+        if (s.ds_set) |ds| if (ds.get) |get| return get(ds.ctx, s.cur());
+        return s.ds_valid[s.cur()];
+    }
     /// The active slot's bounded state now (device to host, after the stream's work).
-    fn snapshot(s: *Sessions) !*Snap {
+    pub fn snapshot(s: *Sessions) !*Snap {
         try s.active();
         const r = s.f.runner;
         try r.stream.synchronize();
@@ -386,7 +336,7 @@ pub const Sessions = struct {
         var at: usize = 0;
         for (s.pieces) |pc| {
             const addr = (r.addressOf(pc.role) orelse return error.Unbound) + s.cur() * pc.stride;
-            try cuda.DeviceBuffer.upload(.{ .d = r.d, .ptr = addr, .len = pc.len }, 0, p.bytes[at..][0..pc.len]);
+            try s.f.upload(addr, p.bytes[at..][0..pc.len]);
             at += pc.len;
         }
         s.f.slot.pos = p.pos;
@@ -397,44 +347,32 @@ pub const Sessions = struct {
         s.dsRestored();
     }
 
-    /// The drafter's rings came back with the entry: its context starts where prod's restore puts it (pos - rows).
+    /// The drafter's rings came back with the entry: its context starts at pos - rows.
     fn dsRestored(s: *Sessions) void {
         if (!s.ds_rings) return;
         const h = s.ds_set orelse return;
         h.set(h.ctx, s.cur(), s.ds_valid[s.cur()]);
     }
 
-    fn uploadBlobs(s: *Sessions, bs: []const Blob) !void {
+    pub fn uploadBlobs(s: *Sessions, bs: []const Blob) !void {
+        const m = try @import("session_codec.zig").validate(s, bs);
         const r = s.f.runner;
-        for (bs) |b| {
-            if (std.mem.eql(u8, b.name, "slot")) {
-                if (b.bytes.len < 16) return error.BadBlob;
-                s.f.slot.pos = std.mem.readInt(u64, b.bytes[0..8], .little);
-                s.f.slot.tail_len = @intCast(std.mem.readInt(u64, b.bytes[8..16], .little));
-                for (0..eh.max_ngram) |i| s.f.slot.tail[i] = std.mem.readInt(u32, b.bytes[16 + 4 * i ..][0..4], .little);
-                s.f.slot.ced = .{};
-                if (b.bytes.len >= ds_at) {
-                    const c = b.bytes[ced_at..];
-                    s.f.slot.ced.from = std.mem.readInt(u64, c[0..8], .little);
-                    s.f.slot.ced.hi = std.mem.readInt(u64, c[8..16], .little);
-                    for (&s.f.slot.ced.ids, 0..) |*t, i| t.* = std.mem.readInt(u32, c[16 + 4 * i ..][0..4], .little);
-                }
-                const ds: u64 = if (b.bytes.len >= slot_bytes) std.mem.readInt(u64, b.bytes[ds_at..][0..8], .little) else 0;
-                s.ds_valid[s.cur()] = s.f.slot.pos -| ds;
-                s.dsRestored();
-                continue;
-            }
-            const pc = for (s.pieces) |pc| {
-                if (std.mem.eql(u8, pc.role, b.name)) break pc;
-            } else return error.BadBlob;
-            if (pc.len != b.bytes.len) return error.BadBlob;
+        for (s.pieces) |pc| {
+            const blob = for (bs) |b| {
+                if (std.mem.eql(u8, b.name, pc.role)) break b;
+            } else unreachable;
             const addr = (r.addressOf(pc.role) orelse return error.Unbound) + s.cur() * pc.stride;
-            try cuda.DeviceBuffer.upload(.{ .d = r.d, .ptr = addr, .len = pc.len }, 0, b.bytes);
+            try s.f.upload(addr, blob.bytes);
         }
+        s.f.slot.pos = m.pos;
+        s.f.slot.tail = m.tail;
+        s.f.slot.tail_len = m.tail_len;
+        s.f.slot.ced = m.stash;
+        s.ds_valid[s.cur()] = m.pos - m.ds;
+        s.dsRestored();
     }
 
-    // -------------------------------------------------------------------------------------------------------------
-    // the operations (every rank, the leader's order)
+    // -- the operations (every rank, the leader's order) ----
 
     /// An entry for the slot's committed ids (null: a duplicate), then the slot's pages go back (the entry holds them).
     pub fn save(s: *Sessions) !?u32 {
@@ -455,9 +393,7 @@ pub const Sessions = struct {
         return id;
     }
 
-    /// The served shape's prompt snapshot (batch.py `save_at`, rounds.py `_save(slot, "prompt")`): an entry for the committed
-    /// ids at the slot's position (the prompt's replay point), its bounded state with the stash; the slot keeps its
-    /// pages and goes on prefilling (it only writes positions past the entry's, which a resume rewrites before reading).
+    /// The served shape's prompt snapshot at its replay point; the slot keeps its pages and goes on prefilling.
     pub fn savePrompt(s: *Sessions) !?u32 {
         const h = &s.hist[s.cur()];
         if (h.items.len != s.f.slot.pos or s.f.slot.pending != null) return error.BadWindow;
@@ -506,16 +442,13 @@ pub const Sessions = struct {
         s.ds_valid[s.cur()] = 0;
     }
 
-    /// The request admitted into the (empty) slot, then the longest saved entry that strictly prefixes `prompt`: its
-    /// pages and bounded state; the slot's position is the entry's (the caller prefills prompt[pos..]). 0: nothing found,
-    /// or its NVMe file did not read back (prod: a fresh prefill). `max_new` (the request's reply tokens; null: unknown)
-    /// prices its pool pages as prod's admission does (`admit`).
+    /// Admits the request, then restores the longest entry strictly prefixing `prompt`; its position (0: none).
     pub fn resume_(s: *Sessions, prompt: []const u32, max_new: ?u64) !u64 {
         if (s.f.slot.pos != 0 or s.kx.slot.len != 0) return error.SlotNotEmpty;
         const hit = try s.find(prompt);
         if (max_new) |mn| try s.admit(hit, prompt.len, mn);
         s.ds_valid[s.cur()] = 0;
-        return (try s.resumeHit(prompt.len, hit)).at;
+        return (try s.resumeHit(prompt, hit)).at;
     }
 
     /// The longest saved entry that strictly prefixes `prompt` (a row must remain to prefill), null: none.
@@ -527,36 +460,34 @@ pub const Sessions = struct {
         return if (h.pos >= prompt.len) null else h;
     }
 
-    /// batch.py's pool decision for a request (kv/sess.zig `admit`; the round planner's: kv/sched.zig).
+    /// The pool decision for a request (kv/sess.zig `admit`; the round planner's: kv/sched.zig).
     pub fn poolPlan(s: *Sessions, n: u64, max_new: u64, hit: ?sessions.store.Hit, held: []const u32, extra: u32, spills: *std.ArrayList(u32)) !kv.sess.Plan {
         return kv.sess.admit(&s.store, hit, n, max_new, s.kx.slot.capacity, held, extra, spills);
     }
 
     pub const Resumed = struct { at: u64 = 0, damaged: bool = false };
 
-    /// The round planner's admission into the (empty) slot (rounds.py `_admit`): `spills` evicted (the round's, with
-    /// its first admission), `need` pages reserved, then `hit` restored. Every rank, in the leader's order.
-    pub fn resumePlanned(s: *Sessions, n: u64, need: u32, hit: ?sessions.store.Hit, spills: []const u32) !Resumed {
+    /// The round planner's admission into the empty slot: `spills` evicted, `need` pages reserved, `hit` restored.
+    pub fn resumePlanned(s: *Sessions, prompt: []const u32, need: u32, hit: ?sessions.store.Hit, spills: []const u32) !Resumed {
         if (s.f.slot.pos != 0 or s.kx.slot.len != 0) return error.SlotNotEmpty;
         s.stats.admits += 1;
         try s.f.sendSessAdmit(need, spills);
         try s.applyAdmit(need, spills);
         s.ds_valid[s.cur()] = 0;
-        return s.resumeHit(n, hit);
+        return s.resumeHit(prompt, hit);
     }
 
-    fn resumeHit(s: *Sessions, n: u64, hit: ?sessions.store.Hit) !Resumed {
+    fn resumeHit(s: *Sessions, prompt: []const u32, hit: ?sessions.store.Hit) !Resumed {
         const h = hit orelse return .{};
-        try s.f.sendSess(.restore, h.id);
-        if (!try s.restore(h.id)) return .{ .damaged = true };
+        const n = prompt.len;
+        // out of RAM no tokens are indexed: the leader sends its prompt prefix (the fork's disk path reads the file's ids)
+        const ids: ?[]const u32 = if (s.store.entry(h.id).ram) null else prompt[0..@intCast(h.pos)];
+        if (!try s.restore(h.id, ids)) return .{ .damaged = true };
         std.log.scoped(.dsv41).info("sessions: slot {d} resumed {d} of {d} prompt tokens from {s}", .{ s.cur(), h.pos, n, if (h.ram) "RAM" else "NVMe" });
         return .{ .at = h.pos };
     }
 
-    /// batch.py `_admit` for the request (kv/sess.zig): the leader decides its pages and the entries to let go of, every
-    /// rank evicts those and reserves the pages for the slot (rounds.py `_admit`: before the restore). When even every
-    /// RAM entry is not enough prod keeps the request queued; the lanes cannot hold it back, so it goes on unreserved
-    /// (pages taken as positions are written, today's one-slot behaviour) and the count is kept (`stats.waits`).
+    /// The request's admission: every rank evicts the leader's picks and reserves pages, else goes on unreserved.
     fn admit(s: *Sessions, hit: ?sessions.store.Hit, n: usize, max_new: u64) !void {
         var spills: std.ArrayList(u32) = .empty;
         defer spills.deinit(s.gpa);
@@ -565,7 +496,7 @@ pub const Sessions = struct {
         s.stats.admits += 1;
         if (plan.wait) {
             s.stats.waits += 1;
-            std.log.scoped(.dsv41).warn("sessions: a {d}-token request (+{d}) needs {d} pool pages, {d} are free and unreserved even with every RAM entry gone; prod would queue it, it runs unreserved", .{ n, max_new, plan.want, s.kx.pool.available() });
+            if (!quiet) std.log.scoped(.dsv41).warn("sessions: a {d}-token request (+{d}) needs {d} pool pages, {d} are free and unreserved even with every RAM entry gone; the reference server would queue it, it runs unreserved", .{ n, max_new, plan.want, s.kx.pool.available() });
             return;
         }
         try s.f.sendSessAdmit(plan.need, spills.items);
@@ -586,7 +517,8 @@ pub const Sessions = struct {
     /// prefills the prompt from 0. A RAM-flagged entry whose index path was trimmed under it (its tokens gone, an
     /// eviction's residue) resumes as its NVMe entry instead of raising — the same recovery, not a second one; with
     /// no file it is the damaged case, and the unrestorable entry is let go of.
-    pub fn restore(s: *Sessions, id: u32) !bool {
+    pub fn restore(s: *Sessions, id: u32, ids: ?[]const u32) !bool {
+        _ = ids; // the fork's disk path reads its own file's ids; the leader's prefix is the same tokens
         if (s.f.slot.pos != 0 or s.kx.slot.len != 0) return error.SlotNotEmpty;
         try s.active();
         const e = s.store.entry(id);
@@ -623,6 +555,7 @@ pub const Sessions = struct {
             // back to the pool), as a damaged file's entry is forgotten
             if (e.ram and !e.extra.file) try s.store.drop(id) else try s.store.forget(id);
             s.stats.damaged += 1;
+            if (!quiet) std.log.scoped(.dsv41).warn("sessions: slot {d}: the entry of {d} tokens did not come back; its prompt prefills from 0", .{ s.cur(), pos });
             return false;
         }
         try s.kx.dev.syncTables();
@@ -646,7 +579,7 @@ pub const Sessions = struct {
         try s.uploadBlobs(restored.blobs);
     }
 
-    /// Every RAM entry parked to the NVMe tier now (the gate's interruption; a server parks through the budget).
+    /// Every RAM entry parked to the NVMe tier now (a server parks through the budget).
     pub fn parkAll(s: *Sessions) !u32 {
         var n: u32 = 0;
         var ids: std.ArrayList(u32) = .empty;

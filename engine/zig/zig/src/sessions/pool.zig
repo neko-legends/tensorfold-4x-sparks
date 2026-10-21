@@ -1,15 +1,11 @@
-//! The paged KV pool's host book (GLM kvpool PoolBook / SlotPages, DeepSeek pool.py with split KV): pages handed lowest free first, one free set a residue mod W, holder counts, slot page tables and admission quotas.
-//!
-//! Every operation is deterministic on the call order alone, so two ranks making the same calls (the round plan) hold the same page ids.
-//! Split KV (W > 1): logical page k of a slot or entry always gets a physical page p with p % W == k % W, so ownership (rank p % W stores
-//! the split families' rows) is a property of the page id and survives sharing, adopting, parking and restoring.
+//! The paged KV pool's host book: lowest-free pages per residue mod W, holder counts, slot page tables, quotas.
 
 const std = @import("std");
 const FreeSet = @import("freeset.zig").FreeSet;
 
 pub const Error = error{ PoolExhausted, PastCapacity, SlotNotEmpty, DoubleFree, BadPool, ResidueMismatch } || std.mem.Allocator.Error;
 
-/// A cache family: rows of `row_bytes` every `ratio` tokens; `split` families are sharded by logical page over the ranks.
+/// A cache family: rows of `row_bytes` every `ratio` tokens; `split` families shard by logical page over the ranks.
 pub const Family = struct {
     name: []const u8,
     ratio: u32,
@@ -62,7 +58,7 @@ pub fn span(k0: u32, k1: u32, w: u32, out: []u32) void {
 
 pub const max_world = 8;
 
-/// A file whose logical pages [0, pages) hold the same rows as a slot's or entry's (an NVMe restore's source): a later park writes only past it.
+/// A file whose logical pages [0, pages) match a slot's or entry's rows: a later park writes only past it.
 pub const Origin = struct {
     key: [16]u8,
     pages: u32,
@@ -73,7 +69,11 @@ pub const Slot = struct {
     pool: *Pool,
     id: u32,
     capacity: u64,
+    /// The device tables' row stride: the mapped capacity rounded up to whole rows of 4 entries (padding past
+    /// `cap_pages` is never mapped; it only keeps every slot's table view 16-byte aligned).
     max_pages: u32,
+    /// The pages a slot with its `capacity` may map (never raised by the table stride's padding).
+    cap_pages: u32,
     /// physical page of each mapped logical page; len is the mapped count
     pages: []u32,
     len: u32 = 0,
@@ -130,7 +130,7 @@ pub const Slot = struct {
         const p = s.pool;
         const need = pagesFor(end, p.page);
         if (need <= s.len) return;
-        if (need > s.max_pages) return error.PastCapacity;
+        if (need > s.cap_pages) return error.PastCapacity;
         const w = p.world;
         var before: [max_world]u32 = undefined;
         s.reservedSpan(&before);
@@ -161,7 +161,7 @@ pub const Slot = struct {
     /// Maps shared pages as the first pages of an empty slot (a RAM resume: read only, the slot writes past them).
     pub fn adopt(s: *Slot, shared: []const u32) Error!void {
         if (s.len != 0) return error.SlotNotEmpty;
-        if (shared.len > s.max_pages) return error.PastCapacity;
+        if (shared.len > s.cap_pages) return error.PastCapacity;
         const p = s.pool;
         var before: [max_world]u32 = undefined;
         s.reservedSpan(&before);
@@ -180,7 +180,7 @@ pub const Slot = struct {
 
     /// Appends one page taken for logical page len (the copy-on-write page of a RAM resume).
     pub fn push(s: *Slot, pg: u32) Error!void {
-        if (s.len >= s.max_pages) return error.PastCapacity;
+        if (s.len >= s.cap_pages) return error.PastCapacity;
         const p = s.pool;
         if (p.world > 1 and pg % p.world != s.len % p.world) return error.ResidueMismatch;
         var before: [max_world]u32 = undefined;
@@ -249,7 +249,7 @@ pub const Pool = struct {
     rank: u32,
     /// the page unmapped table entries point at (all zeros: a stray read reads zeros)
     null_page: u32,
-    /// a split family's local page count (npages / W), its local null page and its discard page (writes of rows another rank owns)
+    /// a split family's local page count (npages / W), its local null page and its discard page (other ranks' rows)
     local_pages: u32,
     local_null: u32,
     discard: u32,
@@ -312,8 +312,9 @@ pub const Pool = struct {
         // the device tables are [slots, max_pages] int32 and a slot's view binds at 4 x max_pages past the last
         // slot's (slots.zig point, DevicePool.view): whole rows of 4 entries keep every slot's row 16-byte
         // aligned (Runner.external's Triton contract; a 420K context's 1,641 pages bound slot 1 at +6,564)
-        const mp = std.mem.alignForward(u32, pagesFor(capacity, p.page), 4);
-        s.* = .{ .pool = p, .id = @intCast(p.slots.items.len), .capacity = capacity, .max_pages = mp, .pages = try p.gpa.alloc(u32, mp) };
+        const cap_pages = pagesFor(capacity, p.page);
+        const mp = std.mem.alignForward(u32, cap_pages, 4);
+        s.* = .{ .pool = p, .id = @intCast(p.slots.items.len), .capacity = capacity, .max_pages = mp, .cap_pages = cap_pages, .pages = try p.gpa.alloc(u32, mp) };
         errdefer p.gpa.free(s.pages);
         try p.slots.append(p.gpa, s);
         return s;
@@ -371,7 +372,7 @@ pub const Pool = struct {
         for (0..p.world) |r| p.reserved[r] += by[r];
     }
 
-    /// Free pages no admitted request reserved: what a new admission may count on (split: W x the scarcer residue, so any logical run fits).
+    /// Free pages no admission reserved (split: W x the scarcer residue, so any logical run fits).
     pub fn available(p: *const Pool) u32 {
         var low: u32 = std.math.maxInt(u32);
         for (0..p.world) |r| low = @min(low, p.free[r].count() -| p.reserved[r]);
@@ -386,7 +387,8 @@ pub const Pool = struct {
 
     /// Pages an admission needs for a request (prompt + reply + slack, at most the slot's capacity).
     pub fn needPages(p: *const Pool, prompt: u64, max_tokens: u64, capacity: u64, slack: u64) u32 {
-        return pagesFor(@min(prompt + max_tokens + slack, capacity), p.page);
+        const total = prompt + max_tokens + slack;
+        return pagesFor(if (capacity == 0) total else @min(total, capacity), p.page);
     }
 
     /// This rank stores the split families' rows of page pg.
@@ -394,7 +396,7 @@ pub const Pool = struct {
         return pg != p.null_page and pg % p.world == p.rank;
     }
 
-    /// A split family's local page of physical page pg: its own when owned, the local null for the null page, else the discard page.
+    /// A split family's local page of pg: its own when owned, the local null for the null page, else the discard page.
     pub fn localPage(p: *const Pool, pg: u32) u32 {
         if (pg == p.null_page) return p.local_null;
         return if (pg % p.world == p.rank) pg / p.world else p.discard;
@@ -405,7 +407,7 @@ pub const Pool = struct {
         return if (f.split and p.world > 1) p.localPage(pg) else pg;
     }
 
-    /// Pages a family's device tensor holds: npages + the null page, or (split) local pages + the local null + the discard page.
+    /// Pages a family's device tensor holds: npages + null, or (split) local pages + local null + discard page.
     pub fn familyTensorPages(p: *const Pool, f: Family) u32 {
         return if (f.split and p.world > 1) p.local_pages + 2 else p.npages + 1;
     }
@@ -498,4 +500,12 @@ test "a slot's page-table rows keep every slot's device-table view 16-byte align
     // and one page past a whole row rounds to the next
     const u = try p.newSlot(9 * 256 + 1);
     try std.testing.expectEqual(@as(u32, 12), u.max_pages);
+}
+
+test "admission without a capacity still reserves prompt, reply and slack pages" {
+    var p = try Pool.init(std.testing.allocator, .{ .families = &.{}, .page = 64 }, 1024, 1, 0);
+    defer p.deinit();
+    try std.testing.expectEqual(@as(u32, 3), p.needPages(65, 64, 0, 1));
+    try std.testing.expectEqual(@as(u32, 1), p.needPages(65, 64, 64, 1));
+    try std.testing.expectEqual(@as(u32, 0), p.needPages(0, 0, 0, 0));
 }

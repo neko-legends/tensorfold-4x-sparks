@@ -1,6 +1,4 @@
-//! First-position siblings for DSpark rounds (Python tree.py): the 2nd and 3rd first tokens of the draft distribution,
-//! each the root of its own Markov chain, verified beside the main chain; the cost model picks the tree.
-//! In the Zig lanes a tree is one window (rows with parents), so no pending row is duplicated (`Dup.rows` false).
+//! First-position siblings for DSpark rounds, each its own Markov chain beside the main one; cost model picks the tree.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
@@ -12,7 +10,7 @@ extern "c" fn log(x: f64) f64;
 pub const max_siblings = 3;
 const max_nodes = 64;
 
-/// What a sibling costs: `ms` a duplicated pending row; `rows`: duplicates take window rows (Python's shadow slots).
+/// What a sibling costs: `ms` a duplicated pending row; `rows`: duplicates take window rows (shadow slots).
 pub const Dup = struct { ms: f64 = 0.0, rows: bool = false };
 
 pub const Plan = struct { k: usize, lens: [max_siblings]usize, ms: f64, expected: f64 };
@@ -23,8 +21,7 @@ fn likelier(_: void, a: Node, b: Node) bool {
     return a.p > b.p;
 }
 
-/// The tree maximizing E - rate (verify[R - 1] + dup.ms x siblings) over the most probable nodes (prefix-closed).
-/// `qm`: the main chain's calibrated conditionals; `sibs`: the siblings' chances; `cont`: a sibling row's conditionals.
+/// Tree maximizing E - rate (verify[R-1] + dup.ms x siblings) over likeliest nodes; `qm` main, `sibs`, `cont` chances.
 pub fn plan(qm: []const f64, sibs: []const f64, cont: []const f64, verify: []const f64, rate: f64, least: usize, dup: Dup, sib_rows: usize, max_rows: usize) Plan {
     const top = @min(verify.len, max_rows);
     var nodes: [max_nodes]Node = undefined;
@@ -73,9 +70,7 @@ pub fn plan(qm: []const f64, sibs: []const f64, cont: []const f64, verify: []con
     return out;
 }
 
-/// Python's tree.settings: TF_DSV41_TREE = B (0 off, the default; 2-4 first-position branches with the chain),
-/// TF_DSV41_TREE_DUP_MS (0.4: a sibling's duplicated pending row, its row counted in the slot's window) and
-/// TF_DSV41_TREE_ROWS (4: a sibling branch's rows at most). Parent-conditioned trees (TF_DSV41_TREE_PC) are refused.
+/// TF_DSV41_TREE (0 off, 2-4 branches), _TREE_DUP_MS (0.4), _TREE_ROWS (4 a branch); _TREE_PC is refused.
 pub const Settings = struct {
     siblings: u32 = 0,
     sib_rows: u32 = 4,
@@ -117,8 +112,7 @@ fn byScore(_: void, a: Cand, b: Cand) bool {
     return a.score > b.score or (a.score == b.score and a.at < b.at);
 }
 
-/// The first `out.len` tokens (not in `exclude`) of the draft distribution `z` over `ids` in the keyed order, with
-/// their draft probabilities (greedy: (z desc, id asc), softmax at T = 1; sampled: choose's filters and keyed score).
+/// The first `out.len` tokens of `z` over `ids` not in `exclude`, in keyed order, with their draft probabilities.
 pub fn ranked(scratch: Allocator, ids: []const i32, z: []const f32, position: u64, sampling: ?lanes.Sampling, exclude: []const u32, out: []Sibling) !usize {
     var c: std.ArrayList(Cand) = .empty;
     defer c.deinit(scratch);

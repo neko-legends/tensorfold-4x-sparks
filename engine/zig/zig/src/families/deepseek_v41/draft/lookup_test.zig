@@ -1,8 +1,4 @@
-//! The lookup plan (lookup.zig): its decisions replay Python's lookup.py `Planner` round for round
-//! (fixtures/lookup-golden.json, from tools/lookup_golden.py on prod's 8474f31): every round's kind and drafts, over
-//! 24 scripted requests (repeated spans, eos tokens, min match 3 / 4 / 6, max rows 8 / 12 / 16, the default and a
-//! measured cost table), the outcome of each round fed back as Python's `observe` gets it. Then the same rounds
-//! through the lanes proposer (lookup.Proposer: the history from the stream's context, the round's rows and kept).
+//! lookup.zig replays fixtures/lookup-golden.json round for round, then the same rounds through lookup.Proposer.
 const std = @import("std");
 const Value = std.json.Value;
 const costs_mod = @import("costs.zig");
@@ -34,7 +30,7 @@ fn scenario(a: std.mem.Allocator, s: Value) !Scenario {
     for (vs, verify) |x, *y| y.* = num(x);
     return .{
         .costs = .{ .verify = verify, .draft = num(o.get("costs").?.object.get("draft").?) },
-        .set = .{ .plan = true, .lookup = true, .min_match = o.get("min_match").?.integer, .max_rows = o.get("max_rows").?.integer },
+        .set = .{ .plan = true, .min_match = o.get("min_match").?.integer, .max_rows = o.get("max_rows").?.integer },
         .eos = try ints(a, o.get("eos").?),
         .prompt = try ints(a, o.get("prompt").?),
         .rounds = o.get("rounds").?.array.items,

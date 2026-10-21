@@ -1,5 +1,4 @@
-//! drive.zig on the CPU twin: lanes with the oracle's corrupted drafts == the twin's serial decode, with drafts
-//! accepted and rejected; drafts off == serial.
+//! drive.zig on the CPU twin: lanes with oracle-corrupted drafts == the serial decode; drafts off == serial.
 const std = @import("std");
 const twin = @import("twin.zig");
 const drive = @import("drive.zig");

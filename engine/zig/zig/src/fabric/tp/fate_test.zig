@@ -1,4 +1,4 @@
-//! The fate channel between two ranks over real TCP: a failure or a vanished rank ends both, a normal stop ends neither.
+//! The fate channel between two ranks over real TCP: a failure or a vanished rank ends both, a stop ends neither.
 const std = @import("std");
 const sock = @import("sock.zig");
 const fate = @import("fate.zig");
@@ -113,8 +113,7 @@ test "a normal stop ends nobody" {
 }
 
 test "a rank failing at boot ends both with its reason, and its channel is down before its owner frees it" {
-    // Spark 2026-10-09: a follower's boot failed after its session came up; its Model (the Fate inside) was freed with
-    // the fate thread running, which then read the freed Fate (segfault in report)
+    // a follower's boot failed after its session came up; its Fate is freed while the fate thread could still read it
     reset();
     // rank 1's Fate where a Model keeps it: on the heap, its pages unmapped when freed (a stale read faults)
     const pa = std.heap.page_allocator;
@@ -133,8 +132,7 @@ test "a rank failing at boot ends both with its reason, and its channel is down 
 }
 
 test "rank 0's clean stop ends every rank with no fail-fast exit, whatever order the ranks close in" {
-    // Spark 2026-10-09: rank 0 ended its run (the plan link's stop sent) and closed; the follower, still tearing down,
-    // saw the hang-up first and exited 70
+    // rank 0 ended its run and closed; the follower, still tearing down, must not see the hang-up as a failure
     reset();
     var fates: [2]Fate = undefined;
     try pair(&fates);
@@ -147,12 +145,11 @@ test "rank 0's clean stop ends every rank with no fail-fast exit, whatever order
     try std.testing.expectEqual(@as(u32, 0), hooks.load(.acquire));
 }
 
-
-// -- a stop's drain (server/serve.zig) on two ranks: the plan link and the fate channel as Forward.stop uses them --
+// -- a server's drain on two ranks: the plan link and the fate channel in the order a family's stop uses them --
 
 const planlink = @import("planlink.zig");
 
-/// Forward's plan words (forward.zig): a round's operation, and op_stop (4), which ends a follower's loop.
+/// Plan words a family's rank 0 sends: a round's operation, and a stop word that ends a follower's loop.
 const op_round: i64 = 1;
 const op_stop: i64 = 4;
 
@@ -170,7 +167,7 @@ fn linkPair(links: *[2]planlink.PlanLink) !void {
     links[1] = planlink.PlanLink.init(1, 2, f1);
 }
 
-/// Rank 1's loop (Forward.follow): each round as it comes, until op_stop, or until the link ends.
+/// Rank 1's loop: each round as it comes, until the stop word, or until the link ends.
 const Follower = struct {
     link: *planlink.PlanLink,
     rounds: u32 = 0,
@@ -209,13 +206,13 @@ test "a drain on rank 0, then its clean stop at a round boundary: rank 1 ends it
         sock.sleepNs(5 * std.time.ns_per_ms);
     }
     try std.testing.expect(!fates[0].closing.load(.acquire));
-    // Forward.stop's order: op_stop first, so the follower ends its loop before the fate STOP and the hang-up
+    // the stop's order: the stop word first, so the follower ends its loop before the fate STOP and the hang-up
     try links[0].send(&.{op_stop});
     fates[0].announceStop();
     links[0].close();
     fates[0].close();
     t.join();
-    // rank 1's serve_cli: follow() returned, the model (its session) closes, the process exits 0
+    // rank 1's loop returned: its model closes and the process exits 0
     fates[1].close();
     links[1].close();
     sock.sleepNs(2 * grace + 100 * std.time.ns_per_ms);

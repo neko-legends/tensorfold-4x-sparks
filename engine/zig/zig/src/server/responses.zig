@@ -218,16 +218,17 @@ const Wire = struct {
         return w.reply.chunk(payload);
     }
 
+    fn keepalive(ctx: *anyopaque) error{Closed}!void {
+        const w: *Wire = @ptrCast(@alignCast(ctx));
+        try sse.comment(w.reply.conn);
+    }
+
     fn whole(ctx: *anyopaque, status: u16, payload: Value) void {
         const w: *Wire = @ptrCast(@alignCast(ctx));
         w.status = status;
         w.payload = payload;
     }
 
-    fn keepalive(ctx: *anyopaque) error{Closed}!void {
-        const w: *Wire = @ptrCast(@alignCast(ctx));
-        return sse.comment(w.reply.conn);
-    }
 };
 
 /// A Response built from chat-completion deltas, in order: reasoning, text, calls; streamed as typed events.

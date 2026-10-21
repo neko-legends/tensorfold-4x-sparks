@@ -1,11 +1,4 @@
-//! `tf-dsv41-m1 slots PACK ASSETS TRACE` (rank 0; the other ranks run `tf-dsv41-m1 follow PACK ASSETS` with the same
-//! environment): the several-slots gate through the served engine (serve_engine.zig: the lanes, admission, keep and
-//! release on every rank), greedy. TRACE is tools/zig/dsv41_slots/ref.py's trace.jsonl, the Python engine's batched
-//! output ({"prompt", "tokens"} a line). Two runs on one load:
-//! 1. batched: every line submitted at once (TF_DSV41_SLOTS live slots: one row window over every live slot a step);
-//! 2. alone: each line by itself, after the previous one finished.
-//! Each reply must equal the reference, and batched == alone. A reply that ends at the end-of-sequence id is compared
-//! with the reference cut there (the id itself may or may not be emitted).
+//! `tf-dsv41 slots PACK ASSETS TRACE` (rank 0; others `follow`): batched and alone replies equal TRACE, greedy.
 
 const std = @import("std");
 const api = @import("engine_api");
@@ -38,8 +31,7 @@ const Box = struct {
 
 const Line = struct { prompt: []const u32, tokens: []const u32 };
 
-/// `got` equals `want`, or (a reply that stopped at the end-of-sequence id) `want` cut at its first `eos`, with or
-/// without the id.
+/// `got` equals `want`, or `want` cut at its first `eos` with or without the id.
 fn same(got: []const u32, want: []const u32, eos: u32) bool {
     if (std.mem.eql(u32, got, want)) return true;
     const cut = std.mem.indexOfScalar(u32, want, eos) orelse return false;
@@ -81,7 +73,7 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, pack: []const u8, assets: []cons
     defer se.Served.close(s);
     const eng = s.engine();
     const eos = s.m.cfg.eos;
-    std.debug.print("slots gate: {d} live slots, {d} prompts, drafts {}\n", .{ s.m.slots, n, drafts });
+    std.debug.print("slots check: {d} live slots, {d} prompts, drafts {}\n", .{ s.m.slots, n, drafts });
     const batched = try a.alloc(Box, n);
     const alone = try a.alloc(Box, n);
     for (batched, alone) |*x, *y| {

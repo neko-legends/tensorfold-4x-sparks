@@ -4,7 +4,7 @@
 //! the words the unpack read and writing the outputs the `_gemm` column blocks wrote; every other call is unchanged.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const check = @import("m1_check.zig");

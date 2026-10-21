@@ -1,28 +1,12 @@
-// Device code of src/tensorfold/families/deepseek_v41/cuda/l2pace.cu (git blob fcf123ce92e9 at dsv41-quant-e2; the whole file),
-// generated and checked by zig/kernels/cuda/deepseek_v41/sync.py. Do not edit: change the Python source.
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-//
-// G14: the L2 prefetch of a site PACED (TF_DSV41_L2PF_PACE_GBPS), so it stops starving the RoCE exchange beside it.
-//
-// Why. ``l2pf.cu``'s segments_kernel hands every 32 KiB piece of a site (12 MiB at prod's TF_DSV41_L2PF_MB=12: 384
-// pieces) to its own thread: all of it is requested at once. The memory system then holds ~12 MiB of prefetch in its
-// queues, and anything else that needs DRAM or the C2C path in the next ~50 us waits behind it. The site is forked
-// 0.1 us before the window's exchange (forward._layers: L2.mark then gather_partials), and the exchange is a chain of
-// dependent round trips to pinned host memory (stage stores + release, the flag poll, the copy-out's system-scope
-// loads). G14a measured it: an exchange beside the prefetch 26.3 us median in nsys against 9.0 without; copy-out p90
-// 13 vs 4 us; 1-row window exchange kernels 1.36-1.42 ms a rank vs 0.96-1.06 with L2PF off (~0.2 ms on the critical
-// path). Turning L2PF off costs 1.7 ms a window, so the prefetch stays and is paced instead.
-//
-// How. One thread per CTA (``ctas`` CTAs, 32 threads each, the rest idle) walks the site's table in order, the
-// pieces dealt round-robin over the CTAs, and issues piece g no earlier than t0 + delay + g x ns_per_piece
-// (%globaltimer). The prefetch then streams at ``rate`` = chunk / ns_per_piece, with only ~rate x latency bytes in
-// flight (~0.2-0.5 MiB) instead of the whole site, so a latency-bound request beside it queues behind a few pieces,
-// not 12 MiB. The order is the table's (the next launch's read order), as segments_kernel's first wave. ``delay``
-// lets an exchange's stage pass first. Bandwidth-wise the site still lands in L2 before its consumer when rate x
-// window >= the site (12 MiB in a 60 us window needs ~200 GB/s; the knob trades that against the exchange).
-//
-// Exactness: like l2pf.cu, it only READS weight memory into L2 (cp.async.bulk.prefetch.L2) and writes nothing.
+// Copy of src/tensorfold/families/deepseek_v41/cuda/l2pace.cu (blob fcf123ce92e9): sass_check.sh
+
+
+
+// Paced L2 prefetch of a site (TF_DSV41_L2PF_PACE_GBPS), so it stops starving the RoCE exchange beside it.
+
+// One thread per CTA issues piece k at t0 + delay + k * ns_per_piece: ~rate x latency bytes in flight, not the site.
+
+// Exactness: only reads weight memory into L2 (cp.async.bulk.prefetch.L2); writes nothing.
 
 #include <cuda_runtime.h>
 #include <stdint.h>
@@ -54,7 +38,7 @@ __device__ __forceinline__ void wait_until(uint64_t due) {
     }
 }
 
-// table: n rows of int64 (address, bytes): 16-byte aligned addresses, byte counts multiples of 16 (l2pf.take)
+// table: n rows of int64 (address, bytes): 16-byte aligned addresses, byte counts multiples of 16
 __global__ void __launch_bounds__(32) paced_kernel(const int64_t *table, int n, uint32_t chunk, uint64_t ns_per_piece,
                                                    uint64_t delay_ns) {
     if (threadIdx.x != 0) {

@@ -1,8 +1,4 @@
-//! The phase timers (phases.zig) around the lanes' contract (draft/iface.zig): a `Target` and a `Pass` that time
-//! their inner implementation's calls and pass everything through, so the lanes and the GPU target stay unaware.
-//! `prefill`, `window` (the forward's own phases nest inside), `keep` as `commit`, `ingest` as `draft`, `propose` as
-//! `draft.pass`. A round is a verify window; its tokens are the rows kept from it (a window never kept keeps every
-//! row, iface.Target.window).
+//! Phase timers around the lanes' contract: a `Target` and a `Pass` that time their inner calls and pass them through.
 
 const std = @import("std");
 const lanes = @import("lanes");
@@ -147,8 +143,7 @@ pub const TimedPass = struct {
         return t.inner.propose(asks, out);
     }
 
-    /// The speculative pass (draft/spec.zig) as the inner pass gives it: launched under `spec`, collected under
-    /// `draft.pass`; only when the inner pass has them.
+    /// The speculative pass as the inner pass gives it: launched under `spec`, collected under `draft.pass`.
     fn begin(p: *anyopaque, asks: []const iface.Ask) anyerror!void {
         const t = self(p);
         const tm = ph.start(t.p, .spec);

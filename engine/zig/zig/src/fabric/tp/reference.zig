@@ -1,4 +1,4 @@
-//! Host references for the collectives: element-wise reductions in rank order, bf16 / f16 added in fp32 and rounded once as the GPUs do.
+//! Host references for the collectives: reductions in rank order, bf16 / f16 added in fp32 and rounded once.
 const std = @import("std");
 const collective = @import("collective.zig");
 const DType = collective.DType;

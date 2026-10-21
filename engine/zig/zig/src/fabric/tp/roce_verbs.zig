@@ -1,83 +1,68 @@
-//! The RoCE wire over verbs (the Python engine's roce.cpp): one RC queue pair a HCA and peer, a send slot striped over the HCAs to every peer, each stripe followed by its seq flag.
+//! The RoCE wire over verbs: one RC queue pair a HCA and peer, a send slot striped over the HCAs to every peer, each
+//! stripe followed by its seq flag (the Python engine's roce.cpp: two to sixteen ranks).
 const std = @import("std");
+const log = @import("log.zig");
 const verbs = @import("verbs");
 const abi = verbs.abi;
 const Verbs = verbs.Verbs;
+const guard = @import("roce_guard.zig");
+const sock = @import("sock.zig");
 
-pub const max_hcas = 2;
+pub const max_hcas = guard.max_hcas;
 /// Largest world the RoCE wire takes (roce.cpp's MAX_PEERS).
-pub const max_peers = 16;
+pub const max_peers = guard.max_peers;
 /// Send and receive slots by seq parity.
-pub const slots = 2;
-/// Work requests a queue pair holds; at most a quarter outstanding (two requests a stripe), as in roce.cpp.
+pub const slots = guard.slots;
+pub const flag_stride = guard.flag_stride;
+/// One rank's region, the same layout on every rank (see guard.Layout).
+pub const Layout = guard.Layout;
+/// The `i`-th peer `me` posts to: the next rank first (roce.cpp's post order, incast).
+pub const peerAt = guard.peerAt;
+/// Work requests a queue pair holds; at most a quarter outstanding (two requests a stripe).
 const send_depth = 256;
-pub const flag_stride = 128;
+/// Signalled requests held per HCA across every peer's queue pair (a quarter of each peer's depth).
+const ring_len = max_peers * (send_depth / 4);
 const link_ethernet = 2;
-const record_magic: u32 = 0x5446_5244 + 2; // roce.cpp's "TFRD", bumped: this record's layout is the Zig engine's (N ranks)
+const record_magic: u32 = 0x5446_5244 + 2; // "TFRD", bumped for each change of this record's layout
 
-pub const Error = error{ NoHca, VerbsFailed, PostFailed, Completion, BadRecord };
+pub const Error = error{ NoHca, VerbsFailed, PostFailed, Completion, BadRecord } || guard.Error;
 
-/// One rank's region, the same layout on every rank (roce.cpp's, with ctrl first):
-///   ctrl [4 KiB]; flags [src][slot][max_hcas] at `flag_stride` (each source rank's seq after that HCA's stripe);
-///   send [slot]; recv [src][slot] (filled by rank src's writes). A rank's own src entries are unused.
-/// mailbox.cu's tp_roce computes the same addresses from `flag_off`, `recv_off` and the world.
-pub const Layout = struct {
-    world: u32,
-    /// Bytes a slot (a multiple of 4 KiB).
-    slot: usize,
+/// Bytes posted and not yet completed, every HCA together: a post waits for completions past it; never raised.
+pub const max_inflight: u64 = 2 * @as(u64, guard.max_write);
+/// A post that waits on completions this long fails the proxy (a peer or HCA that stopped answering).
+const inflight_wait_ns: u64 = 10 * std.time.ns_per_s;
+/// The flag post's bytes: a u32 on the stack under lkey 0, legal only while the QP sends it inline.
+pub const flag_bytes: u32 = @sizeOf(u32);
+/// The longest `quiesce` waits for the HCAs to flush what was posted.
+pub const quiesce_ns: u64 = 5 * std.time.ns_per_s;
 
-    pub const ctrl: usize = 0;
-    pub const flags: usize = 4096;
+/// Before ibv_reg_mr: no fork shares or copies the region (DONTFORK), its pages stay 4 KiB (NOHUGEPAGE); else no start.
+pub fn prepareRegion(region: []align(std.heap.page_size_min) u8) Error!void {
+    if (comptime @import("builtin").os.tag != .linux) return; // the verbs wire runs on Linux only
+    const advice = [_]u32{ std.os.linux.MADV.DONTFORK, std.os.linux.MADV.NOHUGEPAGE };
+    for (advice) |a| std.posix.madvise(region.ptr, region.len, a) catch |e| {
+        log.warn("tp roce: madvise({d}) on the {d} B region failed: {t}; refusing to start", .{ a, region.len, e });
+        return error.VerbsFailed;
+    };
+}
 
-    pub fn of(world: u32, slot: usize) Layout {
-        return .{ .world = world, .slot = slot };
-    }
-
-    pub fn flagBytes(l: Layout) usize {
-        return @as(usize, l.world) * slots * max_hcas * flag_stride;
-    }
-
-    pub fn send(l: Layout) usize {
-        return flags + std.mem.alignForward(usize, l.flagBytes(), 4096);
-    }
-
-    pub fn recv(l: Layout) usize {
-        return l.send() + slots * l.slot;
-    }
-
-    pub fn bytes(l: Layout) usize {
-        return l.recv() + @as(usize, l.world) * slots * l.slot;
-    }
-
-    pub fn sendAt(l: Layout, slot: usize) usize {
-        return l.send() + slot * l.slot;
-    }
-
-    /// Where rank `src`'s slot `slot` lands in the receiver's region.
-    pub fn recvAt(l: Layout, src: u32, slot: usize) usize {
-        return l.recv() + (@as(usize, src) * slots + slot) * l.slot;
-    }
-
-    /// Where rank `src`'s seq for slot `slot` on its HCA `hca` lands in the receiver's region.
-    pub fn flagAt(_: Layout, src: u32, slot: usize, hca: usize) usize {
-        return flags + ((@as(usize, src) * slots + slot) * max_hcas + hca) * flag_stride;
-    }
-};
-
-/// The `i`-th peer `me` posts to (i in 0..world-1): the next rank first, so the senders do not all hit the same
-/// receiver at once (patches/0003's roce.cpp post order, incast).
-pub fn peerAt(me: u32, world: u32, i: u32) u32 {
-    return (me + 1 + i) % world;
+/// Whether a QP's actual inline capacity takes the flag post.
+pub fn inlineFits(cap: abi.QpCap) bool {
+    return cap.max_inline_data >= flag_bytes;
 }
 
 /// One HCA as configured: its device name and RoCE v2 GID index (null: detected).
 pub const HcaSpec = struct { name: [64]u8 = @splat(0), name_len: u8 = 0, gid: ?u8 = null };
 
-/// What a rank tells every other rank to connect (every rank builds it the same way; all-gathered through the bootstrap).
+/// What a rank tells every other rank to connect (every rank builds it the same way; all-gathered through the
+/// bootstrap).
 pub const Record = extern struct {
     magic: u32 = record_magic,
     n_hca: u32 = 0,
     region: u64 = 0,
+    /// The region's slot and registered length: a peer whose layout differs is refused at connect.
+    slot_bytes: u64 = 0,
+    region_len: u64 = 0,
     rkey: [max_hcas]u32 = @splat(0),
     lid: [max_hcas]u32 = @splat(0),
     mtu: [max_hcas]u32 = @splat(0),
@@ -97,8 +82,15 @@ const Hca = struct {
     gid: [16]u8,
     mtu: u32,
     lid: u16,
-    /// Signalled requests not yet reaped, a peer.
+    /// Signalled requests not yet reaped, a peer's queue pair.
     outstanding: [max_peers]u32 = @splat(0),
+    /// Each reaped request's stripe bytes, oldest at `head` (completions arrive in order, every queue pair's).
+    ring: [ring_len]u32 = undefined,
+    head: u32 = 0,
+    inflight: u64 = 0,
+    /// Posts made and their completions reaped (the proxy writes them, others read): equal = nothing in flight.
+    posts: std.atomic.Value(u64) = .init(0),
+    done: std.atomic.Value(u64) = .init(0),
 };
 
 /// Parses `name[:gid],name[:gid]` (TF_TP_ROCE_HCA).
@@ -118,7 +110,7 @@ pub fn parseSpecs(text: []const u8, out: *[max_hcas]HcaSpec) !usize {
     return n;
 }
 
-/// RoCE v2 by sysfs (the kernel's own word for each GID), as roce.py detects it; null when sysfs cannot say.
+/// RoCE v2 by sysfs (the kernel's own word for each GID); null when sysfs cannot say.
 fn sysfsRoceV2(name: []const u8, index: u32) ?bool {
     var path: [256]u8 = undefined;
     const p = std.fmt.bufPrintSentinel(&path, "/sys/class/infiniband/{s}/ports/1/gid_attrs/types/{d}", .{ name, index }, 0) catch return null;
@@ -146,6 +138,37 @@ fn detectGid(v: *const Verbs, ctx: *abi.Context, name: []const u8, table: c_int)
         if (v2) return @intCast(i);
     }
     return null;
+}
+
+/// A device's port 1 as `roce_pick.choose` sees it: up, Ethernet, and its IPv4 RoCE v2 GID (index and address).
+pub const Port = struct { spec: HcaSpec = .{}, active: bool = false, ethernet: bool = false, ipv4: ?[4]u8 = null };
+
+/// Port 1 of every device that opens, in the device list's order, at most `out.len`.
+pub fn scanPorts(v: *const Verbs, out: []Port) usize {
+    var count: c_int = 0;
+    const list = v.api.ibv_get_device_list(&count) orelse return 0;
+    defer v.api.ibv_free_device_list(list);
+    var n: usize = 0;
+    var i: usize = 0;
+    while (list[i]) |dev| : (i += 1) {
+        if (n == out.len) break;
+        const name = std.mem.span(v.api.ibv_get_device_name(dev) orelse continue);
+        const ctx = v.api.ibv_open_device(dev) orelse continue;
+        defer _ = v.api.ibv_close_device(ctx);
+        const port = v.port(ctx, 1) catch continue;
+        var p: Port = .{ .active = port.state == abi.port_active, .ethernet = port.link_layer == link_ethernet };
+        p.spec.name_len = @intCast(@min(name.len, 63));
+        @memcpy(p.spec.name[0..p.spec.name_len], name[0..p.spec.name_len]);
+        if (p.active and p.ethernet) if (detectGid(v, ctx, name, port.gid_tbl_len)) |gi| {
+            if (v.gid(ctx, 1, gi)) |g| {
+                p.spec.gid = gi;
+                p.ipv4 = g.raw[12..16].*;
+            } else |_| {}
+        };
+        out[n] = p;
+        n += 1;
+    }
+    return n;
 }
 
 /// Every device whose port 1 is an active Ethernet port with an IPv4 RoCE v2 GID, by name order, at most `limit`.
@@ -184,13 +207,18 @@ pub const VerbsWire = struct {
     layout: Layout,
     region: []u8,
     posted: u64 = 0,
+    /// The most stripe bytes in flight at once (posted, not completed), for tests and reports.
+    peak: std.atomic.Value(u64) = .init(0),
     completed: u64 = 0,
+    /// Completions `quiesce` reaped, and those of them flushed (not sent: the QP was in error).
+    reaped: u64 = 0,
+    flushed: u64 = 0,
 
     /// Opens the HCAs, registers `region` on each and creates a queue pair a peer (INIT); `record` then goes to every
     /// rank.
     pub fn open(specs: []const HcaSpec, region: []u8, layout: Layout, me: u32, traffic_class: u8) !VerbsWire {
         if (specs.len == 0 or specs.len > max_hcas) return error.NoHca;
-        if (layout.world < 2 or layout.world > max_peers or me >= layout.world or region.len < layout.bytes()) return error.NoHca;
+        if (layout.world < 2 or layout.world > max_peers or me >= layout.world or region.len < layout.len) return error.NoHca;
         var w: VerbsWire = .{ .v = try Verbs.open(null), .traffic_class = traffic_class, .me = me, .layout = layout, .region = region };
         errdefer w.close();
         for (specs) |s| {
@@ -206,23 +234,23 @@ pub const VerbsWire = struct {
         errdefer _ = api.ibv_close_device(ctx);
         const port = try w.v.port(ctx, 1);
         if (port.state != abi.port_active) {
-            std.log.warn("tp roce: {s} port 1 is not active", .{name});
+            log.warn("tp roce: {s} port 1 is not active", .{name});
             return error.NoHca;
         }
         const gi = s.gid orelse detectGid(&w.v, ctx, name, port.gid_tbl_len) orelse {
-            std.log.warn("tp roce: {s} has no IPv4 RoCE v2 GID", .{name});
+            log.warn("tp roce: {s} has no IPv4 RoCE v2 GID", .{name});
             return error.NoHca;
         };
         const gid = try w.v.gid(ctx, 1, gi);
         const pd = api.ibv_alloc_pd(ctx) orelse return error.VerbsFailed;
         errdefer _ = api.ibv_dealloc_pd(pd);
         const mr = api.ibv_reg_mr(pd, w.region.ptr, w.region.len, abi.access_local_write | abi.access_remote_write) orelse {
-            std.log.warn("tp roce: ibv_reg_mr on {s} failed (memlock limit? ulimit -l unlimited)", .{name});
+            log.warn("tp roce: ibv_reg_mr on {s} failed (memlock limit? ulimit -l unlimited)", .{name});
             return error.VerbsFailed;
         };
         errdefer _ = api.ibv_dereg_mr(mr);
         // one completion queue a HCA for every peer's queue pair (each holds at most a quarter of its depth signalled)
-        const cq = api.ibv_create_cq(ctx, @intCast(send_depth * (w.layout.world - 1)), null, null, 0) orelse return error.VerbsFailed;
+        const cq = api.ibv_create_cq(ctx, @intCast(send_depth * w.layout.world), null, null, 0) orelse return error.VerbsFailed;
         errdefer _ = api.ibv_destroy_cq(cq);
         var h: Hca = .{ .ctx = ctx, .pd = pd, .mr = mr, .cq = cq, .gid_index = gi, .gid = gid.raw, .mtu = @intCast(port.active_mtu), .lid = port.lid };
         errdefer w.destroyQps(&h);
@@ -231,12 +259,16 @@ pub const VerbsWire = struct {
             var init: abi.QpInitAttr = .{ .send_cq = cq, .recv_cq = cq, .cap = .{ .max_send_wr = send_depth, .max_recv_wr = 1, .max_send_sge = 1, .max_recv_sge = 1, .max_inline_data = 16 }, .qp_type = abi.qpt_rc };
             const qp = api.ibv_create_qp(pd, &init) orelse return error.VerbsFailed;
             h.qp[p] = qp;
+            if (!inlineFits(init.cap)) {
+                log.warn("tp roce: {s}'s QP sends {d} B inline, the flag post needs {d}; refusing to start", .{ name, init.cap.max_inline_data, flag_bytes });
+                return error.VerbsFailed;
+            }
             var a: abi.QpAttr = .{ .qp_state = abi.qps_init, .port_num = 1, .qp_access_flags = abi.access_remote_write };
             if (api.ibv_modify_qp(qp, &a, abi.mask.state | abi.mask.pkey_index | abi.mask.port | abi.mask.access_flags) != 0) return error.VerbsFailed;
         }
         w.hcas[w.n_hca] = h;
         w.n_hca += 1;
-        std.log.info("[tensorfold] tp roce: {s} GID {d} ({d}.{d}.{d}.{d}), MTU enum {d}, {d} queue pairs", .{ name, gi, gid.raw[12], gid.raw[13], gid.raw[14], gid.raw[15], port.active_mtu, w.layout.world - 1 });
+        log.info("[tensorfold] tp roce: {s} GID {d} ({d}.{d}.{d}.{d}), MTU enum {d}, {d} queue pairs", .{ name, gi, gid.raw[12], gid.raw[13], gid.raw[14], gid.raw[15], port.active_mtu, w.layout.world - 1 });
     }
 
     fn destroyQps(w: *VerbsWire, h: *Hca) void {
@@ -259,8 +291,100 @@ pub const VerbsWire = struct {
         w.v.close();
     }
 
+    /// The region and each HCA's keys, this side's and every peer's (a protection error is checked against them).
+    pub fn describe(w: *const VerbsWire, buf: []u8) []const u8 {
+        var out: std.Io.Writer = .fixed(buf);
+        out.print("region 0x{x} len {d}", .{ @intFromPtr(w.region.ptr), w.region.len }) catch return out.buffered();
+        for (w.hcas[0..w.n_hca], 0..) |h, i| {
+            out.print("; HCA {d} lkey 0x{x} rkey 0x{x}", .{ i, h.mr.lkey, h.mr.rkey }) catch break;
+        }
+        for (0..w.layout.world) |p| {
+            if (p == w.me) continue;
+            out.print("; rank {d} region 0x{x} rkey 0x{x}/0x{x}", .{ p, w.peer_region[p], w.peer_rkey[p][0], w.peer_rkey[p][1] }) catch break;
+        }
+        return out.buffered();
+    }
+
+    /// The QPs to error: the HCAs stop sending and refuse the peers' writes, and what was posted completes as flushed.
+    pub fn halt(w: *VerbsWire) bool {
+        var ok = true;
+        for (w.hcas[0..w.n_hca]) |h| {
+            for (h.qp) |q| if (q) |qp| {
+                var a: abi.QpAttr = .{ .qp_state = abi.qps_err };
+                if (w.v.api.ibv_modify_qp(qp, &a, abi.mask.state) != 0) ok = false;
+            };
+        }
+        return ok;
+    }
+
+    /// `halt`, then every posted request's completion reaped, flushed or not: no request of the region left at an HCA.
+    pub fn quiesce(w: *VerbsWire, timeout_ns: u64) bool {
+        if (!w.halt()) return false;
+        const t0 = sock.nowNs();
+        // a flush carries no peer (the QP was in error): its count drains here, and each HCA ends holding nothing
+        for (w.hcas[0..w.n_hca]) |*h| {
+            var left = held(h);
+            while (left > 0) {
+                var wc: [32]abi.Wc = undefined;
+                const n = h.ctx.ops.poll_cq(h.cq, 32, &wc);
+                if (n < 0) return false;
+                if (n == 0) {
+                    if (sock.nowNs() - t0 > timeout_ns) return false;
+                    std.atomic.spinLoopHint();
+                    continue;
+                }
+                for (wc[0..@intCast(n)]) |c| w.flushed += @intFromBool(c.status != abi.wc_success);
+                w.reaped += @intCast(n);
+                w.popped(h, @intCast(n));
+                left -|= @intCast(n);
+            }
+            h.outstanding = @splat(0);
+        }
+        return true;
+    }
+
+    fn held(h: *const Hca) u32 {
+        var sum: u32 = 0;
+        for (h.outstanding) |o| sum += o;
+        return sum;
+    }
+
+    /// Every HCA's posts completed: no request of the region at an HCA (readable beside the proxy).
+    pub fn idle(w: *const VerbsWire) bool {
+        for (w.hcas[0..w.n_hca]) |*h| if (h.posts.load(.acquire) != h.done.load(.acquire)) return false;
+        return true;
+    }
+
+    /// Each QP's state as its device reports it (ibv_query_qp), then what `quiesce` reaped and what is still posted.
+    pub fn report(w: *const VerbsWire, buf: []u8) []const u8 {
+        const names = [_][]const u8{ "RESET", "INIT", "RTR", "RTS", "SQD", "SQE", "ERR" };
+        var out: std.Io.Writer = .fixed(buf);
+        for (w.hcas[0..w.n_hca], 0..) |*h, i| {
+            var a: abi.QpAttr = .{};
+            var init: abi.QpInitAttr = undefined;
+            const q = w.v.query_qp orelse {
+                out.print("HCA {d} QP state unknown (no ibv_query_qp); ", .{i}) catch break;
+                continue;
+            };
+            const qp = h.qp[guard.peerAt(w.me, w.layout.world, 0)] orelse {
+                out.print("HCA {d} has no peer QP; ", .{i}) catch break;
+                continue;
+            };
+            if (q(qp, &a, abi.mask.state, &init) != 0) {
+                out.print("HCA {d} QP query failed; ", .{i}) catch break;
+            } else if (a.qp_state >= 0 and a.qp_state < names.len) {
+                out.print("HCA {d} QP {s}; ", .{ i, names[@intCast(a.qp_state)] }) catch break;
+            } else out.print("HCA {d} QP state {d}; ", .{ i, a.qp_state }) catch break;
+            out.print("posted {d}, completed {d}; ", .{ h.posts.load(.acquire), h.done.load(.acquire) }) catch break;
+        }
+        var held_now: u64 = 0;
+        for (w.hcas[0..w.n_hca]) |h| held_now += held(&h);
+        out.print("reaped {d} (flushed {d}), still posted {d}", .{ w.reaped, w.flushed, held_now }) catch {};
+        return out.buffered();
+    }
+
     pub fn record(w: *const VerbsWire) Record {
-        var r: Record = .{ .n_hca = w.n_hca, .region = @intFromPtr(w.region.ptr) };
+        var r: Record = .{ .n_hca = w.n_hca, .region = @intFromPtr(w.region.ptr), .slot_bytes = w.layout.slot, .region_len = w.region.len };
         for (w.hcas[0..w.n_hca], 0..) |h, i| {
             r.rkey[i] = h.mr.rkey;
             r.lid[i] = h.lid;
@@ -271,12 +395,12 @@ pub const VerbsWire = struct {
         return r;
     }
 
-    /// The peer HCA for each of ours: the same IPv4 /24 (the CX7 functions are paired by subnet, names may differ;
-    /// roce.py's `pair` keys on the netdev's own prefix, the Sparks' link subnets are /24), else the same position.
+    /// The peer HCA for each of ours: the same IPv4 /24 (functions pair by subnet, names may differ), else position.
     /// One-to-one, or `error.BadRecord`. A function of the two records alone, so both ends of a pair compute it.
     pub fn pairing(mine: Record, peer: Record) ![max_hcas]u32 {
         if (peer.magic != record_magic or mine.magic != record_magic) return error.BadRecord;
         if (peer.n_hca != mine.n_hca or mine.n_hca == 0 or mine.n_hca > max_hcas) return error.BadRecord;
+        if (peer.slot_bytes != mine.slot_bytes or peer.region_len != mine.region_len) return error.BadRecord;
         var out: [max_hcas]u32 = undefined;
         for (0..mine.n_hca) |i| {
             out[i] = @intCast(i);
@@ -286,9 +410,8 @@ pub const VerbsWire = struct {
                 hits += 1;
             };
             if (hits > 1) out[i] = @intCast(i); // one subnet for both: keep the order
-            // No subnet in common: the positional fallback would *connect* a pair no
-            // subnet agrees on (review F1). Refuse instead, so the ranks take the NCCL
-            // fallback rather than a topology Python would never have built.
+            // No subnet in common: the positional fallback would *connect* a pair no subnet agrees on. Refuse
+            // instead, so the ranks take the NCCL fallback rather than a topology Python would never have built.
             if (hits == 0) return error.BadRecord;
         }
         // two of ours on one of the peer's: the stripes would cross (each HCA i must reach a distinct peer HCA)
@@ -296,8 +419,7 @@ pub const VerbsWire = struct {
         return out;
     }
 
-    /// `pairing` checked from the peer's side as well: our HCA i to its j exactly when its j comes back to our i (the
-    /// queue pair at each end must name the other's).
+    /// `pairing` checked from the peer's side as well: our HCA i to its j exactly when its j comes back to our i.
     pub fn pairBoth(mine: Record, peer: Record) ![max_hcas]u32 {
         const there = try pairing(mine, peer);
         const back = try pairing(peer, mine);
@@ -328,37 +450,46 @@ pub const VerbsWire = struct {
                 var rts: abi.QpAttr = .{ .qp_state = abi.qps_rts, .timeout = 14, .retry_cnt = 7, .rnr_retry = 7, .sq_psn = 0, .max_rd_atomic = 1 };
                 if (api.ibv_modify_qp(qp, &rts, m.state | m.timeout | m.retry_cnt | m.rnr_retry | m.sq_psn | m.max_qp_rd_atomic) != 0) return error.VerbsFailed;
             }
-            std.log.info("[tensorfold] tp roce: rank {d} -> rank {d}: HCA pairs {any}", .{ w.me, p, pairs[0..w.n_hca] });
+            log.info("[tensorfold] tp roce: rank {d} -> rank {d}: HCA pairs {any}", .{ w.me, p, pairs[0..w.n_hca] });
         }
+    }
+
+    /// This rank's layout; the MR covers `region` exactly and every peer's record matched it at connect.
+    pub fn regionLayout(w: *const VerbsWire) Layout {
+        return w.layout;
     }
 
     /// Slot `slot`'s first `padded` bytes (a multiple of 16) to every peer's receive slot for this rank, the next rank
     /// first, striped over the HCAs, each stripe followed by `seq` at that HCA's flag on the same queue pair (so the
     /// flag cannot land first).
     pub fn post(w: *VerbsWire, slot: u32, seq: u32, padded: u32) !void {
-        const packs = padded / 16;
-        var seq_copy = seq;
         const l = w.layout;
+        // the guard's refusals first: a post no HCA may make must not wait on completions to say so
+        if (padded > guard.max_write) return error.WriteTooLarge;
+        if (padded == 0 or padded % 16 != 0 or padded > l.slot or slot > 1) return error.OutOfRegion;
+        while (w.inflight() + padded > max_inflight) try w.reapWait();
+        var seq_copy = seq;
+        var plan: [max_hcas]guard.Stripe = undefined;
         for (0..l.world - 1) |k| {
             const p = peerAt(w.me, l.world, @intCast(k));
-            var offset: u64 = 0;
-            for (w.hcas[0..w.n_hca], 0..) |*h, i| {
+            try guard.stripes(l, w.me, p, w.n_hca, slot, padded, &plan);
+            for (w.hcas[0..w.n_hca], plan[0..w.n_hca], 0..) |*h, s, i| {
                 while (h.outstanding[p] >= send_depth / 4) try w.reapHca(h);
-                var stripe = packs / w.n_hca;
-                if (i < packs % w.n_hca) stripe += 1;
-                const bytes: u32 = stripe * 16;
                 const id: u64 = (@as(u64, p) << 32) | seq;
                 var flag_sge: abi.Sge = .{ .addr = @intFromPtr(&seq_copy), .length = 4, .lkey = 0 };
-                var flag_wr: abi.SendWr = .{ .wr_id = id, .sg_list = @ptrCast(&flag_sge), .num_sge = 1, .opcode = abi.wr_rdma_write, .send_flags = abi.send_signaled | abi.send_inline, .remote_addr = w.peer_region[p] + l.flagAt(w.me, slot, i), .rkey = w.peer_rkey[p][i] };
-                var data_sge: abi.Sge = .{ .addr = @intFromPtr(w.region.ptr) + l.sendAt(slot) + offset, .length = bytes, .lkey = h.mr.lkey };
-                var data_wr: abi.SendWr = .{ .wr_id = id, .next = &flag_wr, .sg_list = @ptrCast(&data_sge), .num_sge = 1, .opcode = abi.wr_rdma_write, .send_flags = 0, .remote_addr = w.peer_region[p] + l.recvAt(w.me, slot) + offset, .rkey = w.peer_rkey[p][i] };
+                var flag_wr: abi.SendWr = .{ .wr_id = id, .sg_list = @ptrCast(&flag_sge), .num_sge = 1, .opcode = abi.wr_rdma_write, .send_flags = abi.send_signaled | abi.send_inline, .remote_addr = w.peer_region[p] + s.flag, .rkey = w.peer_rkey[p][i] };
+                var data_sge: abi.Sge = .{ .addr = @intFromPtr(w.region.ptr) + s.local, .length = s.len, .lkey = h.mr.lkey };
+                var data_wr: abi.SendWr = .{ .wr_id = id, .next = &flag_wr, .sg_list = @ptrCast(&data_sge), .num_sge = 1, .opcode = abi.wr_rdma_write, .send_flags = 0, .remote_addr = w.peer_region[p] + s.remote, .rkey = w.peer_rkey[p][i] };
                 var bad: ?*abi.SendWr = null;
-                const first: *abi.SendWr = if (bytes > 0) &data_wr else &flag_wr;
+                const first: *abi.SendWr = if (s.len > 0) &data_wr else &flag_wr;
                 if (h.ctx.ops.post_send(h.qp[p].?, first, &bad) != 0) return error.PostFailed;
+                h.ring[(h.head + held(h)) % ring_len] = s.len;
                 h.outstanding[p] += 1;
-                offset += bytes;
+                h.inflight += s.len;
+                _ = h.posts.fetchAdd(1, .release);
             }
         }
+        if (w.inflight() > w.peak.load(.monotonic)) w.peak.store(w.inflight(), .monotonic);
         w.posted += 1;
     }
 
@@ -369,13 +500,40 @@ pub const VerbsWire = struct {
         for (wc[0..@intCast(n)]) |c| {
             const p: usize = @intCast(c.wr_id >> 32);
             if (c.status != abi.wc_success) {
-                std.log.err("tp roce: RDMA write of seq {d} to rank {d} failed: {s} (vendor 0x{x})", .{ c.wr_id & 0xffff_ffff, p, w.v.statusText(c.status), c.vendor_err });
+                log.err("tp roce: RDMA write of seq {d} to rank {d} failed: {s} (vendor 0x{x})", .{ c.wr_id & 0xffff_ffff, p, w.v.statusText(c.status), c.vendor_err });
                 return error.Completion;
             }
             if (p >= max_peers or h.outstanding[p] == 0) return error.Completion;
             h.outstanding[p] -= 1;
         }
-        w.completed += @intCast(n);
+        w.popped(h, @intCast(n));
+    }
+
+    fn popped(w: *VerbsWire, h: *Hca, n: u32) void {
+        for (0..n) |_| {
+            h.inflight -= h.ring[h.head];
+            h.head = (h.head + 1) % ring_len;
+        }
+        w.completed += n;
+        _ = h.done.fetchAdd(n, .release);
+    }
+
+    /// Bytes posted and not yet completed over every HCA.
+    pub fn inflight(w: *const VerbsWire) u64 {
+        var sum: u64 = 0;
+        for (w.hcas[0..w.n_hca]) |h| sum += h.inflight;
+        return sum;
+    }
+
+    /// Reaps until some post completes (error.Completion when none does within `inflight_wait_ns`).
+    fn reapWait(w: *VerbsWire) !void {
+        const before = w.completed;
+        const t0 = sock.nowNs();
+        while (w.completed == before) {
+            try w.reap();
+            if (w.completed == before and sock.nowNs() - t0 > inflight_wait_ns) return error.Completion;
+            std.atomic.spinLoopHint();
+        }
     }
 
     /// Reap every HCA's completions (after each op, and in the proxy's idle loop).
@@ -391,8 +549,8 @@ test "HCA lists parse and subnets pair the functions" {
     try std.testing.expectEqualStrings("rocep1s0f1", specs[0].name[0..specs[0].name_len]);
     try std.testing.expectEqual(@as(?u8, 3), specs[0].gid);
     try std.testing.expectEqual(@as(?u8, null), specs[1].gid);
-    var a: Record = .{ .n_hca = 2 };
-    var b: Record = .{ .n_hca = 2 };
+    var a: Record = .{ .n_hca = 2, .slot_bytes = 1 << 16, .region_len = 1 << 20 };
+    var b: Record = .{ .n_hca = 2, .slot_bytes = 1 << 16, .region_len = 1 << 20 };
     const sub100 = [16]u8{ 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xff, 0xff, 192, 168, 100, 10 };
     var sub101 = sub100;
     sub101[14] = 101;
@@ -406,6 +564,12 @@ test "HCA lists parse and subnets pair the functions" {
     try std.testing.expect(ipv4Mapped(sub100));
     b.n_hca = 1;
     try std.testing.expectError(error.BadRecord, VerbsWire.pairing(a, b));
+    b.n_hca = 2;
+    b.slot_bytes = 1 << 20;
+    try std.testing.expectError(error.BadRecord, VerbsWire.pairing(a, b));
+    b.slot_bytes = 0;
+    b.region_len = 4096;
+    try std.testing.expectError(error.BadRecord, VerbsWire.pairing(a, b));
 }
 
 /// An IPv4-mapped GID on 192.168.`net`.`host`.
@@ -418,7 +582,7 @@ test "four ranks: HCA h of every rank pairs by subnet, whatever order each node 
     var recs: [4]Record = undefined;
     for (&recs, 0..) |*r, i| {
         const host: u8 = @intCast(10 + i);
-        r.* = .{ .n_hca = 2 };
+        r.* = .{ .n_hca = 2, .slot_bytes = 1 << 16, .region_len = 1 << 20 };
         r.gid = if (i % 2 == 1) .{ testGid(101, host), testGid(100, host) } else .{ testGid(100, host), testGid(101, host) };
         for (0..2) |h| for (0..4) |p| {
             r.qpn[h][p] = if (p == i) 0 else @intCast(1000 * (i + 1) + 10 * h + p);
@@ -442,8 +606,8 @@ test "four ranks: HCA h of every rank pairs by subnet, whatever order each node 
 }
 
 test "a pairing that is not one-to-one is refused at both ends (the stripes would cross)" {
-    var a: Record = .{ .n_hca = 2 };
-    var b: Record = .{ .n_hca = 2 };
+    var a: Record = .{ .n_hca = 2, .slot_bytes = 1 << 16, .region_len = 1 << 20 };
+    var b: Record = .{ .n_hca = 2, .slot_bytes = 1 << 16, .region_len = 1 << 20 };
     // a's two functions on one subnet, b's on two: both of a's would write b's HCA on that subnet
     a.gid = .{ testGid(100, 10), testGid(100, 20) };
     b.gid = .{ testGid(101, 11), testGid(100, 11) };

@@ -1,32 +1,9 @@
-//! DSpark's pass with its candidates on the GPU and the pass in CUDA graphs (TF_DSV41_DRAFT_GRAPHS=1, every rank
-//! alike; default off: dspark_gpu.zig / dspark_slots.zig's host step), as Python's drafter runs it on its CUDA path
-//! (draft_graphs.py): the pass, its candidates and their gather on the device, one copy back.
-//!
-//! - **ds_out on the device** (`Dev.launch`, the glue step's body): glue.cu's `ds_cands` (each rank's best k columns a
-//!   row by (value desc, column asc): dspark.candidates' exact selection), the ranks' all-gather and one async copy of
-//!   the gathered [W][rows][2 k] (and the head hidden when the confidence head is loaded) into pinned memory. Nothing
-//!   in the pass reads the device on the host, so the whole pass is one stream sequence: graphable, and a speculative
-//!   pass (`Pass.begin`) launches all of it. The host keeps the chain (draft/dspark.zig), so draft ids are the host
-//!   path's bit for bit: the same candidates (an exact selection), the same chain.
-//! - **statics** from pinned staging (one region a pass of the round), no stream sync before them.
-//! - **checks**: the first `check_passes` passes also run the host's candidates on this rank's logits and compare.
-//!   After them every rank's verdict is agreed (one all-gather, at the same pass on every rank, before any graph is
-//!   captured): all equal -> graphs on (when TF_DSV41_DRAFT_GRAPHS asks); any differ -> every rank back on the host
-//!   step for the rest of the run (logged), so a bad kernel costs a few drafts, never a reply or a hang.
-//! - **graphs**: graph_cache over the runner's stream, a key a pass size (slots), the addresses the pass bakes in
-//!   fingerprinted; TF_DSV41_DRAFT_GRAPHS_MAX (32, Python's), TF_DSV41_GRAPH_FLOOR_GIB (graphs.zig).
-//! - **the chain on the device** (TF_DSV41_DRAFT_CHAIN=1, `Chain`; default off: the host's chain): ds_out also lays
-//!   the gathered candidates out as Python's cand / cval [rows, W k] (2 W strided copies, gather_cols' order) and
-//!   keeps the head hidden on the device; after the round's passes Python's own `_chain` kernel (AOT, the same cubin
-//!   as prod's) runs over every slot of the round at once and only drafts and confidences come back. Python runs the
-//!   chain there too (drafter.pass_fn), so the drafts are prod's bit for bit, where the host chain agreed with them up
-//!   to fp32 summation order. The host's ~0.4 ms a 4-slot round (the chain and the hidden's widening) leaves the
-//!   round's critical path.
+//! DSpark's pass with candidates on the GPU, in CUDA graphs (TF_DSV41_DRAFT_GRAPHS=1); self-checked against the host.
 
 const std = @import("std");
 const cuda = @import("cuda");
 const tp = @import("tp");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const run = @import("run.zig");
 const graphs = @import("graphs.zig");
 const rows_mod = @import("dspark_rows.zig");
@@ -36,8 +13,7 @@ const emit = @import("dspark_emit.zig");
 
 pub const Mode = enum { host, device, graphs };
 
-/// TF_DSV41_DRAFT_GRAPHS: 1 = device candidates + graphed passes, `device` = device candidates eager (A / B), unset
-/// or 0 = the host step.
+/// TF_DSV41_DRAFT_GRAPHS: 1 = device candidates + graphed passes, `device` = eager device candidates, 0 = host step.
 pub fn modeFromEnv() !Mode {
     const v = std.mem.span(std.c.getenv("TF_DSV41_DRAFT_GRAPHS") orelse return .host);
     if (v.len == 0 or std.mem.eql(u8, v, "0")) return .host;
@@ -90,6 +66,18 @@ pub const Dev = struct {
         const pk = rows_max * 2 * k * 4;
         var max: u32 = 32;
         if (std.c.getenv("TF_DSV41_DRAFT_GRAPHS_MAX")) |v| max = try std.fmt.parseInt(u32, std.mem.span(v), 10);
+        var send = try cuda.DeviceBuffer.alloc(d, pk);
+        errdefer send.free();
+        var gathered = try cuda.DeviceBuffer.alloc(d, pk * W);
+        errdefer gathered.free();
+        var host = try cuda.HostBuffer.alloc(d, pk * W + 2 * rows_max * hidden);
+        errdefer host.free();
+        var done = try cuda.Event.init(d, false);
+        errdefer done.deinit();
+        var agreement = try graphs.Agreement.init(d, comm, stream);
+        errdefer agreement.deinit();
+        var stage = try cuda.HostBuffer.alloc(d, region_bytes * regions);
+        errdefer stage.free();
         x.* = .{
             .gpa = gpa,
             .d = d,
@@ -103,22 +91,23 @@ pub const Dev = struct {
             .hidden = hidden,
             .rows_max = rows_max,
             .conf = conf,
-            .send = try cuda.DeviceBuffer.alloc(d, pk),
-            .gathered = try cuda.DeviceBuffer.alloc(d, pk * W),
-            .host = try cuda.HostBuffer.alloc(d, pk * W + 2 * rows_max * hidden),
-            .done = try cuda.Event.init(d, false),
-            .agreement = try graphs.Agreement.init(d, comm, stream),
+            .send = send,
+            .gathered = gathered,
+            .host = host,
+            .done = done,
+            .agreement = agreement,
             .engine = .{ .d = d },
             .cache = undefined,
-            .stage = try cuda.HostBuffer.alloc(d, region_bytes * regions),
+            .stage = stage,
             .region_bytes = region_bytes,
             .regions = regions,
         };
         const hold = if (std.c.getenv("TF_DSV41_GRAPH_FLOOR")) |v| std.mem.eql(u8, std.mem.span(v), "hold") else false;
         x.cache = graphs.gc.Cache(u32).init(gpa, x.engine.engine(), .{ .on = true, .max = max, .min_keep = 2, .hold = hold });
         x.cache.agree = x.agreement.agree();
-        x.cache.room = roomFn;
-        if (std.c.getenv("TF_DSV41_GRAPH_FLOOR_GIB")) |v| floor_gib = std.fmt.parseFloat(f64, std.mem.span(v)) catch 5.0;
+        x.cache.room = graphs.room;
+        x.cache.meter = graphs.meter;
+        x.cache.name = "draft passes";
         std.log.scoped(.dsv41).info("draft graphs: {t} (candidates on the device, the first {d} passes checked against the host's)", .{ want, check_passes });
         return x;
     }
@@ -142,16 +131,15 @@ pub const Dev = struct {
         return x.active != .host;
     }
 
-    /// Region `g`'s pinned staging for the statics: (int64 [n64], int32 [n32]); the previous round's copies out of it
-    /// finished before (every round ends at `wait`).
+    /// Region `g`'s pinned staging for the statics: (int64 [n64], int32 [n32]); free once the previous round waited.
     pub fn statics(x: *Dev, g: usize, n64: usize, n32: usize) !struct { []i64, []i32 } {
         if (g >= x.regions or 8 * n64 + 4 * n32 > x.region_bytes) return error.Statics;
+        try x.agreement.stream.d.synchronize();
         const b = x.stage.bytes[g * x.region_bytes ..][0..x.region_bytes];
         return .{ @alignCast(std.mem.bytesAsSlice(i64, b[0 .. 8 * n64])), @alignCast(std.mem.bytesAsSlice(i32, b[8 * n64 ..][0 .. 4 * n32])) };
     }
 
-    /// ds_out on the device for the pass's `rows` rows at row offset `at` of the round (a stream sequence: no sync, no
-    /// allocation; graphable): candidates, the ranks' gather, the copies back.
+    /// ds_out on the device for `rows` rows at offset `at` (no sync or alloc; graphable): candidates, gather, copies.
     pub fn launch(x: *Dev, r: *run.Runner, logits_t: calls.Tensor, hid_t: calls.Tensor, rows: usize, at: usize) !void {
         if (at + rows > x.rows_max) return error.Rows;
         const k = x.k;
@@ -179,8 +167,7 @@ pub const Dev = struct {
         try x.done.synchronize();
     }
 
-    /// Region `at`'s gathered candidates into rows of [W k] (`cand` / `cval`, Python's gather_cols order) and the head
-    /// hidden as fp32 (`hid`, when the confidence head is loaded); every id checked (dspark_gpu.checkCandidates).
+    /// Region `at`'s gathered candidates into rows of [W k] (`cand` / `cval`) and the head hidden as fp32 (`hid`).
     pub fn unpack(x: *Dev, rows: usize, at: usize, vocab: usize, cand: []i32, cval: []f32, hid: ?[]f32) !void {
         const k = x.k;
         const all: []const f32 = @alignCast(std.mem.bytesAsSlice(f32, x.host.bytes[at * 2 * k * 4 * x.world ..][0 .. rows * 2 * k * 4 * x.world]));
@@ -196,8 +183,7 @@ pub const Dev = struct {
         };
     }
 
-    /// A check pass (the first `check_passes`): this rank's logits rows [rows, V] at `logits` on the host's rule,
-    /// against this rank's part of region `at` (after `wait`). Any difference is logged and counted.
+    /// A check pass: this rank's logits rows on the host's rule against its part of region `at`; differences counted.
     pub fn check(x: *Dev, logits: u64, V: usize, rows: usize, at: usize) !void {
         if (x.checked >= check_passes) return;
         x.checked += 1;
@@ -225,8 +211,7 @@ pub const Dev = struct {
         }
     }
 
-    /// After a pass (every rank, in the same order): at the last check pass the ranks agree on the device path; all
-    /// equal -> TF_DSV41_DRAFT_GRAPHS' mode, else the host step from here on, every rank.
+    /// After a pass (every rank): at the last check pass the ranks agree; all equal -> the device mode, else host step.
     pub fn settle(x: *Dev) !void {
         x.stats.passes += 1;
         if (x.active != .device or x.stats.passes != check_passes) return;
@@ -241,17 +226,14 @@ pub const Dev = struct {
         }
     }
 
-    /// The pass's launches as the key's graph (once the checks passed and graphs are asked), else eagerly. The caller
-    /// staged the statics; `body` issues the pass's calls on the runner's stream.
+    /// The pass's launches as the key's graph (once checks passed and graphs are asked), else eagerly.
     pub fn issue(x: *Dev, key: u32, fp: u64, body: graphs.gc.Body) !void {
         if (x.active != .graphs) return body.run(body.ctx, x.stream);
         const out = try x.cache.run(key, x.stream, fp, body);
         if (out != .eager) x.stats.graphed += 1;
     }
 
-    /// A speculative pass's launch (dspark_gpu.afterPick): the key's graph when it is already captured, else eagerly -
-    /// never a capture (spec.py: "only keys already captured: a speculation never captures"), so no agreement
-    /// collective runs between the pick and its copy back.
+    /// A speculative pass's launch: the key's graph when already captured, else eagerly; never a capture.
     pub fn issueReplay(x: *Dev, key: u32, fp: u64, body: graphs.gc.Body) !void {
         if (x.active == .graphs and !x.cache.failed and x.cache.has(key) and x.cache.fingerprint == fp) {
             _ = try x.cache.run(key, x.stream, fp, body);
@@ -282,12 +264,10 @@ pub fn chainFromEnv() !bool {
     return error.BadDraftChain;
 }
 
-/// One strided copy of ds_out's reorder (`Chain.layout`): `height` rows of `width` bytes, from `src` (bytes from the
-/// gathered buffer) at `src_pitch` to `dst` (bytes from cand / cval) at `dst_pitch`; `ids`: into cand, else cval.
+/// One strided copy of ds_out's reorder: `height` rows of `width` bytes; `ids`: into cand, else cval.
 pub const Copy2D = struct { src: usize, src_pitch: usize, dst: usize, dst_pitch: usize, width: usize, height: usize, ids: bool };
 
-/// The gathered region at round row `at` ([W][rows][2 k] fp32: values, then ids as int bits) laid out as Python's
-/// cand / cval [rows, W k] (dspark_rows.ungather's order: rank w's k columns at w k): 2 W copies.
+/// The gathered region at round row `at` ([W][rows][2 k]) laid out as cand / cval [rows, W k]: 2 W copies.
 pub fn reorder(world: usize, rows: usize, k: usize, at: usize, out: []Copy2D) []Copy2D {
     const c = world * k;
     const region = at * 2 * k * 4 * world;
@@ -298,9 +278,7 @@ pub fn reorder(world: usize, rows: usize, k: usize, at: usize, out: []Copy2D) []
     return out[0 .. 2 * world];
 }
 
-/// The chain on the device (TF_DSV41_DRAFT_CHAIN=1): Python's DraftInputs tensors `_chain` reads and writes, bound as
-/// dspark_emit.chain_roles (the round's rows: cand / cval / hid at the passes' rows; anchor, ipar, fpar, draft, conf,
-/// scr a slot), the args' and results' pinned staging, and each slot count's one-call program.
+/// The chain on the device (TF_DSV41_DRAFT_CHAIN=1): `_chain`'s tensors, pinned staging, a program per slot count.
 pub const Chain = struct {
     gpa: std.mem.Allocator,
     d: *const cuda.Driver,
@@ -312,8 +290,7 @@ pub const Chain = struct {
     conf: bool,
     /// cand, cval, hid, anchor, ipar, fpar, draft, conf, scr (dspark_emit.chain_roles' order)
     bufs: [9]cuda.DeviceBuffer,
-    /// pinned: ipar int64 [slots][4], anchor int32 [slots], fpar fp32 [slots][3]; then draft int32 [slots][n], conf
-    /// fp32 [slots][n]
+    /// pinned: ipar i64 [slots][4], anchor i32 [slots], fpar f32 [slots][3]; draft i32 [slots][n], conf f32 [slots][n]
     host: cuda.HostBuffer,
     arena: std.heap.ArenaAllocator,
     programs: [16]?[]const calls.Call = @splat(null),
@@ -322,17 +299,14 @@ pub const Chain = struct {
     /// a launch failed (no AOT variant, ...): the host's chain from then on
     off: bool = false,
     stats: struct { rounds: u64 = 0, slots: u64 = 0, failed: u64 = 0 } = .{},
-    /// the check rounds' drafts (dspark_slots.chainResults: the host's chain over the same candidates) and how many
-    /// differ from the device's
+    /// the check rounds' drafts (host chain over the same candidates) and how many differ from the device's
     checked: u64 = 0,
     differ: u64 = 0,
 
     /// Rounds whose drafts are also chained on the host and compared (the device path's own check passes come first).
     pub const check_rounds = 8;
 
-    /// After the check rounds: a near tie may differ (fp32 order), a wiring fault (anchors, parameters, the candidates'
-    /// layout) differs in most drafts: past a quarter the host's chain from here on (rank 0's alone: no agreement
-    /// needed, the followers read no drafts).
+    /// After the check rounds: past a quarter of drafts differing, the host's chain from here on (rank 0 alone).
     pub fn verdict(x: *Chain) void {
         std.log.scoped(.dsv41).info("draft chain on the device: {d} check drafts, {d} differ from the host chain (fp32 order)", .{ x.checked, x.differ });
         if (4 * x.differ > x.checked) {
@@ -374,8 +348,7 @@ pub const Chain = struct {
         x.gpa.destroy(x);
     }
 
-    /// ds_out's part (in the pass, graphable): the region at round row `at` as cand / cval rows, the head hidden
-    /// [rows, D] kept at the same rows.
+    /// ds_out's part (graphable): the region at round row `at` as cand / cval rows, the head hidden kept at those rows.
     pub fn layout(x: *Chain, r: *run.Runner, gathered: u64, world: usize, rows: usize, k: usize, at: usize, hid: u64) !void {
         var cs: [32]Copy2D = undefined;
         for (reorder(world, rows, k, at, &cs)) |cp| {
@@ -392,10 +365,7 @@ pub const Chain = struct {
         if (x.conf) try r.d.check(r.d.api.cuMemcpyDtoDAsync_v2(x.bufs[2].ptr + at * x.hidden * 2, hid, rows * x.hidden * 2, r.stream.handle), "cuMemcpyDtoDAsync");
     }
 
-    /// The `S`-slot program (dspark_emit.emitChain), emitted once.
-    /// The first slot count whose `_chain` launch the AOT set cannot serve (null: every one, 1..slots), probed at boot
-    /// (Runner.missingTriton): a kit fill without the variant would otherwise fall back to the host chain at the first
-    /// round, logged once among the serving lines.
+    /// The first slot count whose `_chain` launch the AOT set cannot serve (null: every one), probed at boot.
     pub fn probe(x: *Chain, r: *const run.Runner, cfg: anytype, w: anytype, o: anytype) !?usize {
         for (1..x.slots + 1) |S| if (try r.missingTriton(try x.program(cfg, w, o, S)) != null) return S;
         return null;
@@ -408,9 +378,7 @@ pub const Chain = struct {
         return p;
     }
 
-    /// The round's chain after its passes, on the runner's stream: each slot's (anchor, keyed parameters) in the
-    /// round's (sorted) order staged, `_chain` over the `params.len` slots, drafts and confidences copied back. False:
-    /// not launched (off, or the launch failed: logged, the host chain from then on).
+    /// The round's chain after its passes on the runner's stream; false: not launched (off, or failed: host chain).
     pub fn launch(x: *Chain, r: *run.Runner, cfg: anytype, w: anytype, o: anytype, anchors: []const u32, params: []const dspark.Params) !bool {
         const S = anchors.len;
         x.launched = 0;
@@ -442,8 +410,7 @@ pub const Chain = struct {
 
     pub const Args = struct { ipar: []const u8, anchor: []const u8, fpar: []const u8 };
 
-    /// Python's DraftInputs.stage of the chain's inputs (dspark.sampling_params): ipar (seed, POS0, top_k, sampled),
-    /// anchor, fpar (T, top_p, min_p) as fp32, a slot each in the round's order, into the pinned staging.
+    /// Stages the chain inputs a slot each: ipar (seed, POS0, top_k, sampled), anchor, fpar (T, top_p, min_p) as fp32.
     pub fn stageArgs(host: []u8, slots: usize, anchors: []const u32, params: []const dspark.Params) Args {
         const S = anchors.len;
         const ipar: []i64 = @alignCast(std.mem.bytesAsSlice(i64, host[0 .. slots * 32]));
@@ -467,11 +434,6 @@ pub const Chain = struct {
         };
     }
 };
-
-var floor_gib: f64 = 5.0;
-fn roomFn() bool {
-    return graphs.roomAbove(floor_gib);
-}
 
 /// The fingerprint of a pass: the runner's owned buffers, its scratch, the pass's own and `extra`.
 pub fn fingerprint(r: *const run.Runner, x: *const Dev, extra: []const u64) u64 {

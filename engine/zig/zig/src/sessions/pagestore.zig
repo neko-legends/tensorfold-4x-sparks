@@ -1,9 +1,4 @@
-//! The bytes behind the pool's pages: a family's tensor of pages, read and written a page run at a time by the session tiers.
-//!
-//! The device pool (kv/device.zig) implements it over CUDA buffers, HostPool below in host memory (tests, CPU benches).
-//! Pages here are family-tensor pages (Pool.familyPage): split families index their local pages.
-//! Threads: `fence` runs on the round thread; `read`, `write`, `waitFence` and `publish` may run on a tier thread (an async park or restore),
-//! so a device implementation copies on its own stream behind the fence's event.
+//! The bytes behind the pool's pages: a family's tensor of pages, read and written a page run at a time.
 
 const std = @import("std");
 const pool_mod = @import("pool.zig");

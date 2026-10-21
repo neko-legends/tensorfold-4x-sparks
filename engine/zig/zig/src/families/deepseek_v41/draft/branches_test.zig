@@ -1,6 +1,4 @@
-//! branches.zig on the CPU twin: a target that runs chains only (the GPU forward's shape) resolves tree windows to
-//! the native tree window's accepted paths and choices, and the lanes engine over it commits the serial decode with
-//! the same drafts, acceptance, trees and sibling wins as over the twin's own tree windows (Python's semantics).
+//! branches.zig on the CPU twin: chain-only tree windows match the native tree window, and lanes over both agree.
 const std = @import("std");
 const lanes = @import("lanes");
 const iface = @import("iface.zig");

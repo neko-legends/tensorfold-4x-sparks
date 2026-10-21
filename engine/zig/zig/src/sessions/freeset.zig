@@ -1,4 +1,4 @@
-//! A set of free page indices with the lowest one in O(log64 n): one bit a page, then one bit a non-empty word per level up, so taking and giving touch one word a level.
+//! A set of free page indices, lowest first in O(log64 n): a bit a page, then a bit a non-empty word a level up.
 
 const std = @import("std");
 

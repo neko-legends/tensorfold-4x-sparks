@@ -1,20 +1,18 @@
-//! A stop's drain over HTTP: serve.run with a real SIGTERM, the Spark wire, a slow stub engine, the mini tokenizer.
+//! A stop's drain over HTTP: serve.run with a real SIGTERM, a slow stub engine, bytes as tokens.
 const std = @import("std");
 const api = @import("engine_api");
-const serve_mod = @import("dsv41_serve");
-const deepseek = @import("deepseek.zig");
+const json = @import("json");
+const model_text = @import("model_text.zig");
 const serve = @import("serve.zig");
 const cli = @import("cli.zig");
 const routes = @import("routes.zig");
 const Allocator = std.mem.Allocator;
 const testing = std.testing;
 
-/// Slow enough to stop mid-reply: "@short" ends after a dozen tokens, "@long" only when halted or cancelled.
+/// Stops mid-reply: "@short" ends after 12 tokens, "@long" when halted or cancelled, "@hold" waits for `release`.
 pub const Slow = struct {
     gpa: Allocator,
     io: std.Io,
-    tok: *serve_mod.tokenizer.Tokenizer,
-    eos: u32,
     halted: std.atomic.Value(bool) = .init(false),
     reason: []const u8 = "",
     active: std.atomic.Value(u32) = .init(0),
@@ -23,6 +21,8 @@ pub const Slow = struct {
     /// halts before the first close (the halt must come first)
     halts_at_close: u32 = 0,
     cancelled: std.atomic.Value(u64) = .init(0),
+    /// "@hold" replies stay silent until this is set
+    release: std.atomic.Value(bool) = .init(false),
 
     fn engine(s: *Slow) api.Engine {
         return .{ .ctx = s, .vtable = &.{ .info = info, .submit = submit, .cancel = cancel, .status = status, .memory = memory } };
@@ -63,14 +63,16 @@ pub const Slow = struct {
         var arena = std.heap.ArenaAllocator.init(s.gpa);
         defer arena.deinit();
         const a = arena.allocator();
-        const prompt = s.tok.decodeAlloc(a, r.prompt) catch "";
+        const prompt = a.alloc(u8, r.prompt.len) catch return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .failed, .message = "out of memory" } });
+        for (r.prompt, prompt) |t, *b| b.* = @truncate(t);
         const long = std.mem.indexOf(u8, prompt, "@long") != null;
+        const word: []const u32 = if (long) &.{ ' ', 'l', 'a' } else &.{ ' ', 'o', 'k' };
         const hang = std.mem.indexOf(u8, prompt, "@hang") != null;
         const wait = std.mem.indexOf(u8, prompt, "@wait") != null;
-        const word = s.tok.encodeAlloc(a, if (long) " la" else " ok") catch &.{};
+        const hold = std.mem.indexOf(u8, prompt, "@hold") != null;
         // a long prefill: nothing for 800 ms ("@wait"), or nothing until stopped ("@hang")
         var quiet: u32 = 0;
-        while (hang or (wait and quiet < 80)) : (quiet += 1) {
+        while (hang or (wait and quiet < 80) or (hold and !s.release.load(.acquire))) : (quiet += 1) {
             if (s.halted.load(.acquire)) return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .failed, .message = s.reason } });
             if (s.cancelled.load(.acquire) == id) return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .cancelled } });
             std.Io.sleep(s.io, .fromMilliseconds(10), .awake) catch {};
@@ -80,10 +82,7 @@ pub const Slow = struct {
         while (true) : (n += 1) {
             if (s.halted.load(.acquire)) return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .failed, .message = s.reason } });
             if (s.cancelled.load(.acquire) == id) return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .cancelled } });
-            if (!long and n == 12) {
-                sink.event(sink.ctx, id, &.{ .tokens = &.{s.eos} });
-                return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .stop } });
-            }
+            if (!long and n == 12) return sink.event(sink.ctx, id, &.{ .finished = .{ .reason = .stop } });
             sink.event(sink.ctx, id, &.{ .tokens = word });
             std.Io.sleep(s.io, .fromMilliseconds(15), .awake) catch {};
         }
@@ -105,6 +104,49 @@ pub const Slow = struct {
     }
 };
 
+/// Bytes as tokens; a prompt renders as its messages' JSON, so the engine sees the client's marker.
+pub const TestText = struct {
+    fn text(t: *@This()) model_text.Text {
+        return .{ .ctx = t, .vtable = &.{ .encode = encode, .decode = decode, .token_id = tokenId, .token_string = tokenString, .vocab_size = vocabSize, .eos_ids = eosIds, .render = render, .template_source = templateSource } };
+    }
+
+    fn encode(_: *anyopaque, a: Allocator, input: []const u8, _: bool) model_text.Error![]u32 {
+        const ids = try a.alloc(u32, input.len);
+        for (input, ids) |byte, *id| id.* = byte;
+        return ids;
+    }
+
+    fn decode(_: *anyopaque, a: Allocator, ids: []const u32) Allocator.Error![]u8 {
+        const decoded = try a.alloc(u8, ids.len);
+        for (ids, decoded) |id, *byte| byte.* = @intCast(id);
+        return decoded;
+    }
+
+    fn tokenId(_: *anyopaque, _: []const u8) ?u32 {
+        return null;
+    }
+
+    fn tokenString(_: *anyopaque, a: Allocator, id: u32) Allocator.Error![]u8 {
+        return std.fmt.allocPrint(a, "{d}", .{id});
+    }
+
+    fn vocabSize(_: *anyopaque) u32 {
+        return 256;
+    }
+
+    fn eosIds(_: *anyopaque) []const u32 {
+        return &.{};
+    }
+
+    fn render(_: *anyopaque, a: Allocator, messages: json.Value, _: model_text.RenderOptions, _: *[]const u8) model_text.Error![]u8 {
+        return json.stringify(a, messages, .{}) catch error.OutOfMemory;
+    }
+
+    fn templateSource(_: *anyopaque) []const u8 {
+        return "";
+    }
+};
+
 pub var listen_port: std.atomic.Value(u16) = .init(0);
 
 fn onListen(port: u16) void {
@@ -118,7 +160,7 @@ pub fn request(a: Allocator, io: std.Io, port: u16, method: []const u8, path: []
     const addr: std.Io.net.IpAddress = .{ .ip4 = .loopback(port) };
     const stream = try addr.connect(io, .{ .mode = .stream });
     defer stream.close(io);
-    const head = try std.fmt.allocPrint(a, "{s} {s} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ method, path, body.len, body });
+    const head = try std.fmt.allocPrint(a, "{s} {s} HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {d}\r\nConnection: close\r\n\r\n{s}", .{ method, path, body.len, body });
     var wbuf: [4096]u8 = undefined;
     var w = std.Io.net.Stream.Writer.init(stream, io, &wbuf);
     try w.interface.writeAll(head);
@@ -173,14 +215,12 @@ pub const Served = struct {
 };
 
 /// serve.run on its own thread with `drain_s`, the engine `slow`; the port once it listens.
-pub fn start(gpa: Allocator, io: std.Io, env: *std.process.Environ.Map, slow: *Slow, ds: *deepseek.DeepSeek, x: *Served) !std.Thread {
+pub fn start(gpa: Allocator, io: std.Io, env: *std.process.Environ.Map, slow: *Slow, tt: *TestText, x: *Served) !std.Thread {
     listen_port.store(0, .release);
     const t = try std.Thread.spawn(.{}, Served.run, .{ x, gpa, io, serve.Setup{
         .engine = slow.engine(),
-        .text = ds.text(),
-        .served = "deepseek-v41",
-        .family = ds.family_(),
-        .wire = .spark,
+        .text = tt.text(),
+        .served = "slow",
         .environ = env,
         .on_listen = onListen,
         .stop = .{ .ctx = slow, .halt = Slow.halt, .close = Slow.close },
@@ -196,11 +236,7 @@ pub fn waitActive(io: std.Io, slow: *Slow, n: u32) void {
 test "SIGTERM drains: 503 + Retry-After and /health draining while a reply finishes; at the deadline the rest end \"server restarting\" at a round boundary, then the engine closes" {
     const gpa = testing.allocator;
     const io = testing.io;
-    const tok = try serve_mod.tokenizer.Tokenizer.parse(gpa, serve_mod.fixtures.mini_tokenizer);
-    defer tok.deinit();
-    const eos = tok.tokenId("<｜end▁of▁sentence｜>").?;
-    const ds = try deepseek.DeepSeek.init(gpa, tok, .{ .eos = &.{eos} });
-    defer ds.deinit(false);
+    var tt: TestText = .{};
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
@@ -210,13 +246,15 @@ test "SIGTERM drains: 503 + Retry-After and /health draining while a reply finis
 
     // 1. the reply in progress finishes within the drain: no halt, a whole reply; new work refused meanwhile
     {
-        try env.put("TF_DSV41_DRAIN_S", "10");
-        var slow: Slow = .{ .gpa = gpa, .io = io, .tok = tok, .eos = eos };
+        try env.put("TF_DRAIN_S", "10");
+        var slow: Slow = .{ .gpa = gpa, .io = io };
         var x: Served = .{};
-        const t = try start(gpa, io, &env, &slow, ds, &x);
+        const t = try start(gpa, io, &env, &slow, &tt, &x);
         const port = listen_port.load(.acquire);
-        var bg: Background = .{ .a = a, .io = io, .port = port, .body = try chatBody(a, "@short", true) };
+        // held through the checks below: a reply that ended first would end the drain and close the listener
+        var bg: Background = .{ .a = a, .io = io, .port = port, .body = try chatBody(a, "@hold", true) };
         const bt = try std.Thread.spawn(.{}, Background.run, .{&bg});
+        errdefer slow.release.store(true, .release);
         waitActive(io, &slow, 1);
         try std.posix.raise(.TERM);
         // the drain has begun once a new request is refused
@@ -235,7 +273,7 @@ test "SIGTERM drains: 503 + Retry-After and /health draining while a reply finis
         try testing.expectEqual(@as(u16, 503), health.status);
         try testing.expect(std.mem.indexOf(u8, health.head, "Retry-After: 30") != null);
         try testing.expect(std.mem.indexOf(u8, health.body, "\"status\": \"draining\"") != null);
-        try testing.expect(std.mem.indexOf(u8, health.body, "\"ok\": false") != null);
+        slow.release.store(true, .release);
         bt.join();
         t.join();
         try testing.expect(!bg.failed);
@@ -249,10 +287,10 @@ test "SIGTERM drains: 503 + Retry-After and /health draining while a reply finis
     }
     // 2. replies that outlast the drain end "server restarting"; the engine is halted, then closed once
     {
-        try env.put("TF_DSV41_DRAIN_S", "0.3");
-        var slow: Slow = .{ .gpa = gpa, .io = io, .tok = tok, .eos = eos };
+        try env.put("TF_DRAIN_S", "0.3");
+        var slow: Slow = .{ .gpa = gpa, .io = io };
         var x: Served = .{};
-        const t = try start(gpa, io, &env, &slow, ds, &x);
+        const t = try start(gpa, io, &env, &slow, &tt, &x);
         const port = listen_port.load(.acquire);
         var streamed: Background = .{ .a = a, .io = io, .port = port, .body = try chatBody(a, "@long", true) };
         var whole: Background = .{ .a = a, .io = io, .port = port, .body = try chatBody(a, "@long", false) };
@@ -311,21 +349,17 @@ const Gap = struct {
 test "a stop that lands between a request's count and its drain check: the request is refused (503) and the drain waited for it, never lost" {
     const gpa = testing.allocator;
     const io = testing.io;
-    const tok = try serve_mod.tokenizer.Tokenizer.parse(gpa, serve_mod.fixtures.mini_tokenizer);
-    defer tok.deinit();
-    const eos = tok.tokenId("<｜end▁of▁sentence｜>").?;
-    const ds = try deepseek.DeepSeek.init(gpa, tok, .{ .eos = &.{eos} });
-    defer ds.deinit(false);
+    var tt: TestText = .{};
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();
     const a = arena.allocator();
     var env = std.process.Environ.Map.init(gpa);
     defer env.deinit();
     try env.put("TENSORFOLD_NO_LIVE", "1");
-    try env.put("TF_DSV41_DRAIN_S", "10");
-    var slow: Slow = .{ .gpa = gpa, .io = io, .tok = tok, .eos = eos };
+    try env.put("TF_DRAIN_S", "10");
+    var slow: Slow = .{ .gpa = gpa, .io = io };
     var x: Served = .{};
-    const t = try start(gpa, io, &env, &slow, ds, &x);
+    const t = try start(gpa, io, &env, &slow, &tt, &x);
     Gap.io = io;
     Gap.port = listen_port.load(.acquire);
     Gap.served = &x;

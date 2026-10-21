@@ -1,8 +1,4 @@
-//! The NVMe tier's workers: lane threads that hash and write (or read and check) 4 KiB-aligned chunks, and the bounded staging buffers they move through.
-//!
-//! The pump (the thread parking or restoring) fills or drains staging buffers with page copies only; SHA-256 and the I/O run on the lanes,
-//! one chunk a job and any lane any chunk (each chunk has its own digest), so hashing spreads over the lanes and overlaps the NVMe.
-//! The host transient of any park or restore is the staging set, whatever the session's length.
+//! The NVMe tier's lane threads, which hash and write (or read and check) 4 KiB chunks, and their staging buffers.
 
 const std = @import("std");
 const linux = std.os.linux;
@@ -52,9 +48,9 @@ pub const Staging = struct {
         s.mutex.lockUncancelable(s.io);
         defer s.mutex.unlock(s.io);
         while (s.free_n == 0) s.cond.waitUncancelable(s.io, &s.mutex);
-        s.free_n -= 1;
-        const i = s.free_list[s.free_n];
+        const i = s.free_list[s.free_n - 1];
         if (s.bufs[i].len == 0) s.bufs[i] = try s.gpa.alignedAlloc(u8, .fromByteUnits(block), s.size);
+        s.free_n -= 1;
         return i;
     }
 
@@ -297,6 +293,7 @@ pub fn preadAll(fd: linux.fd_t, out: []u8, off: u64) !void {
 }
 
 test "lanes write, read back and check chunks through bounded staging" {
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const gpa = std.testing.allocator;
     const io = std.testing.io;
     var st = try Staging.init(gpa, io, 3, 2 * block);
@@ -337,4 +334,24 @@ test "lanes write, read back and check chunks through bounded staging" {
     l.submit(.{ .kind = .read, .fd = fd, .staging = try st.get(), .data = 2 * block - 7, .span = 2 * block, .off = 2 * 2 * block, .digest = &digests[2], .op = &rop });
     st.put(rop.next().?.staging);
     try std.testing.expectError(error.ChecksumMismatch, rop.wait());
+}
+
+test "Ownership rollback: staging lazy allocation failure leaves the sole slot available" {
+    var f = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var s = try Staging.init(f.allocator(), std.testing.io, 1, block);
+    defer {
+        s.free_n = s.count;
+        s.deinit();
+    }
+    f.fail_index = f.alloc_index;
+    try std.testing.expectError(error.OutOfMemory, s.get());
+    try std.testing.expectEqual(@as(u32, 1), s.free_n);
+    f.fail_index = std.math.maxInt(usize);
+    const i = try s.get();
+    try std.testing.expectEqual(@as(usize, block), s.buf(i).len);
+    s.put(i);
+    s.release();
+    try std.testing.expectEqual(@as(usize, 0), s.bufs[i].len);
+    const again = try s.get();
+    s.put(again);
 }

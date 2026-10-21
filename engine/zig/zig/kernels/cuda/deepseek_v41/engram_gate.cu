@@ -1,16 +1,10 @@
-// Device code of src/tensorfold/families/deepseek_v41/cuda/engram_gate.cu (git blob 6c2e75a4f4de at dsv41-quant-e2; lines 1-60; torch includes and host code cut),
-// generated and checked by zig/kernels/cuda/deepseek_v41/sync.py. Do not edit: change the Python source.
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-// The Engram gate (engram_gate.py): the GPU, not the host, waits for a round's Engram rows.
-//
-// ctl is a pinned host int64 array (mapped: the GPU reads it over UVA / NVLink-C2C): ctl[0] = the round the host
-// armed (written before the launches that read it), ctl[ready] = the last round whose rows of this layer the host
-// worker published (a release store after it wrote them into the pinned staging). Thread 0 of each CTA spins with an
-// acquire load until ctl[ready] >= ctl[0], then the CTA copies its share of the staging buffer of that round's parity
-// (base + (round & 1) * stride) into the device buffer the forward gathers. Inside a CUDA graph this is one kernel
-// node: no host round trip, no event recorded in the future. A wait past timeout_ns stores the layer's slot into
-// ctl[err] and copies whatever is there: the host raises after the window (engram_gate.Gate.check), never a reply.
+// Copy of src/tensorfold/families/deepseek_v41/cuda/engram_gate.cu (blob 6c2e75a4f4de): sass_check.sh
+
+
+
+// Engram gate: the GPU, not the host, waits for a round's Engram rows, so a CUDA graph needs no host round trip.
+
+// ctl (pinned, mapped): ctl[0] = armed round, ctl[ready] = last published round; on timeout ctl[err] = layer slot.
 #include <cstdint>
 #include <cuda_runtime.h>
 

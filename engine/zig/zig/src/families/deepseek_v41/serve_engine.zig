@@ -1,16 +1,10 @@
-//! M4 on the GPU: DeepSeek-V4.1's engine for the native server (tensorfold-dsv41, `native_engines`), the lanes engine
-//! (core/lanes + draft/lanes.zig) over the GPU target and DSpark's GPU pass in a LaneHost on rank 0; the other ranks
-//! run `tf-dsv41-m1 follow PACK ASSETS`, which loads the same rank and replays rank 0's forward operations until the
-//! server stops. One slot (GpuTarget's): the host serves one stream at a time.
-//!
-//! TF_DSV41_ASSETS: the assets dir (model.zig). TF_DSV41_LAYERS=<lo>-<hi>: a backbone prefix only (a pod gate's model). TF_DSV41_TRACE_TOKENS=<file>: every finished reply's prompt and reply
-//! ids appended as a JSON line, for the gate that `tf-dsv41-m1 generate` replays the same prompt through the same
-//! engine without HTTP and must emit the same ids.
+//! DeepSeek-V4.1's engine for the native server: lanes over the GPU target with DSpark on rank 0; other ranks follow.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const api = @import("engine_api");
 const lanes = @import("lanes");
-const model = @import("model.zig");
+const model = @import("cuda_model.zig");
 const ln = @import("draft/lanes.zig");
 const drive = @import("draft/drive.zig");
 const costs_mod = @import("draft/costs.zig");
@@ -19,16 +13,14 @@ const calib_env = @import("draft/calib_env.zig");
 const calib_gpu = @import("calib_gpu.zig");
 const spec = @import("draft/spec.zig");
 const lookup = @import("draft/lookup.zig");
-const m3 = @import("m3.zig");
+const gate_lanes = @import("gate_lanes.zig");
 const ph = @import("phases.zig");
 const timed = @import("phases_timed.zig");
-const grammar_gpu = @import("grammar_gpu.zig");
 const Allocator = std.mem.Allocator;
-const vision_rows = @import("vision_rows.zig");
 const sched_host = @import("sched_host.zig");
 
 pub const backends: []const []const u8 = &.{"cuda"};
-pub const families: []const api.Family = &.{.{ .model_type = "deepseek_v41", .formats = &.{"exl3"} }};
+pub const families: []const api.Family = &.{.{ .model_type = "deepseek_v41", .formats = &.{"exl3"}, .raw_text = false }};
 
 pub fn chip(_: Allocator) ?[]const u8 {
     return null;
@@ -36,6 +28,10 @@ pub fn chip(_: Allocator) ?[]const u8 {
 
 /// The engine for `o.dir`, or null with `problem` set (the native_engines contract).
 pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]const u8) !?api.Opened {
+    if (@import("sys").experimental.refusal(o.model_type, @import("sys").getenv("TF_EXPERIMENTAL"))) |text| {
+        problem.* = text;
+        return null;
+    }
     if (!std.mem.eql(u8, o.model_type, "deepseek_v41")) {
         problem.* = try std.fmt.allocPrint(a, "this build serves deepseek_v41 checkpoints only, not {s}", .{o.model_type});
         return null;
@@ -44,7 +40,7 @@ pub fn open(a: Allocator, gpa: Allocator, io: std.Io, o: api.Open, problem: *[]c
         problem.* = "TF_DSV41_ASSETS: the dir with rope.bin, engram-host.bin and aot/ (model.zig)";
         return null;
     });
-    const s = Served.open(gpa, io, o.dir, assets, o.drafts and model.draftsEnv(), o.context) catch |e| {
+    const s = Served.open(gpa, io, o.dir, assets, o.drafts, o.context) catch |e| {
         problem.* = try std.fmt.allocPrint(a, "the DeepSeek-V4.1 CUDA engine cannot load {s} ({s})", .{ o.dir, @errorName(e) });
         return null;
     };
@@ -68,29 +64,23 @@ pub const Served = struct {
     phases: ?*ph.Phases = null,
     tt: timed.TimedTarget = undefined,
     tpass: timed.TimedPass = undefined,
-    /// TF_DSV41_GRAMMAR=1 (grammar_gpu.zig): the request grammars and the target that enforces them
-    gengine: ?*grammar_gpu.GrammarEngine = null,
-    gtarget: ?*grammar_gpu.GrammarTarget = null,
-    /// TF_DSV41_PREFILL_PIECES=1 (sched_host.zig): prod's batcher plans the host's rounds
+    /// TF_DSV41_PREFILL_PIECES=1 (sched_host.zig): the batcher plans the host's rounds
     sched: ?*sched_host.SchedHost = null,
-    /// TF_DSV41_LOOKUP_PLAN=1 (draft/lookup.zig): Python's priced lookup drafts for each request's copies
+    /// TF_DSV41_LOOKUP_PLAN=1 (draft/lookup.zig): priced lookup drafts for each request's copies
     lookup: ?*lookup.Planner = null,
 
     /// Rank 0's engine over a loaded model (`drafts`: DSpark's pass, else serial windows through the same lanes).
     pub fn open(gpa: Allocator, io: std.Io, dir: []const u8, assets: []const u8, drafts: bool, context: ?i64) !*Served {
         const m = try model.Model.open(gpa, io, dir, assets, .{ .drafts = drafts, .own_prefill = model.ownPrefillEnv(), .layers = try model.layersEnv(gpa) });
         errdefer m.close();
-        if (m.rank() != 0) return error.NotRankZero; // the other ranks run `tf-dsv41-m1 follow`
+        if (m.rank() != 0) return error.NotRankZero; // the other ranks run `tf-dsv41 follow`
         const s = try gpa.create(Served);
         errdefer gpa.destroy(s);
         s.gpa = gpa;
         s.io = io;
         s.m = m;
         s.nd = .{};
-        // draft pricing: prod's cached calibration (TF_DSV41_CALIB / _CALIB_DIR / _CALIB_FILE: Python's calib-*.json,
-        // shared as rank 0 shares it) and Python's depth knobs; without an entry for this engine, today's defaults.
-        // TF_DSV41_CALIB=measure (or zig without a stored Zig table): this engine's own windows timed now, on every
-        // rank (calib_gpu.zig), and stored as calib-zig-<shape>.json
+        // draft pricing: the cached calibration and depth knobs (TF_DSV41_CALIB=measure: timed now, stored)
         const knobs = calib_env.Knobs.fromEnv();
         const want: calib_env.Shape = .{ .slots = m.slots, .world = m.f.comm.world(), .dspark = m.pass != null, .context = @intCast(@min(context orelse m.f.opts.limit, m.f.opts.limit)) };
         var cal = try calib_env.load(gpa, io, knobs, want, 64);
@@ -118,27 +108,17 @@ pub const Served = struct {
             tgt = s.tt.target();
             pass = s.tpass.pass();
         }
-        // structured output (TF_DSV41_GRAMMAR=1): the target cuts drafts and stages masks, the engine compiles requests
-        s.gengine = null;
-        s.gtarget = null;
-        if (m.grammar) |mk| {
-            const ge = try gpa.create(grammar_gpu.GrammarEngine);
-            ge.* = grammar_gpu.GrammarEngine.init(gpa, io, undefined, mk.g);
-            s.gengine = ge;
-            const gt = try gpa.create(grammar_gpu.GrammarTarget);
-            gt.* = try grammar_gpu.GrammarTarget.init(gpa, tgt, mk, ge);
-            s.gtarget = gt;
-            tgt = gt.target();
-        }
-        // draft trees (TF_DSV41_TREE / _DUP_MS / _ROWS, Python's knobs; off by default): first-position siblings
+        // draft trees (TF_DSV41_TREE / _DUP_MS / _ROWS; off by default): first-position siblings
         const trees = if (m.pass != null) try tree.Settings.fromEnv() else tree.Settings{};
-        s.x = try ln.Lanes.init(gpa, tgt, pass, s.costs, .{ .shape = m3.shapeOf(&m.f), .slots = m.slots, .siblings = trees.siblings, .sib_rows = trees.sib_rows, .dup = trees.dup, .depth = try calib_env.depthSettings(&calib_env.env), .spec = if (m.pass != null) try spec.Settings.fromEnv() else .{} });
+        s.x = try ln.Lanes.init(gpa, tgt, pass, s.costs, .{ .shape = gate_lanes.shapeOf(&m.f), .slots = m.slots, .siblings = trees.siblings, .sib_rows = trees.sib_rows, .dup = trees.dup, .depth = try calib_env.depthSettings(&calib_env.env), .spec = if (m.pass != null) try spec.Settings.fromEnv() else .{} });
         s.arena = std.heap.ArenaAllocator.init(gpa);
         s.cfg = try lanes.Config.init(gpa, try s.x.model(s.arena.allocator(), 64), 16, 15);
         s.x.policy.depth.forward_rows = if (m.rows) |b| b.cap else 16;
-        // drafts sized from the cost tables, not the wall clock: a request drafts (and so verifies) the same whatever the
-        // load or the requests before it, so HTTP == CLI replay holds (TF_DSV41_DRAFT_TIMED=1: the measured pricing)
+        // drafts sized from cost tables, not the wall clock, so HTTP == CLI replay (TF_DSV41_DRAFT_TIMED=1: measured)
         s.cfg.timed = if (std.c.getenv("TF_DSV41_DRAFT_TIMED")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false;
+        // the depth policy as booted (the reference's "DSpark on (depth ...)"): what a check reads from the log
+        const dset = s.x.policy.depth.set;
+        std.log.info("dsv41 depth: {t}, cap {d}, skip {s}, joint {d}, drafts priced {s}", .{ dset.mode, dset.cap, if (dset.skip) "on" else "off", dset.joint, if (s.cfg.timed) "by the wall clock" else "from the cost tables" });
         s.clock = .{ .io = io };
         s.core = lanes.Engine.init(gpa, &s.cfg, s.x.backend(), s.clock.clock());
         s.x.attach(&s.core);
@@ -146,14 +126,13 @@ pub const Served = struct {
         s.host = api.LaneHost.init(gpa, io, &s.core, .{ .name = "dsv41-cuda", .lanes = m.slots, .context_window = window, .prefill_step = m.gt.prefill_rows });
         // the lanes run on LaneHost's thread: the model's CUDA context must be current there
         s.host.on_thread = .{ .ctx = m, .run = bindContext };
-        // /metrics' device memory: the bytes this rank holds in cuda.DeviceBuffers (weights, KV pool, staging), its peak
+        // /metrics' device memory: bytes this rank holds in cuda.DeviceBuffers (weights, KV pool, staging), peak
         s.host.memory = .{ .read = readMemory };
-        // TF_DSV41_PREFILL_PIECES=1: prod's batcher plans the rounds (queued admissions, prompts in pieces between
-        // decode rounds); the served shape only (own prefill, the verify tail), every rank with the same setting
+        // TF_DSV41_PREFILL_PIECES=1: the batcher plans the rounds; served shape only, same setting on every rank
         s.sched = null;
         if (model.Model.piecesEnv()) {
             if (!(m.gt.own_prefill and m.gt.prompt_tail == .verify)) {
-                std.log.warn("TF_DSV41_PREFILL_PIECES=1 needs TF_DSV41_OWN_PREFILL=1 and TF_DSV41_PROMPT_TAIL=verify (the served shape); prompts run whole", .{});
+                if (!quiet) std.log.warn("TF_DSV41_PREFILL_PIECES=1 needs TF_DSV41_OWN_PREFILL=1 and TF_DSV41_PROMPT_TAIL=verify (the served shape); prompts run whole", .{});
             } else {
                 const sh = try gpa.create(sched_host.SchedHost);
                 sh.* = sched_host.SchedHost.init(gpa, io, &m.gt, try sched_host.SchedHost.settings(&m.gt));
@@ -163,7 +142,7 @@ pub const Served = struct {
                 var buf: [256]u8 = undefined;
                 std.log.info("dsv41 rounds: {s}", .{sh.describe(&buf)});
             }
-        } else std.log.info("dsv41 rounds: whole prompts at admission (TF_DSV41_PREFILL_PIECES=1: prod's pieces between decode rounds)", .{});
+        } else std.log.info("dsv41 rounds: whole prompts at admission (TF_DSV41_PREFILL_PIECES=1: the reference server's pieces between decode rounds)", .{});
         s.lookup = null;
         const ls = try lookup.Settings.fromEnv();
         if (ls.plan) {
@@ -174,10 +153,7 @@ pub const Served = struct {
             std.log.info("dsv41 lookup: Python's priced plan (min match {d}, up to {d} rows{s})", .{ ls.min_match, ls.max_rows, if (ls.lookup) "" else ", lookup off" });
         }
         try s.host.start();
-        if (s.gengine) |ge| ge.inner = s.host.engine();
-        s.rec = Recorder.init(gpa, io, if (s.gengine) |ge| ge.engine() else s.host.engine());
-        // TF_DSV41_IMAGES=native (vision_rows.zig): a request's images held from submit to its finished event
-        s.rec.inner = try vision_rows.wrap(gpa, &m.f, s.rec.inner);
+        s.rec = Recorder.init(gpa, io, s.host.engine());
         return s;
     }
 
@@ -200,18 +176,15 @@ pub const Served = struct {
         return s.rec.engine();
     }
 
-    /// The phases report's "engram" and "rowgraphs" counters (cumulative; a cell's are the difference of two snapshots): the row
-    /// reader's records found cached (hits), found in flight (waited), read (misses), extents read and their bytes,
-    /// the engine's wait for them; the gate's rounds, GPU-side syncs and warm jobs. Python's boot line reports the same
-    /// as "rows N (cached, read)".
+    /// The phases report's "engram" and "rowgraphs" counters (cumulative): row reader records and the gate's rounds.
     fn writeEngram(ctx: *anyopaque, w: *std.Io.Writer) anyerror!void {
         const m: *model.Model = @ptrCast(@alignCast(ctx));
         try w.writeAll(", \"engram\": {");
         if (m.f.engram_rows) |r| {
             const st = r.stats;
-            try w.print("\"hits\": {d}, \"waited\": {d}, \"misses\": {d}, \"issued\": {d}, \"reads\": {d}, \"bytes\": {d}, \"wait_ms\": {d:.2}", .{ st.hits, st.waited, st.misses, st.issued, st.reads, st.bytes, @as(f64, @floatFromInt(st.wait_ns)) / 1e6 });
+            try w.print("\"hits\": {d}, \"waited\": {d}, \"misses\": {d}, \"issued\": {d}, \"reads\": {d}, \"bytes\": {d}, \"wait_ms\": {d:.2}", .{ st.hits, if (@hasField(@TypeOf(st), "waited")) st.waited else 0, st.misses, st.issued, st.reads, st.bytes, @as(f64, @floatFromInt(if (@hasField(@TypeOf(st), "wait_ns")) st.wait_ns else 0)) / 1e6 });
         } else try w.writeAll("\"rows\": null");
-        if (m.f.gate) |g| try w.print(", \"gate_rounds\": {d}, \"gate_syncs\": {d}, \"gate_warm\": {d}, \"gate_failed\": {d}", .{ g.stats.rounds, g.stats.syncs, g.stats.warm, g.stats.failed });
+        if (@import("engram_gate_fwd.zig").of(&m.f)) |g| try w.print(", \"gate_rounds\": {d}, \"gate_syncs\": {d}, \"gate_warm\": {d}, \"gate_failed\": {d}", .{ g.stats.rounds, g.stats.syncs, g.stats.warm, g.stats.failed });
         try w.writeAll("}");
         // the row windows' first uses (batch.zig): programs emitted and graphs captured, their host ms
         if (m.gt.rows) |b| {
@@ -258,14 +231,6 @@ pub const Served = struct {
             gpa.destroy(x);
         }
         s.rec.deinit();
-        if (s.gengine) |ge| {
-            ge.deinit();
-            gpa.destroy(ge);
-        }
-        if (s.gtarget) |gt| {
-            gt.deinit();
-            gpa.destroy(gt);
-        }
         s.core.deinit();
         s.cfg.deinit(gpa);
         s.arena.deinit();
@@ -288,7 +253,7 @@ pub const Recorder = struct {
     /// every recorded line so far (the file is rewritten whole: one reply at a time)
     log: std.ArrayList(u8) = .empty,
 
-    /// `sampling`: the request's own (seed included), so `tf-dsv41-m1 generate` replays a sampled reply as it was asked
+    /// `sampling`: the request's own (seed included), so `tf-dsv41 generate` replays a sampled reply as it was asked
     const Rec = struct { r: *Recorder, sink: api.Sink, prompt: []u32, sampling: ?api.Sampling = null, out: std.ArrayList(u32) = .empty, drafted: u64 = 0, structure: ?Structure = null };
     /// a structured request's grammar (TF_DSV41_GRAMMAR), so `generate` replays it under the same grammar
     const Structure = struct { kind: []const u8, text: []const u8 };

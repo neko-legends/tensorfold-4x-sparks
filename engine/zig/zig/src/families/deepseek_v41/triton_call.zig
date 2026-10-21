@@ -1,11 +1,8 @@
-//! A Triton call of block.zig as the engine's AOT set takes it (zig/src/cuda/aot.zig): runtime arguments (pointers,
-//! ints, floats) and constexprs, split by the function's compiled variants (a name some variant has as a parameter is a
-//! runtime argument; Triton's folding of an int 1 into a constexpr is aot.zig's to match), so `Set.find` picks the
-//! variant Triton itself would.
+//! A block.zig Triton call as the AOT set takes it: runtime args vs constexprs, so `Set.find` picks Triton's variant.
 
 const std = @import("std");
 const cuda = @import("cuda");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const aot = cuda.aot;
 
 /// Triton's pointer type of a dtype ("*bf16" ...).

@@ -1,14 +1,11 @@
-//! DeepSeek-V4.1's CUDA kernels: the Python engine's .cu device code (zig/kernels/cuda/deepseek_v41, kept in sync by
-//! the Python reference) as fatbins built with each extension's nvcc flags and embedded here, and their launches.
-//!
-//! The module is `dsv41_kernels` (zig/build/cuda.zig): it imports `cuda` and the fatbins; the family imports it.
+//! DeepSeek-V4.1's CUDA kernels (zig/kernels/cuda/deepseek_v41) as embedded fatbins, and their launches.
 
 const std = @import("std");
 const cuda = @import("cuda");
 const options = @import("dsv41_kernel_options");
 
-pub const exl3 = @import("kernels_exl3.zig");
-pub const dense = @import("kernels_dense.zig");
+pub const exl3 = @import("cuda").qlinear.block.experts;
+pub const dense = @import("cuda").qlinear.block.dense;
 pub const kv_glue = @import("kernels_kv_glue.zig");
 pub const replay = @import("kernels_replay.zig");
 pub const ops = @import("kernels_ops.zig");
@@ -79,8 +76,9 @@ pub const Kernels = struct {
     ops: ops.Functions,
     sms: usize,
 
-    /// Loads every module and resolves every instance the Python wrappers can launch.
+    /// Loads every module and resolves every instance the launches can use.
     pub fn load(ctx: *const cuda.Context) !Kernels {
+        if (try ctx.capability() < 90) return error.DeepSeekRequiresSm90;
         if (!available) return error.BuiltWithoutKernels;
         const d = ctx.d;
         var k: Kernels = undefined;
@@ -108,8 +106,7 @@ pub const Kernels = struct {
         return k;
     }
 
-    /// TF_DSV41_LIN2: lin2.cu's module and instances behind the dense launches (dense.Ops); refused when the build
-    /// has no lin2 fatbin (-Dnvcc, or -Dfatbins with dsv41_lin2.fatbin).
+    /// TF_DSV41_LIN2: lin2.cu's module and instances (dense.Ops); refused when the build has no lin2 fatbin.
     pub fn loadLin2(k: *Kernels, d: *const cuda.Driver, mode: dense.Lin2Mode) !void {
         if (!mode.lanes and !mode.linear and !mode.cluster) return;
         if (lin2_image.len == 0) return error.Lin2KernelNotBuilt;
@@ -159,4 +156,62 @@ test {
     std.testing.refAllDecls(ops);
     std.testing.refAllDecls(ops.Ops);
     std.testing.refAllDecls(ops.Functions);
+}
+
+test {
+    _ = ops;
+    _ = replay;
+    _ = dense;
+    _ = exl3;
+    _ = kv_glue;
+    _ = @import("kernels_shapes.zig");
+}
+
+test "DeepSeek refuses pre-cluster GPUs before loading any image" {
+    const abi = cuda.abi;
+    const Fake = struct {
+        var sm: u32 = 0;
+        var loads: usize = 0;
+        var failed: bool = false;
+        fn attribute(out: *c_int, key: abi.DeviceAttribute, _: abi.Device) callconv(.c) abi.Result {
+            if (failed) return abi.error_not_ready;
+            out.* = switch (key) {
+                .compute_capability_major => @intCast(sm / 10),
+                .compute_capability_minor => @intCast(sm % 10),
+                else => unreachable,
+            };
+            return abi.success;
+        }
+        fn shared(_: abi.Function, _: abi.FunctionAttribute, _: c_int) callconv(.c) abi.Result {
+            return abi.error_not_ready;
+        }
+        fn load(_: *abi.Module, _: ?*const anyopaque) callconv(.c) abi.Result {
+            loads += 1;
+            return abi.error_not_ready;
+        }
+    };
+    var driver: cuda.Driver = undefined;
+    driver.api.cuDeviceGetAttribute = Fake.attribute;
+    driver.api.cuModuleLoadData = Fake.load;
+    driver.api.cuFuncSetAttribute = Fake.shared;
+    const ctx: cuda.Context = .{ .d = &driver, .device = 0, .handle = null };
+    Fake.loads = 0;
+    Fake.failed = false;
+    for ([_]u32{ 80, 86, 89 }) |sm| {
+        Fake.sm = sm;
+        try std.testing.expectError(error.DeepSeekRequiresSm90, Kernels.load(&ctx));
+        try std.testing.expectEqual(@as(usize, 0), Fake.loads);
+    }
+    for ([_]u32{ 90, 100, 120, 121 }) |sm| {
+        Fake.sm = sm;
+        const before = Fake.loads;
+        try std.testing.expectError(if (available) error.NotReady else error.BuiltWithoutKernels, Kernels.load(&ctx));
+        try std.testing.expectEqual(before + @intFromBool(available), Fake.loads);
+    }
+    const group: cuda.Function = .{ .d = &driver, .handle = @ptrFromInt(1) };
+    try std.testing.expectError(error.NotReady, group.allowDynamicShared(48 * 1024));
+    Fake.failed = true;
+    const before = Fake.loads;
+    try std.testing.expectError(error.NotReady, Kernels.load(&ctx));
+    try std.testing.expectEqual(before, Fake.loads);
 }

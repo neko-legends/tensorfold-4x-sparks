@@ -1,9 +1,4 @@
-//! TF_DSV41_MHC_PFDEC's kernels against Python's decode mHC site (oracle.py `mhcdec_case`: Triton `_site_dec` /
-//! `_site` + `_finish_k`, mhc_cuda and mhc_pf off), bit for bit, at 1-64 rows: mhc_pf's site_kernel (the new streams,
-//! the collapsed row, the DSpark tap, the partials), mhc_cuda's coef_kernel past its 16 rows (the next site's pre /
-//! post / comb), and the normed input from those partials and the collapsed row (`_finish_k` without COEF: the
-//! forward's Triton launch, here its arithmetic on the host: a sum of 40 fp32 values in order, IEEE division and square
-//! root, two fp32 products, bf16 round to nearest even).
+//! TF_DSV41_MHC_PFDEC kernels against the reference decode mHC site (oracle.py `mhcdec_case`), bit for bit, 1-64 rows.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -55,8 +50,7 @@ fn bf16Rne(f: f32) u16 {
     return @intCast((u + 0x7fff + ((u >> 16) & 1)) >> 16);
 }
 
-/// `_finish_k`'s normed input, NORM_FIRST: rn = div_rn(1, sqrt_rn(div_rn(ssc, D) + eps)) from stream 0's 40 square
-/// sums in block order, then bf16((c * rn) * w) per column.
+/// `_finish_k`'s normed input: rn = div_rn(1, sqrt_rn(div_rn(ssc, D) + eps)), then bf16((c * rn) * w) per column.
 fn normed(part: []const f32, c: []const u16, nw: []const f32, R: usize, D: usize, eps: f32, out: []u16) void {
     for (0..R) |r| {
         var ssc: f32 = 0.0;
@@ -100,8 +94,7 @@ pub fn cases(gpu: Gpu, k: *const dsv41.Kernels, dir: []const u8) !void {
     const npost = try b.zeros(R * 4 * 4);
     const ncomb = try b.zeros(R * 16 * 4);
 
-    // the forward's PFDEC triple: block_wide.zig's mhc_pf call (empty tensors where the mode has none), then the
-    // coefficients (the norm reads the same partials: checked on the host below)
+    // the forward's PFDEC triple: block_wide.zig's mhc_pf call, then the coefficients (norm checked on the host below)
     const post = mode == 0;
     const a: ops.mhc_pf.Args = .{
         .x = x.ptr,
@@ -153,7 +146,7 @@ pub fn cases(gpu: Gpu, k: *const dsv41.Kernels, dir: []const u8) !void {
     try same(gpu, fx, npost, "npost", n.of(&name_buf, what, "next post"));
     try same(gpu, fx, ncomb, "ncomb", n.of(&name_buf, what, "next comb"));
 
-    // the normed input from these partials and this collapsed row, against Python's `_finish_k`
+    // the normed input from these partials and this collapsed row, against the reference `_finish_k`
     const ph = try check.download(gpu, part);
     defer gpu.gpa.free(ph);
     const ch = try check.download(gpu, c);

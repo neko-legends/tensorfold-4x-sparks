@@ -1,4 +1,4 @@
-//! The tensor-parallel communicator every backend implements: collectives enqueued on the caller's stream, graph-capturable, rank-order sums.
+//! The tensor-parallel communicator every backend implements: stream-ordered, graph-capturable, rank-order sums.
 const std = @import("std");
 const cuda = @import("cuda");
 
@@ -54,13 +54,11 @@ pub const Collective = struct {
         check: *const fn (ptr: *anyopaque) Error!void,
         /// Any thread: end pending and later work at once; safe while another thread is inside a call.
         abort: *const fn (ptr: *anyopaque) void,
-        /// recv [world][stride]: rank r's first lens[r] bytes land at recv + r x stride (lens: device int32 [world] of bytes, the
-        /// same on every rank, each <= the stride's bytes); bytes past a length are unspecified. Null: `all_gather` of whole strides.
+        /// recv[world][stride]: rank r's first lens[r] bytes (device int32 [world]) land at recv + r * stride.
         all_gather_v: ?*const fn (ptr: *anyopaque, send: DevicePtr, recv: DevicePtr, stride: usize, lens: DevicePtr, t: DType, stream: Stream) Error!void = null,
-        /// Whether `all_gather_v` moves only the lengths for shards of `bytes` on this rank's transport (rank-local). Null: never.
+        /// Whether `all_gather_v` moves only the lengths for shards of `bytes` here (rank-local). Null: never.
         var_fits: ?*const fn (ptr: *anyopaque, bytes: usize) bool = null,
-        /// Host: whether every rank's transport takes device lengths (`var_fits(16)` on all), agreed once per communicator by an
-        /// int all-gather and kept on the implementation. Null: false.
+        /// Host: whether every rank's transport takes device lengths, agreed once per communicator. Null: false.
         var_agreed: ?*const fn (ptr: *anyopaque) Error!bool = null,
         /// One group of a send to `to` and a receive from `from` (either null; the peers checked by `sendRecv`). Null:
         /// `sendRecv` orders the two plain calls.
@@ -87,8 +85,7 @@ pub const Collective = struct {
         return c.vtable.all_gather(c.ptr, src, dst, count, t, stream);
     }
 
-    /// `allGather` of `stride` elements a rank where only rank r's first lens[r] bytes matter (see `VTable.all_gather_v`):
-    /// a transport that takes device lengths moves just those, any other the whole strides (the same bytes where lens says).
+    /// `allGather` of `stride` elements a rank where only rank r's first lens[r] bytes matter (`VTable.all_gather_v`).
     pub fn allGatherV(c: Collective, src: DevicePtr, dst: DevicePtr, stride: usize, lens: DevicePtr, t: DType, stream: Stream) Error!void {
         if (c.vtable.all_gather_v) |f| return f(c.ptr, src, dst, stride, lens, t, stream);
         return c.vtable.all_gather(c.ptr, src, dst, stride, t, stream);
@@ -100,7 +97,7 @@ pub const Collective = struct {
         return f(c.ptr, bytes);
     }
 
-    /// Every rank's transport takes device lengths: one agreement a communicator (every rank calls it alike, outside any graph).
+    /// Every rank's transport takes device lengths: one agreement a communicator, called alike outside any graph.
     pub fn varAgreed(c: Collective) Error!bool {
         const f = c.vtable.var_agreed orelse return false;
         return f(c.ptr);

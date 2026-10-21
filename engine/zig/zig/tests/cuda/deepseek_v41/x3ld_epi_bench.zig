@@ -1,15 +1,4 @@
-//! TF_DSV41_X3LD_EPI's GPU micro-gate (x3ld_epi.cu): the decode MoE's expert chain on synthetic prod-shape data,
-//! unfused (x3ld gate/up, gateup_epilogue, x3ld down, down_combine: prod's launches, the Python engine's bits) against
-//! fused (x3ld_epi gateup, x3ld_epi down), compared byte for byte (Xd, y, the combined out) and timed.
-//!
-//! Shapes: the backbone (384 routed + the shared expert, top-6 + shared = 7 slots, D 5,120, I 1,152 = 2,304 / TP 2,
-//! gate/up and down widths 4 / 6 / 8 / 10 a expert: the q28-v2 fixture's 4-10 range) with an fp32 and a bf16 out
-//! (R1's MOE_BF16), and a DSpark block's (128 + shared, top-3 + shared, fp32 out); 1, 4, 16 and 24 rows, random
-//! trellis words, inputs and scales, about a fifth of the routed slots pruned (pick -1 or the drop id E). Every
-//! expert's own words (~3 GB) stream from DRAM as in prod. Each path runs twice before the comparison (the fused
-//! tickets must come back to zero: checked), then 50 timed runs each (median, events around the whole chain).
-//!
-//!   tf-dsv41-test x3ld-epi [rows,...] [reps]     (default 1,4,16,24 and 50)
+//! TF_DSV41_X3LD_EPI micro-gate: the fused decode expert chain against the unfused one, byte for byte, and timed.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -173,16 +162,30 @@ const Run = struct {
         const P = r.R * r.slots;
         const m = r.m;
         return .{
-            .x0 = if (gu) r.xg else x, .x1 = if (gu) r.xu else x,
-            .tp0 = if (gu) m.gate.table.ptr else m.down.table.ptr, .tp1 = if (gu) m.up.table.ptr else m.down.table.ptr,
-            .k2_0 = if (gu) m.gate.k2.ptr else m.down.k2.ptr, .k2_1 = if (gu) m.up.k2.ptr else m.down.k2.ptr,
-            .uids = r.uids, .ucount = r.ucount, .members = r.members, .z = z,
-            .mats = if (gu) 2 else 1, .K = if (gu) D else I, .N = if (gu) I else D, .P = P, .SK = if (gu) SK_GU else 1,
-            .slots = r.slots, .maxm = r.R, .nexp = P, .lo = 4, .hi = 10,
+            .x0 = if (gu) r.xg else x,
+            .x1 = if (gu) r.xu else x,
+            .tp0 = if (gu) m.gate.table.ptr else m.down.table.ptr,
+            .tp1 = if (gu) m.up.table.ptr else m.down.table.ptr,
+            .k2_0 = if (gu) m.gate.k2.ptr else m.down.k2.ptr,
+            .k2_1 = if (gu) m.up.k2.ptr else m.down.k2.ptr,
+            .uids = r.uids,
+            .ucount = r.ucount,
+            .members = r.members,
+            .z = z,
+            .mats = if (gu) 2 else 1,
+            .K = if (gu) D else I,
+            .N = if (gu) I else D,
+            .P = P,
+            .SK = if (gu) SK_GU else 1,
+            .slots = r.slots,
+            .maxm = r.R,
+            .nexp = P,
+            .lo = 4,
+            .hi = 10,
         };
     }
 
-    /// prod's four launches (block_moe.moe with the knob off)
+    /// the unfused four launches (block_moe.moe with the knob off)
     fn unfused(r: *const Run, t: *const Outs) !void {
         const P = r.R * r.slots;
         const m = r.m;

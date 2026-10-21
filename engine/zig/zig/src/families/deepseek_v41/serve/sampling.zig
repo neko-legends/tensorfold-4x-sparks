@@ -1,17 +1,4 @@
-//! DeepSeek-V4.1's token choice on the host, equal to the Python engine's (``batch._choose``): rank 0 picks each row
-//! of a round from its gathered candidates, keyed by (seed, absolute position, id), so drafted == serial and
-//! batched == alone hold for any drafter.
-//!
-//! - **Greedy** (no sampling, or temperature <= 0): the largest logit, ties to the lower id.
-//! - **top_k > 0**: ``exact_sampling.choose_rows`` over the row's top_k + ``margin`` candidates.
-//! - **top_k = 0, 0 < top_p < 1** (``nucleus.py``): from ``nucleus_count`` candidates plus each rank's
-//!   (max, sum exp(v/T - max/T)) over its vocabulary half: the kept prefix when the candidates decide it, else
-//!   ``.full_row`` (gather the row's whole vocabulary and pick again without the statistics).
-//! - **top_k = 0 otherwise**: ``choose_rows`` over the whole vocabulary.
-//!
-//! The engine gathers candidates per rank (``pick.top``: value descending, ties to the lower id) as fp32 [W, R, 2k]
-//! (values, then int32 ids as fp32 bits); ``Candidates`` reads that buffer and ``merge`` orders a row as
-//! ``vsample.merge`` does. A ``Picker`` owns the scratch, sized once for the vocabulary: picking allocates nothing.
+//! DeepSeek-V4.1's host token choice: rank 0 picks each row keyed by (seed, position, id), so drafted == serial.
 const std = @import("std");
 const lanes = @import("lanes");
 const Allocator = std.mem.Allocator;
@@ -24,24 +11,24 @@ pub const seedFor = lanes.sampling.seedFor;
 const uniform = lanes.sampling.uniform;
 const pairwiseSum = lanes.sampling.pairwiseSum;
 
-/// Candidates read beyond top_k, so tied values resolve by id on the host (``exact_sampling.MARGIN``).
+/// Candidates read beyond top_k, so tied values resolve by id on the host.
 pub const margin: u32 = 8;
 /// Candidates a nucleus row asks for (``TF_DSV41_NUCLEUS``'s default; 0 turns the nucleus path off).
 pub const nucleus_count: u32 = 512;
-/// A cumulative sum this close to top_p is decided on the whole row (``nucleus.GUARD``).
+/// A cumulative sum this close to top_p is decided on the whole row.
 const guard = 1e-9;
 
 fn greedy(s: ?Sampling) bool {
     return s == null or s.?.temperature <= 0;
 }
 
-/// ``nucleus.spec``: top-p sampling without top-k, decided from candidates and the ranks' statistics.
+/// Top-p sampling without top-k, decided from candidates and the ranks' statistics.
 pub fn isNucleus(s: ?Sampling) bool {
     const x = s orelse return false;
     return x.temperature > 0 and x.top_k == 0 and x.top_p > 0 and x.top_p < 1;
 }
 
-/// Candidates a row of this sampling needs gathered (``Batcher._decode``'s count); ``nucleus`` 0: no nucleus path.
+/// Candidates a row of this sampling needs gathered; ``nucleus`` 0: no nucleus path.
 pub fn candidateCount(s: ?Sampling, vocab: u32, nucleus: u32) u32 {
     const k: u32 = if (greedy(s)) 1 + margin else if (s.?.top_k > 0) s.?.top_k +| margin else if (isNucleus(s) and nucleus > 0) nucleus else vocab;
     return @min(k, vocab);
@@ -51,10 +38,9 @@ pub fn candidateCount(s: ?Sampling, vocab: u32, nucleus: u32) u32 {
 pub const Row = struct {
     values: []const f32,
     ids: []const u32,
-    /// Nucleus rows: each rank's (max logit, sum over its half of exp(v/T - max/T)) in float64, in rank order.
-    /// Empty: the candidates are the row's whole vocabulary or a top_k cut.
+    /// Nucleus rows: each rank's (max logit, sum exp(v/T - max/T)) as f64, rank order; empty: whole row or a top_k cut.
     stats: []const [2]f64 = &.{},
-    /// The merged candidates kept (``candidateCount``; ``vsample.merge``'s cut); 0: all of them.
+    /// The merged candidates kept (``candidateCount``); 0: all of them.
     count: usize = 0,
 };
 
@@ -65,7 +51,7 @@ pub const Candidates = struct {
     rows: u32,
     k: u32,
 
-    /// Row ``r``'s candidates from every rank, rank order (``vsample.merge`` before its sort).
+    /// Row ``r``'s candidates from every rank, rank order (unsorted).
     pub fn row(c: Candidates, r: u32, values: []f32, ids: []u32) usize {
         var n: usize = 0;
         for (0..c.world) |w| {
@@ -86,7 +72,7 @@ pub const Pick = union(enum) {
     full_row,
 };
 
-/// The sort key ``vsample.sort_keys`` orders by: larger value first (-0.0 as +0.0), then the lower id.
+/// The sort key: larger value first (-0.0 as +0.0), then the lower id.
 inline fn key(v: f32, id: u32) u64 {
     const bits: u32 = @bitCast(v + 0.0);
     const mono: u32 = if (bits & 0x8000_0000 == 0) bits | 0x8000_0000 else ~bits;
@@ -114,7 +100,7 @@ pub const Picker = struct {
         p.gpa.free(p.work);
     }
 
-    /// Orders a row's candidates (``vsample.merge``): ``keys`` holds them sorted, value and id recoverable.
+    /// Orders a row's candidates: ``keys`` holds them sorted, value and id recoverable.
     fn merge(p: *Picker, r: Row) []u64 {
         const n = r.values.len;
         const keys = p.keys[0..n];
@@ -149,7 +135,7 @@ pub const Picker = struct {
         return .{ .token = p.chooseRow(keys, x, position) };
     }
 
-    /// ``choose_rows`` on one merged row.
+    /// The keyed choice on one merged row.
     fn chooseRow(p: *Picker, keys: []const u64, s: Sampling, position: u64) u32 {
         const width = keys.len;
         const k = @max(1, @min(if (s.top_k != 0) @as(usize, s.top_k) else width, width));
@@ -183,7 +169,7 @@ pub const Picker = struct {
         return idOf(keys[best]);
     }
 
-    /// ``nucleus.keep_count``: tokens the row may sample, or null when its candidates cannot decide it.
+    /// Tokens the nucleus row may sample, or null when its candidates cannot decide it.
     fn keepCount(p: *Picker, keys: []const u64, s: Sampling, stats: []const [2]f64) ?usize {
         const n = keys.len;
         const t = @max(s.temperature, 1e-6);
@@ -214,7 +200,7 @@ pub const Picker = struct {
         return @max(1, keep);
     }
 
-    /// ``nucleus.choose``'s keyed draw over a kept prefix.
+    /// The nucleus keyed draw over a kept prefix.
     fn keyed(p: *Picker, keys: []const u64, s: Sampling, position: u64) u32 {
         _ = p;
         const t = @max(s.temperature, 1e-6);
@@ -236,8 +222,7 @@ pub const Picker = struct {
     }
 };
 
-/// ``protocol.accepted``: drafts kept from a chain window ``[pending, d1, d2, ...]`` whose rows chose ``chosen``:
-/// d_i stays while it equals chosen[i - 1]; the round emits accepted + 1 tokens (``chosen[0..accepted + 1]``).
+/// Drafts kept from chain window ``[pending, d1, ...]``: d_i stays while it equals chosen[i - 1]; emits accepted + 1.
 pub fn accept(window: []const u32, chosen: []const u32) usize {
     const drafts = window[@min(1, window.len)..];
     const n = @min(drafts.len, chosen.len); // zip's length: a window has one row more than drafts

@@ -1,7 +1,7 @@
 //! Compare fusion emission to the complete unfused program, including every unaffected call.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 
 fn named(c: calls.Call, name: []const u8) calls.Arg {
     for (c.args) |a| if (std.mem.eql(u8, a.name, name)) return a.arg;
@@ -33,10 +33,9 @@ pub fn compare(plain: []const calls.Call, fused: []const calls.Call, count: usiz
             try testing.expect(kvNorm(norm));
             try testing.expectEqualDeep(named(norm, "OUT"), named(store, "LAT"));
             const want = [_]calls.Arg{
-                named(norm, "X"), named(norm, "W"), named(store, "CS"), named(store, "V"), named(store, "S"),
-                named(store, "POS"), named(store, "SL"), named(norm, "x_rs"), named(store, "cs_stride"),
-                named(store, "v_stride"), named(store, "s_stride"), named(norm, "inv_k"), named(norm, "eps"),
-                named(store, "RING"), named(store, "ROWS"),
+                named(norm, "X"),         named(norm, "W"),     named(store, "CS"),  named(store, "V"),         named(store, "S"),
+                named(store, "POS"),      named(store, "SL"),   named(norm, "x_rs"), named(store, "cs_stride"), named(store, "v_stride"),
+                named(store, "s_stride"), named(norm, "inv_k"), named(norm, "eps"),  named(store, "RING"),      named(store, "ROWS"),
             };
             try testing.expectEqual(want.len, c.args.len);
             for (want, c.args) |arg, actual| try testing.expectEqualDeep(arg, actual.arg);

@@ -1,6 +1,4 @@
-//! sampling.cu's launches (the `dsv41_kernels` module): a window's nucleus statistics and the candidates' packed rows,
-//! its own fatbin and module (`dsv41_sampling`, loaded beside `Kernels`). The fatbin is optional (zig/build/cuda.zig):
-//! an empty image, and `load` refuses.
+//! sampling.cu's launches in their own optional fatbin (`dsv41_sampling`): nucleus statistics and packed rows.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -53,8 +51,7 @@ pub const Functions = struct {
         return std.mem.alignForward(usize, 4 * rows * chunks, 8) + 8 * rows * chunks;
     }
 
-    /// `stats`' values over every SM (sampling.cu's dsv41_sampling_stats_*: the sum in chunk order); `work` holds
-    /// `splitScratch(rows, C)` bytes. error.NoSplit without the split kernels.
+    /// `stats` over every SM (sum in chunk order); `work` holds `splitScratch(rows, C)` bytes; error.NoSplit without.
     pub fn statsSplit(f: *const Functions, s: cuda.Stream, lg: u64, ld: usize, rows: usize, C: usize, t: f64, work: u64, out: u64) !void {
         const sp = f.split orelse return error.NoSplit;
         if (rows < 1 or C < 1 or !(t > 0)) return error.Shape;

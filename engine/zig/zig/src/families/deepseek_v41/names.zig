@@ -1,9 +1,9 @@
-//! The pack's tensor names, the TP split of each and the shapes the forward expects (cuda/weights.py Loader, cuda/drafter.py), plus the names the text engine leaves unread.
+//! The pack's tensor names, each one's TP split and expected shape, plus the names the text engine leaves unread.
 
 const std = @import("std");
 const Config = @import("config.zig").Config;
 const List = @import("config.zig").List;
-const Split = @import("exl3.zig").Split;
+const Split = @import("core").exl3_layout.Split;
 const DType = @import("core").safetensors.DType;
 
 /// "layers.L" for the backbone, "mtp.i" for DSpark block i (layer = layers + i).
@@ -27,7 +27,7 @@ pub const GroupSpec = struct {
 
 pub const Groups = List(GroupSpec, 32);
 
-/// The block's EXL3 groups this rank loads, in the Python loader's order (wo_a: only this rank's groups).
+/// The block's EXL3 groups this rank loads, in the loader's order (wo_a: only this rank's groups).
 pub fn blockGroups(c: *const Config, layer: u32, rank: u32, world: u32, has_shared: bool) !Groups {
     var g: Groups = .{};
     const per_group_k = c.heads / c.o_groups * c.head_dim;
@@ -81,6 +81,7 @@ pub fn expertName(block: []const u8, e: u32, p: ExpertProj, buf: []u8) ![]const 
 
 /// Which dtypes a native tensor may be stored in; the loader converts to what the forward holds.
 pub const Store = enum {
+    param,
     /// norms: bf16 in the pack (fp32 in the forward), fp32 accepted
     norm,
     /// fp32 only (sinks, hc_*, router bias)
@@ -93,6 +94,7 @@ pub const Store = enum {
 
     pub fn accepts(s: Store, d: DType) bool {
         return switch (s) {
+            .param => d == .bf16 or d == .f32 or d == .f16,
             .norm => d == .bf16 or d == .f32,
             .f32 => d == .f32,
             .half => d == .bf16 or d == .f16,
@@ -126,7 +128,7 @@ pub const NativeSpec = struct {
 
 pub const Natives = List(NativeSpec, 24);
 
-/// A block's native tensors: norms, hyper-connection mixers, the sink, compressor / indexer pieces, the router, Engram's q.k.
+/// A block's native tensors: norms, mHC mixers, the sink, compressor / indexer pieces, the router, Engram's q.k.
 pub fn blockNatives(c: *const Config, layer: u32) !Natives {
     var n: Natives = .{};
     const hc = c.hc_mult;
@@ -152,13 +154,13 @@ pub fn blockNatives(c: *const Config, layer: u32) !Natives {
     try n.push(.m("ffn.gate.weight", .half, ex.count, c.hidden));
     try n.push(.v("ffn.gate.bias", .bias, ex.count));
     if (c.isEngram(layer)) {
-        try n.push(.m("engram.q_weight", .norm, hc, c.hidden));
-        try n.push(.m("engram.k_weight", .norm, hc, c.hidden));
+        try n.push(.m("engram.q_weight", .param, hc, c.hidden));
+        try n.push(.m("engram.k_weight", .param, hc, c.hidden));
     }
     return n;
 }
 
-/// Model-level tensors outside the blocks: the vocabulary rows of this rank, the final norm (the head is an EXL3 group).
+/// Model-level tensors outside the blocks: this rank's vocabulary rows, the final norm (the head is an EXL3 group).
 pub fn topNatives(c: *const Config) !Natives {
     var n: Natives = .{};
     var embed = NativeSpec.m("embed.weight", .half, c.vocab, c.hidden);
@@ -170,7 +172,7 @@ pub fn topNatives(c: *const Config) !Natives {
 
 pub const head = GroupSpec{ .proj = .wq_a, .suffix = "head", .split = .col };
 
-/// DSpark's heads beside its blocks (the latest mtp.i that has each, as drafter.py _find).
+/// DSpark's heads beside its blocks (the latest mtp.i that has each).
 pub fn dsparkNatives(c: *const Config) !Natives {
     var n: Natives = .{};
     try n.push(.v("main_norm.weight", .norm, c.hidden));
@@ -184,7 +186,7 @@ pub fn dsparkNatives(c: *const Config) !Natives {
 pub const dspark_confidence = "confidence_head.proj.weight";
 pub const dspark_main_proj = "main_proj";
 
-/// Names the text engine never reads: the vision tower, image markers, image routing bias, and bf16 copies of EXL3 groups.
+/// Names the text engine never reads: vision tower, image markers, image routing bias, bf16 copies of EXL3 groups.
 pub fn ignored(name: []const u8, has: anytype) bool {
     for ([_][]const u8{ "vision.", "aligner.", "image_" }) |p| if (std.mem.startsWith(u8, name, p)) return true;
     if (std.mem.endsWith(u8, name, ".ffn.gate.bias_vl")) return true;

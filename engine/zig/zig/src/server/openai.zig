@@ -89,26 +89,7 @@ const ClientOut = struct {
 };
 
 /// Whether the client has gone, read between rounds (Python's socket_cancellation).
-pub const Gone = struct {
-    conn: *Conn,
-    on: bool = true,
-    /// The stream a keepalive goes to once it has been silent `every_ns` (0: never)
-    out: ?Out = null,
-    every_ns: i96 = 0,
-    pub fn check(g: Gone) bool {
-        if (!g.on) return false;
-        return g.conn.peerGone();
-    }
-
-    /// A keepalive if the stream has been silent long enough; a failed write means the client left.
-    pub fn beat(g: Gone, silent_ns: i96) error{Closed}!bool {
-        const o = g.out orelse return false;
-        const send = o.vt.keepalive orelse return false;
-        if (g.every_ns <= 0 or silent_ns < g.every_ns) return false;
-        try send(o.ctx);
-        return true;
-    }
-};
+pub const Gone = @import("stream_live.zig").Gone;
 
 /// ``error_body``: OpenAI's error object, with param and code where clients key on them.
 pub fn errorBody(a: Allocator, cx: *const Cx, param: ?[]const u8) Allocator.Error!Value {
@@ -632,11 +613,11 @@ const Run = struct {
         defer if (!handed) chat.release(r.srv, prepared.preparing);
         var sink_state: StreamSink = .{ .run = r, .tools = tools, .prompt_len = prepared.prompt_len };
         handed = true;
+        const sink: chat.Sink = .{ .ctx = &sink_state, .call = StreamSink.call, .begin = StreamSink.begin };
         var live = gone;
         live.out = r.out;
-        live.every_ns = @intFromFloat(r.srv.config.spark.keepalive_s * std.time.ns_per_s);
-        var reply = chat.generate(r.srv, &cx, prepared, .{ .ctx = &sink_state, .call = StreamSink.call, .begin = StreamSink.begin }, live) catch |e| {
-            // 1.1.0's preflight contract: a stream that never opened fails as its HTTP status, not as an event
+        live.every_ns = @intFromFloat(r.srv.config.sse_keepalive_s * std.time.ns_per_s);
+        var reply = (if (r.turn) |t| cortheon.loop.stream(t, r.srv, &cx, &r.plan.input, prepared, sink, live) else chat.generate(r.srv, &cx, prepared, sink, live)) catch |e| {
             if (!sink_state.opened) return r.unsent(&cx, e, field);
             switch (e) {
                 error.Cancelled => return,

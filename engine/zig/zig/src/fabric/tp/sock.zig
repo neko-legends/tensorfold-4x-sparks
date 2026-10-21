@@ -26,15 +26,16 @@ fn tune(fd: Fd) void {
     const idle: c_int = 30;
     const intvl: c_int = 10;
     const cnt: c_int = 6;
-    _ = c.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPIDLE, &idle, @sizeOf(c_int));
+    _ = c.setsockopt(fd, posix.IPPROTO.TCP, (if (@hasDecl(posix.TCP, "KEEPIDLE")) posix.TCP.KEEPIDLE else posix.TCP.KEEPALIVE), &idle, @sizeOf(c_int));
     _ = c.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPINTVL, &intvl, @sizeOf(c_int));
     _ = c.setsockopt(fd, posix.IPPROTO.TCP, posix.TCP.KEEPCNT, &cnt, @sizeOf(c_int));
 }
 
 /// Rank 0's listening socket on every IPv4 address at `port`.
 pub fn listen(port: u16) Error!Fd {
-    const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+    const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
     if (fd < 0) return error.SocketFailed;
+    _ = c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
     errdefer _ = c.close(fd);
     const one: c_int = 1;
     _ = c.setsockopt(fd, posix.SOL.SOCKET, posix.SO.REUSEADDR, &one, @sizeOf(c_int));
@@ -50,6 +51,7 @@ pub fn accept(fd: Fd, deadline_ns: u64) Error!Fd {
         try waitReadable(fd, deadline_ns);
         const conn = c.accept(fd, null, null);
         if (conn >= 0) {
+            _ = c.fcntl(conn, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
             tune(conn);
             return conn;
         }
@@ -67,11 +69,12 @@ pub fn connect(host: []const u8, port: u16, deadline_ns: u64) Error!Fd {
     const hints: c.addrinfo = .{ .flags = .{}, .family = posix.AF.INET, .socktype = posix.SOCK.STREAM, .protocol = 0, .addrlen = 0, .addr = null, .canonname = null, .next = null };
     while (true) {
         var res: ?*c.addrinfo = null;
-        if (@intFromEnum(c.getaddrinfo(name[0..host.len :0], svc, &hints, &res)) == 0) {
+        if (@backingInt(c.getaddrinfo(name[0..host.len :0], svc, &hints, &res)) == 0) {
             defer c.freeaddrinfo(res.?);
-            const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM | posix.SOCK.CLOEXEC, 0);
+            const fd = c.socket(posix.AF.INET, posix.SOCK.STREAM, 0);
             if (fd < 0) return error.SocketFailed;
-            if (c.connect(fd, res.?.addr.?, res.?.addrlen) == 0) {
+            _ = c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
+            if (connectBefore(fd, res.?.addr.?, res.?.addrlen, deadline_ns)) {
                 tune(fd);
                 return fd;
             }
@@ -79,6 +82,41 @@ pub fn connect(host: []const u8, port: u16, deadline_ns: u64) Error!Fd {
         }
         if (nowNs() >= deadline_ns) return error.Timeout;
         sleepNs(50 * std.time.ns_per_ms);
+    }
+}
+
+fn connectBefore(fd: Fd, address: *const posix.sockaddr, len: posix.socklen_t, deadline: u64) bool {
+    const flags = c.fcntl(fd, posix.F.GETFL);
+    if (flags < 0) return false;
+    if (c.fcntl(fd, posix.F.SETFL, flags | @as(c_int, @bitCast(posix.O{ .NONBLOCK = true }))) < 0) return false;
+    defer _ = c.fcntl(fd, posix.F.SETFL, flags);
+    const rc = c.connect(fd, address, len);
+    if (rc == 0) return true;
+    if (posix.errno(rc) != .INPROGRESS) return false;
+    waitWritable(fd, deadline) catch return false;
+    var err: c_int = 0;
+    var size: posix.socklen_t = @sizeOf(c_int);
+    return c.getsockopt(fd, posix.SOL.SOCKET, posix.SO.ERROR, @ptrCast(&err), &size) == 0 and err == 0;
+}
+
+fn waitWritable(fd: Fd, deadline: u64) Error!void {
+    while (true) {
+        const now = nowNs();
+        if (now >= deadline) return error.Timeout;
+        var p = [_]c.pollfd{.{ .fd = fd, .events = posix.POLL.OUT, .revents = 0 }};
+        const ms: c_int = @intCast(@min((deadline - now) / std.time.ns_per_ms + 1, 1000));
+        if (c.poll(&p, 1, ms) > 0) return;
+    }
+}
+
+pub fn sendBefore(fd: Fd, bytes: []const u8, deadline: u64) Error!void {
+    var at: usize = 0;
+    while (at < bytes.len) {
+        try waitWritable(fd, deadline);
+        const n = c.send(fd, bytes[at..].ptr, bytes.len - at, posix.MSG.NOSIGNAL | posix.MSG.DONTWAIT);
+        if (n < 0 and (posix.errno(n) == .INTR or posix.errno(n) == .AGAIN)) continue;
+        if (n <= 0) return error.Closed;
+        at += @intCast(n);
     }
 }
 

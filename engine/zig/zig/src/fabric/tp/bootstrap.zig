@@ -1,5 +1,6 @@
-//! Rank discovery over TCP (a star on rank 0): small host blobs all-gathered, settings agreed, sockets kept as the fate channel.
+//! Rank discovery over TCP (a star on rank 0): small host blobs all-gathered, settings agreed, sockets kept for fate.
 const std = @import("std");
+const log = @import("log.zig");
 const sock = @import("sock.zig");
 const Config = @import("config.zig").Config;
 
@@ -29,8 +30,7 @@ pub const Bootstrap = struct {
         return sock.nowNs() + b.timeout_ns;
     }
 
-    /// Rank 0 listens on `link_port` and accepts every other rank; the others connect to `master`. Both until the
-    /// connect timeout.
+    /// Rank 0 listens on `link_port` and accepts every other rank; the others connect to `master` (connect timeout).
     pub fn open(cfg: Config) Error!Bootstrap {
         if (cfg.world > max_ranks or cfg.rank >= cfg.world) return error.Protocol;
         var b: Bootstrap = .{ .rank = cfg.rank, .world = cfg.world, .timeout_ns = cfg.connect_timeout_ns };
@@ -46,7 +46,7 @@ pub const Bootstrap = struct {
                 const fd = try sock.connect(cfg.master, cfg.link_port, until);
                 if (role == 0) b.fds[0] = fd else b.plan_fds[0] = fd;
                 const h: Hello = .{ .magic = magic, .version = version, .world = cfg.world, .rank = cfg.rank, .role = role };
-                try sock.sendAll(fd, std.mem.asBytes(&h));
+                try sock.sendBefore(fd, std.mem.asBytes(&h), until);
             }
         }
         return b;
@@ -54,6 +54,7 @@ pub const Bootstrap = struct {
 
     /// Rank 0 over an already listening socket (tests: an ephemeral port).
     pub fn acceptOn(l: sock.Fd, world: u32, timeout_ns: u64) Error!Bootstrap {
+        if (world == 0 or world > max_ranks) return error.Protocol;
         var b: Bootstrap = .{ .rank = 0, .world = world, .timeout_ns = timeout_ns };
         errdefer b.close();
         try b.acceptAll(l);
@@ -72,13 +73,13 @@ pub const Bootstrap = struct {
                 continue;
             };
             if (h.magic != magic or h.version != version) {
-                std.log.warn("tp bootstrap: a connection that is not a rank (magic {x}); ignored", .{h.magic});
+                log.warn("tp bootstrap: a connection that is not a rank (magic {x}); ignored", .{h.magic});
                 sock.close(fd);
                 continue;
             }
             const table = if (h.role == 0) &b.fds else &b.plan_fds;
             if (h.world != b.world or h.rank == 0 or h.rank >= b.world or h.role > 1 or table[h.rank] >= 0) {
-                std.log.warn("tp bootstrap: rank {d} of {d} joined a world of {d}", .{ h.rank, h.world, b.world });
+                log.warn("tp bootstrap: rank {d} of {d} joined a world of {d}", .{ h.rank, h.world, b.world });
                 sock.close(fd);
                 return error.Mismatch;
             }
@@ -108,11 +109,10 @@ pub const Bootstrap = struct {
         };
     }
 
-    /// Every rank's `mine` in rank order into `out` (returned: the blobs, each a slice of `out`). Every rank must
-    /// call it the same number of times.
+    /// Every rank's `mine` in rank order into `out`, returned as slices of `out`; every rank calls it equally often.
     pub fn allGather(b: *Bootstrap, mine: []const u8, out: []u8, blobs: [][]const u8) Error![]const []const u8 {
         if (mine.len > max_blob) return error.TooLarge;
-        std.debug.assert(blobs.len >= b.world);
+        if (blobs.len < b.world or mine.len > max_blob) return error.TooLarge;
         if (b.world == 1) {
             if (out.len < mine.len) return error.TooLarge;
             @memcpy(out[0..mine.len], mine);
@@ -120,7 +120,7 @@ pub const Bootstrap = struct {
             return blobs[0..1];
         }
         if (b.rank != 0) {
-            try sendFrame(b.fds[0], mine);
+            try sendFrame(b.fds[0], mine, b.deadline());
             return b.readAll(b.fds[0], out, blobs);
         }
         // rank 0: everyone's blob, then the whole table to everyone
@@ -137,7 +137,7 @@ pub const Bootstrap = struct {
             used += len;
         }
         for (1..b.world) |i| {
-            for (blobs[0..b.world]) |blob| try sendFrame(b.fds[i], blob);
+            for (blobs[0..b.world]) |blob| try sendFrame(b.fds[i], blob, b.deadline());
         }
         return blobs[0..b.world];
     }
@@ -171,16 +171,16 @@ pub const Bootstrap = struct {
         var scratch: [8192]u8 = undefined;
         const all = try b.allGather(bytes, &scratch, &blobs);
         for (all, 0..) |blob, i| if (!std.mem.eql(u8, blob, all[0])) {
-            std.log.warn("tp bootstrap: rank {d}'s {s} differs from rank 0's; both ranks refuse to start", .{ i, what });
+            log.warn("tp bootstrap: rank {d}'s {s} differs from rank 0's; both ranks refuse to start", .{ i, what });
             return error.Mismatch;
         };
     }
 };
 
-fn sendFrame(fd: sock.Fd, bytes: []const u8) sock.Error!void {
+fn sendFrame(fd: sock.Fd, bytes: []const u8, deadline: u64) sock.Error!void {
     const l: u32 = @intCast(bytes.len);
-    try sock.sendAll(fd, std.mem.asBytes(&l));
-    try sock.sendAll(fd, bytes);
+    try sock.sendBefore(fd, std.mem.asBytes(&l), deadline);
+    try sock.sendBefore(fd, bytes, deadline);
 }
 
 /// An ephemeral listening port for tests.
@@ -260,4 +260,57 @@ test "settings that differ stop every rank" {
     try std.testing.expectError(error.Mismatch, b.agree("knobs-a", "settings"));
     t.join();
     try std.testing.expectEqual(@as(?anyerror, error.Mismatch), err);
+}
+
+/// Rank 1 agrees on `theirs.digest()` against rank 0's `ours.digest()`; returns both ranks' results.
+fn agreeDigests(ours: Config, theirs: Config) !struct { ?anyerror, ?anyerror } {
+    const l = try testListener();
+    defer sock.close(l.fd);
+    const T = struct {
+        fn go(port: u16, cfg: Config, err: *?anyerror) void {
+            var c = cfg;
+            c.world = 2;
+            c.rank = 1;
+            c.link_port = port;
+            c.connect_timeout_ns = 5 * std.time.ns_per_s;
+            var b = Bootstrap.open(c) catch |e| {
+                err.* = e;
+                return;
+            };
+            defer b.close();
+            b.agree(&c.digest(), "settings") catch |e| {
+                err.* = e;
+            };
+        }
+    };
+    var err1: ?anyerror = null;
+    const t = try std.Thread.spawn(.{}, T.go, .{ l.port, theirs, &err1 });
+    var b = try Bootstrap.acceptOn(l.fd, 2, 5 * std.time.ns_per_s);
+    defer b.close();
+    var err0: ?anyerror = null;
+    b.agree(&ours.digest(), "settings") catch |e| {
+        err0 = e;
+    };
+    t.join();
+    return .{ err0, err1 };
+}
+
+test "a graph cache switched off on one rank stops both at start; 0 and OFF on the two ranks start" {
+    const on: Config = .{ .graph_cache = .{} };
+    const off: Config = .{ .graph_cache = .{}, .graph_cache_env = "off" };
+    const r = try agreeDigests(on, off);
+    try std.testing.expectEqual(@as(?anyerror, error.Mismatch), r[0]);
+    try std.testing.expectEqual(@as(?anyerror, error.Mismatch), r[1]);
+    const none = try agreeDigests(.{}, .{ .graph_cache_env = "off" }); // a family without the cache is not refused
+    try std.testing.expectEqual(@as(?anyerror, null), none[0]);
+    try std.testing.expectEqual(@as(?anyerror, null), none[1]);
+    const same = try agreeDigests(.{ .graph_cache = .{}, .graph_cache_env = "0" }, .{ .graph_cache = .{}, .graph_cache_env = "OFF" });
+    try std.testing.expectEqual(@as(?anyerror, null), same[0]);
+    try std.testing.expectEqual(@as(?anyerror, null), same[1]);
+    const family = try agreeDigests(.{ .graph_cache = .{ .max = 8 } }, .{ .graph_cache = .{ .max = 16 } });
+    try std.testing.expectEqual(@as(?anyerror, error.Mismatch), family[0]);
+}
+
+test "Failure boundaries: acceptOn validates the world before touching a descriptor" {
+    try std.testing.expectError(error.Protocol, Bootstrap.acceptOn(-1, max_ranks + 1, 0));
 }

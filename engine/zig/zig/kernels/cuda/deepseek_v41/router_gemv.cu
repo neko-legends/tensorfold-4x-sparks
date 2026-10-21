@@ -1,36 +1,9 @@
-// Device code of src/tensorfold/families/deepseek_v41/cuda/router_gemv.cu (git blob 5841ced53bf5 at 78b703d; the whole file, DSV41_RG_NO_TORCH defined),
-// generated and checked by zig/kernels/cuda/deepseek_v41/sync.py. Do not edit: change the Python source.
+// Copy of src/tensorfold/families/deepseek_v41/cuda/router_gemv.cu (blob 5841ced53bf5): sass_check.sh
 #define DSV41_RG_NO_TORCH
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-// DeepSeek-V4.1-Flash's MoE router as one CUDA GEMV + selection launch (TF_DSV41_ROUTER=gemv; router_gemv.py has the
-// cost model and the design notes). x bf16 [R, 5,120], gate bf16 [E <= 512, 5,120], bias fp32 [E].
-//
-// The logit of (row r, expert e), fixed for every R, row tile, config (NW, EW) and block schedule:
-//   - lane l of the warp that owns e runs ONE fp32 FMA chain from +0.0 over k = 8 v + i, v = l + 32 j,
-//     j = 0 .. NV-1 ascending, i = 0 .. 7 ascending (16-byte vectors of the gate row, coalesced a warp);
-//     acc = __fmaf_rn(x[r][k], W[e][k], acc), x and W widened exactly from bf16;
-//   - then the xor butterfly acc = __fadd_rn(acc, shfl_xor(acc, o)) for o = 16, 8, 4, 2, 1 (IEEE addition is
-//     commutative, so every lane holds the same bits; lane r stores row r's logit).
-// Tile-mates never enter a chain: a row's logit is the same bits alone or in any window (router_gemv.py's numpy
-// model is this order, bit for bit).
-//
-// Data movement: a CTA of NW warps owns NW x EW experts and RT rows (one row tile: grid.y). Each lane keeps PD
-// vectors of its gate rows in flight (ld.global.nc.L1::no_allocate.v4, issued PD steps ahead, a register ring);
-// the RT rows of x are staged in shared memory in chunks of CK = 512 k (bf16, double-buffered, one __syncthreads a
-// chunk), each x element read once from global a CTA. bf16 -> fp32 is a shift (x at use, W once for all RT rows).
-//
-// Selection (fused): every CTA writes its logits to LG [R, E] fp32, fences and bumps its row tile's counter; the
-// CTA that arrives last (atomicAdd == gridDim.x - 1) fences, reads the tile's logits through L2 (__ldcg) and selects
-// a row a warp: s = sqrt(softplus(z)) (router.py's safe softplus: z above 20, log(1 + e^z) on [-10, 20], e - e^2 / 2
-// below -10), top-K of s + bias (ties to the lower id, a total order: the butterfly argmax is exact), the weights
-// scale * (s_i / total) with total the fp32 sum in pick order, then the shared slot (E, 1.0); it resets the counter
-// to 0 (self-cleaning: a graph replay starts from 0). Which CTA arrives last never changes a bit.
-//
-// narrow_kernel (TF_DSV41_RG_NARROW, decode rows <= 16): the same chains and butterfly with the work placed in more,
-// smaller CTAs, the gate row in flight whole by cp.async and x from L1 (no barrier in the main loop): its notes.
-// Folded tail (TF_DSV41_RG_TAIL): kit = the weights rounded to fp16 in the selection (pick.kit_weights' two cast
-// kernels, the same bits); group = upstream's group_kernel run by the selecting CTA (narrow kernel, one row tile).
+
+
+
+// DeepSeek-V4.1 MoE router, one GEMV + top-K launch: each logit is one fp32 FMA chain + xor butterfly, any tiling
 #include <cstdint>
 #include <cuda_fp16.h>
 #include <cuda_runtime.h>
@@ -62,7 +35,7 @@ __device__ __forceinline__ void widen8(const uint4 v, float (&f)[8]) {
     f[6] = __uint_as_float(v.w << 16); f[7] = __uint_as_float(v.w & 0xffff0000u);
 }
 
-// router.py's _softplus, operation for operation (no contraction: the intrinsics are never fused)
+// the reference router's safe softplus, operation for operation (no contraction: the intrinsics are never fused)
 __device__ __forceinline__ float softplus(float z) {
     const float e = expf(fminf(z, 20.0f));
     if (z > 20.0f) return z;
@@ -70,11 +43,7 @@ __device__ __forceinline__ float softplus(float z) {
     return logf(__fadd_rn(1.0f, e));
 }
 
-// R1c (TF_DSV41_RG_PRUNE): prune.py's _prune folded into the selection, its operations in its order on the row's K
-// weights (one lane, K <= 8): total = the fp32 sum in slot order, f = div_rn(w, total), each slot's rank (f desc, slot
-// asc), the exclusive prefix of f in rank order, keep = (excl < topp and f >= min_w) or rank < min_k, ks = the kept
-// weights' sum in slot order, w' = w (orig) or scale x div_rn(w, ks), dropped slots: weight 0 and the drop id (or
-// the rank-0 id: dup). Rows that keep every slot stay as they are (the kernel stores only the others).
+// TF_DSV41_RG_PRUNE: the top-p prune folded into the selection, its operations in order on the row's K weights
 struct Prune {
     float min_w, topp, scale;
     int min_k, orig, drop, dup, on;
@@ -120,9 +89,7 @@ __device__ __forceinline__ void prune_row(const Prune& P, int K, float (&w)[KMAX
     }
 }
 
-// The prune pass of one selected row (lane 0, after select_row stored its unrounded weights): the rule, then the
-// kit rounding, the row's pick / wts / grouping copy rewritten. Apart from select_row so its arrays never share a
-// live range with the selection's (gemv_kernel's instances keep their registers).
+// Prune pass of one selected row (lane 0); noinline so its arrays never share a live range with select_row's
 __device__ __noinline__ void prune_pass(const Prune& P, int K, int kit, int* pick, float* wts, int* psh) {
     float wv[KMAX];
     int ip[KMAX];
@@ -212,7 +179,7 @@ struct Args {
     int* gcnt;              //   in id order, their count, members [., maxm] row * 32 + slot in row order, -1 after
     int* gmem;
     int GE, maxm, group;
-    Prune prune;            // R1c: prune.py's rule folded into the selection (on = 0: off)
+    Prune prune;            // the top-p prune rule folded into the selection (on = 0: off)
 };
 
 constexpr int GE_MAX = 512;         // table entries the folded grouping takes
@@ -220,8 +187,7 @@ constexpr int PICKS_MAX = 16 * (KMAX + 1);
 constexpr int TAIL_INTS = PICKS_MAX;                            // the tail's picks (both kernels)
 constexpr int GROUP_INTS = TAIL_INTS + 2 * GE_MAX + PICKS_MAX + 8;  // + the grouping's (the narrow kernel)
 
-// Upstream's group_kernel (tensorfold/cuda/exl3/experts.cu) for the R <= 16 rows of the single row tile, by the CTA
-// that selected them (T = NW x 32 threads, picks in shared memory): the same ids, count and members, integers only.
+// Upstream's group_kernel (exl3/experts.cu) on the R <= 16 rows of one row tile, by the selecting CTA; integers only
 template <int NW>
 __device__ __forceinline__ void group_rows(const Args& a, const int* psh, int* sh, int tid) {
     constexpr int T = NW * 32;
@@ -275,10 +241,7 @@ __device__ __forceinline__ void group_rows(const Args& a, const int* psh, int* s
         if (q % a.maxm >= cpl[q / a.maxm]) a.gmem[q] = -1;
 }
 
-// The fused tail of both kernels: this CTA's logits are in LG; the last CTA of the row tile selects its rows (a warp
-// a row), then (GROUP, the narrow kernel only: in gemv_kernel the grouping code made the RT = 16 instances spill)
-// the window's grouping, and resets the counter.
-// sh: the kernel's shared memory (TAIL_INTS ints; GROUP_INTS with GROUP), free once every thread is past it.
+// Fused tail: the row tile's last CTA selects its rows, groups them (GROUP), resets the counter; sh: TAIL_INTS ints
 template <int NW, bool GROUP>
 __device__ __forceinline__ void tail(const Args& a, int r0, int nr, int tid, int* sh) {
     __shared__ int last_sh;
@@ -392,110 +355,7 @@ __global__ void __launch_bounds__(NW * 32) gemv_kernel(const Args a) {
     if (a.select) tail<NW, false>(a, r0, nr, tid, reinterpret_cast<int*>(&xsh[0][0][0]));
 }
 
-// x through L1 (ld.global.nc, L1 allocating), volatile: kept at its place in the step loop (a plain __ldg was hoisted
-// out of it, every step's x at once: 255 registers and spills at RT >= 8)
-__device__ __forceinline__ uint4 ldg_keep(const uint16_t* p) {
-    uint4 v;
-    asm volatile("ld.global.nc.v4.u32 {%0,%1,%2,%3}, [%4];" : "=r"(v.x), "=r"(v.y), "=r"(v.z), "=r"(v.w) : "l"(p));
-    return v;
-}
-
-__device__ __forceinline__ void cp_async16(void* dst, const void* src) {
-    const unsigned d = (unsigned)__cvta_generic_to_shared(dst);
-    asm volatile("cp.async.cg.shared.global [%0], [%1], 16;" ::"r"(d), "l"(src) : "memory");
-}
-__device__ __forceinline__ void cp_commit() { asm volatile("cp.async.commit_group;" ::: "memory"); }
-template <int N>
-__device__ __forceinline__ void cp_wait() { asm volatile("cp.async.wait_group %0;" ::"n"(N) : "memory"); }
-// n a constant once the step loop is unrolled: the switch folds to one wait_group
-__device__ __forceinline__ void cp_wait_n(int n) {
-    switch (n) {
-#define DSV41_RG_W(k) case k: cp_wait<k>(); break;
-    DSV41_RG_W(0) DSV41_RG_W(1) DSV41_RG_W(2) DSV41_RG_W(3) DSV41_RG_W(4) DSV41_RG_W(5) DSV41_RG_W(6) DSV41_RG_W(7)
-    DSV41_RG_W(8) DSV41_RG_W(9) DSV41_RG_W(10) DSV41_RG_W(11) DSV41_RG_W(12) DSV41_RG_W(13) DSV41_RG_W(14)
-    DSV41_RG_W(15) DSV41_RG_W(16) DSV41_RG_W(17) DSV41_RG_W(18) DSV41_RG_W(19)
-#undef DSV41_RG_W
-    default: cp_wait<0>(); break;
-    }
-}
-
-// The narrow kernel (TF_DSV41_RG_NARROW = NW, rows <= 16): CTAs of NW = 1 / 2 / 4 / 8 warps, a warp one expert, the
-// same chains (lane l: k = 8 (l + 32 j) + i, j then i ascending, one fp32 FMA chain from +0.0, the same butterfly):
-// the same bits as gemv_kernel for every row. What changes is placement only:
-//   - E / NW CTAs instead of E / 8 (several CTAs a SM; 1 warp: 384 CTAs at E = 384);
-//   - a lane's gate vectors go global -> shared memory by cp.async (no registers held, so ptxas cannot sink the
-//     loads toward their use as it does a register ring): PD = 20 (the whole row) in flight for NW <= 4, 10 at 8;
-//     one commit group a vector, step j waits for group j only; each lane reads back only its own 16 bytes;
-//   - x read by each lane straight from global through L1 (the 512 B a warp a step a row its gate vector pairs with,
-//     XP steps ahead; the CTAs of a SM share the lines) instead of staged: no barrier in the main loop.
-// The tail reuses the gate buffer (picks and the grouping: GROUP_INTS ints).
-template <int RT, int NW>
-__global__ void __launch_bounds__(NW * 32) narrow_kernel(const Args a) {
-    constexpr int PD = NW <= 4 && RT <= 4 ? NV : NV / 2;   // gate vectors in flight a lane
-    constexpr int XP = RT <= 4 ? 2 : 0;             // steps of x in flight (0: loaded at use, L1)
-    constexpr int TS = (GROUP_INTS * 4 + NW * 512 - 1) / (NW * 512);   // slots the tail needs
-    __shared__ __align__(16) uint4 wsh[NW][PD > TS ? PD : TS][32];
-    const int tid = threadIdx.x, lane = tid & 31, warp = tid >> 5;
-    const int r0 = blockIdx.y * RT;
-    const int nr = min(RT, a.R - r0);
-    const int e = blockIdx.x * NW + warp;
-    const bool live = e < a.E;
-    const uint16_t* wrow = a.w + (size_t)(live ? e : 0) * D + (size_t)lane * 8;
-
-    auto wload = [&](int j) {                       // a dead warp's slots are never read: committed empty
-        if (live) cp_async16(&wsh[warp][j % PD][lane], wrow + (size_t)j * 256);
-        cp_commit();
-    };
-    auto xload = [&](int j, uint4 (&dst)[RT]) {
-#pragma unroll
-        for (int r = 0; r < RT; ++r)
-            dst[r] = (live && r < nr)
-                ? ldg_keep(a.x + (size_t)(r0 + r) * a.xs + (size_t)(j * 32 + lane) * 8)
-                : make_uint4(0u, 0u, 0u, 0u);
-    };
-
-#pragma unroll
-    for (int j = 0; j < PD; ++j) wload(j);
-    uint4 xr[XP > 0 ? XP : 1][RT];
-#pragma unroll
-    for (int j = 0; j < XP; ++j) xload(j, xr[j]);
-    float acc[RT];
-#pragma unroll
-    for (int r = 0; r < RT; ++r) acc[r] = 0.0f;
-
-#pragma unroll
-    for (int j = 0; j < NV; ++j) {
-        // groups committed before step j: min(NV, PD + j); group j done = at most that - j - 1 pending
-        cp_wait_n(min(NV - j - 1, PD - 1));
-        float wf[8];
-        widen8(wsh[warp][j % PD][lane], wf);
-        uint4 xc[RT];
-        if constexpr (XP == 0) {
-            xload(j, xc);
-        } else {
-#pragma unroll
-            for (int r = 0; r < RT; ++r) xc[r] = xr[j % XP][r];
-            if (j + XP < NV) xload(j + XP, xr[j % XP]);
-        }
-#pragma unroll
-        for (int r = 0; r < RT; ++r) {
-            float xf[8];
-            widen8(xc[r], xf);
-#pragma unroll
-            for (int i = 0; i < 8; ++i) acc[r] = __fmaf_rn(xf[i], wf[i], acc[r]);
-        }
-        if (j + PD < NV) wload(j + PD);             // the slot just read (its value is in wf: used above)
-    }
-
-#pragma unroll
-    for (int r = 0; r < RT; ++r) {
-        float v = acc[r];
-#pragma unroll
-        for (int o = 16; o > 0; o >>= 1) v = __fadd_rn(v, __shfl_xor_sync(0xffffffffu, v, o));
-        if (lane == r && r < nr && live) a.lg[(size_t)(r0 + r) * a.E + e] = v;
-    }
-    if (a.select) tail<NW, true>(a, r0, nr, tid, reinterpret_cast<int*>(&wsh[0][0][0]));
-}
+#include "router_narrow.cuh"
 
 template <int RT, int NW>
 cudaError_t launch_narrow(const Args& a, cudaStream_t stream) {
@@ -542,8 +402,7 @@ cudaError_t by_rt(const Args& a, int rt, cudaStream_t stream) {
     }
 }
 
-// rt: rows a tile (1, 2, 4, 8, 16); (nw, ew) in {4, 8} x {1, 2}, or ew == 0: the narrow kernel with nw in
-// {1, 2, 4, 8}. Any other value: cudaErrorInvalidValue.
+// rt rows a tile (1, 2, 4, 8, 16); (nw, ew) in {4, 8} x {1, 2}, or ew == 0: narrow, nw in {1, 2, 4, 8}
 inline cudaError_t dispatch(const Args& a, int rt, int nw, int ew, cudaStream_t stream) {
     if (ew == 0) {
         switch (nw) {

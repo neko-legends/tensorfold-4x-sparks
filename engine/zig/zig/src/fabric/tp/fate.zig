@@ -1,5 +1,6 @@
-//! Fail fast on every rank (the Python engine's G16 design): a failure or a vanished rank ends all ranks with exit 70 about a second later.
+//! Fail fast on every rank: a failure or a vanished rank ends all ranks with exit 70 about a second later.
 const std = @import("std");
+const log = @import("log.zig");
 const sock = @import("sock.zig");
 const Config = @import("config.zig").Config;
 const posix = std.posix;
@@ -51,10 +52,24 @@ pub const Fate = struct {
     }
 
     pub fn start(f: *Fate) !void {
+        return f.startWith(spawnWatcher);
+    }
+
+    fn spawnWatcher(f: *Fate) !std.Thread {
+        return if (f.rank == 0) std.Thread.spawn(.{}, watch0, .{f}) else std.Thread.spawn(.{}, watchK, .{f});
+    }
+
+    fn startWith(f: *Fate, spawn: anytype) !void {
         var p: [2]c_int = undefined;
-        if (std.c.pipe2(&p, .{ .CLOEXEC = true }) != 0) return error.SocketFailed;
+        const rc = if (@import("builtin").os.tag == .linux)
+            std.c.pipe2(&p, .{ .CLOEXEC = true })
+        else
+            std.c.pipe(&p);
+        if (rc != 0) return error.SocketFailed;
+        for (p) |fd| _ = std.c.fcntl(fd, posix.F.SETFD, @as(c_int, posix.FD_CLOEXEC));
         f.wake = p;
-        f.thread = if (f.rank == 0) try std.Thread.spawn(.{}, watch0, .{f}) else try std.Thread.spawn(.{}, watchK, .{f});
+        errdefer f.close();
+        f.thread = try spawn(f);
     }
 
     /// Runs `hook` when the ranks go down; collectives register their abort here.
@@ -72,23 +87,18 @@ pub const Fate = struct {
         f.die(msg, true);
     }
 
-    /// This rank failed while booting (after the session came up, before serving): every rank goes down with its
-    /// reason (`fatal`), and the channel's thread is stopped and joined before the caller frees what holds this Fate.
-    /// In serving `fatal` exits the process; where it returns (tests), the thread may not outlive the memory.
+    /// This rank failed while booting: every rank goes down, and the thread is joined before the caller frees this.
     pub fn failBoot(f: *Fate, where: []const u8, err: anyerror) void {
         f.fatal(where, err);
         f.close();
     }
 
-    /// A normal stop is coming (rank 0 before it tells the others to stop; the others when told): hang-ups that
-    /// follow are no failure.
+    /// A normal stop is coming (rank 0 before it tells the others; the others when told): later hang-ups are fine.
     pub fn expectStop(f: *Fate) void {
         f.closing.store(true, .release);
     }
 
-    /// Rank 0's clean stop of every rank (the leader's `Forward.stop`): a STOP frame to each rank ahead of the hang-up
-    /// its close brings, so a follower ends quietly whatever it is still doing; elsewhere `expectStop`. The channel is
-    /// ordered: a follower reads the STOP before it can see rank 0's socket close.
+    /// Rank 0's clean stop of every rank: a STOP frame to each ahead of its close, so followers end quietly.
     pub fn announceStop(f: *Fate) void {
         if (f.closing.swap(true, .acq_rel)) return;
         if (f.rank != 0) return;
@@ -143,7 +153,7 @@ pub const Fate = struct {
         @memcpy(f.reason_buf[0..n], why[0..n]);
         f.reason_len = n;
         const r = f.reason();
-        std.log.warn("[tensorfold] tp fail-fast: rank {d}: {s}; exiting ({d}) in {d} ms so every rank restarts", .{ f.rank, r, exit_code, f.grace_ns / std.time.ns_per_ms });
+        log.warn("[tensorfold] tp fail-fast: rank {d}: {s}; exiting ({d}) in {d} ms so every rank restarts", .{ f.rank, r, exit_code, f.grace_ns / std.time.ns_per_ms });
         // aborts first: kernels waiting on the dead peer end now; a hook that blocks cannot hold the exit
         if (std.Thread.spawn(.{}, runHooks, .{ f, r })) |t| t.detach() else |_| runHooks(f, r);
         if (!f.closing.load(.acquire)) {
@@ -262,4 +272,16 @@ pub fn memAvailable() u64 {
     var it = std.mem.tokenizeAny(u8, text[at + key.len ..], " \n");
     const kb = std.fmt.parseInt(u64, it.next() orelse return 0, 10) catch return 0;
     return kb * 1024;
+}
+
+test "Failure boundaries: a failed watcher start gives back its wake pipe" {
+    const Fail = struct {
+        fn spawn(_: *Fate) !std.Thread {
+            return error.OutOfMemory;
+        }
+    };
+    var f = Fate.init(.{ .world = 1 }, @splat(-1));
+    defer f.close();
+    try std.testing.expectError(error.OutOfMemory, f.startWith(Fail.spawn));
+    try std.testing.expectEqual(@as([2]sock.Fd, .{ -1, -1 }), f.wake);
 }

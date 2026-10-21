@@ -37,17 +37,18 @@
 //! launches differ, the 256 positions on each side are emitted too.
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const block_prefill = @import("block_prefill.zig");
 const dspark_emit = @import("dspark_emit.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const graphs = @import("graphs.zig");
 const rowtab = @import("rowtab.zig");
 const rowmode = @import("rowmode.zig");
 const triton_call = @import("triton_call.zig");
 const Config = @import("config.zig").Config;
 const ced = @import("ced.zig");
+const kvs = @import("cuda_kv.zig");
 const pipe = @import("pipe.zig");
 
 pub const Param =struct { name: []const u8, constexpr: bool, nospec: bool, noalign: bool };
@@ -69,8 +70,7 @@ pub const Needs = struct {
         n.keys.deinit(n.gpa);
     }
 
-    /// Adds every Triton launch of a program; returns its fingerprint: the set of its variants (a launch count that
-    /// grows with the keys, as row blocks do, is not a new variant).
+    /// Adds every Triton launch of a program; returns its fingerprint, the set of its variants (counts aside).
     pub fn program(n: *Needs, cs: []const calls.Call) !u64 {
         var arena = std.heap.ArenaAllocator.init(n.gpa);
         defer arena.deinit();
@@ -97,7 +97,7 @@ pub const Needs = struct {
         return h.final();
     }
 
-    /// The Python function a launch names: the one whose parameters hold every argument the call passes.
+    /// The kernel function a launch names: the one whose parameters hold every argument the call passes.
     fn resolve(n: *const Needs, c: *const calls.Call) !*const Fn {
         const fns = n.sigs.map.get(c.name) orelse return error.NoKernel;
         var hit: ?*const Fn = null;
@@ -163,7 +163,7 @@ const Const = union(enum) {
             .null => try w.writeAll("null"),
             .b => |v| try w.print("{}", .{v}),
             .i => |v| try w.print("{d}", .{v}),
-            // the exact fp64 (Python's float): triton_fill.unjson reads the bits
+            // the exact fp64: triton_fill.unjson reads the bits
             .f => |v| try w.print("{{\"fp64_bits\":\"0x{x:0>16}\"}}", .{@as(u64, @bitCast(v))}),
         }
     }
@@ -226,8 +226,7 @@ pub const Served = struct {
     images: bool = false,
     image_bias: bool = false,
 
-    /// The engine's knobs as model.zig / prod_knobs.zig read them (the dense prefill's table and image paths aside:
-    /// PF_DENSE's fused kernel is CUDA, so the `_gemm` variants it replaces are listed too).
+    /// The engine's knobs as it reads them (PF_DENSE is CUDA, so the `_gemm` variants it replaces are listed too).
     pub fn fromEnv() !Served {
         const knobs = @import("prod_knobs.zig");
         // the world AND the rank: at TP=4 a rank's expert and head widths are its own whole-block shard (640 / 512
@@ -246,13 +245,13 @@ pub const Served = struct {
         o.pf_overlap = try knobs.pfOverlap(&knobs.env);
         o.pf_overlap_site = o.pf_overlap > 0 and try knobs.pfOverlapSite(&knobs.env); // the site pieces' `_finish_k`
         o.stream_rb = try knobs.streamRb(&knobs.env); // TF_DSV41_STREAM_RB: the twin's variants
-        o.index_bound = try knobs.indexBound(&knobs.env); // TF_DSV41_INDEX_BOUND: `_scores_b`'s and `_dtopk_b`'s variants
+        o.index_bound = try knobs.indexBound(&knobs.env); // TF_DSV41_INDEX_BOUND: `_scores_b` / `_dtopk_b` variants
         o.mhc_site_rows = try knobs.mhcSiteRows(&knobs.env); // the site pieces' `_finish_k` rows
         if (o.pf_overlap > 0) o.branches = (try @import("branches.zig").settings()).on;
         if (try knobs.indexBudget(&knobs.env)) |b| o.index_budget = b;
         // TF_DSV41_MHC_PFDEC: its norm is `_finish_k` without COEF at the windows it covers
         o.mhc_pf_rows = try knobs.mhcPfRows(&knobs.env);
-        const drafts = envOn("TF_DSV41_DRAFTS", false);
+        const drafts = envOn("TF_DSV41_DRAFTS", true);
         o.taps = drafts;
         // a context of whole pages (TP=4's 420K: TF_DSV41_CONTEXT=420096, 1,641 pages)
         if (@mod(o.limit, block.Pool.page) != 0) {
@@ -264,6 +263,7 @@ pub const Served = struct {
         // the pool's tensors' row counts are not launch arguments; its tables' stride (pts) and paging are
         o.pool = .{ .comp_pages = if (split) @divFloor(pages, @as(i64, o.world)) + 2 else pages + 1, .ik_pages = pages + 1, .pts = pages, .split = split };
         const slots: u32 = @intCast(try envInt("TF_DSV41_SLOTS", 1));
+        if (slots > 1 and o.pool == null) return error.SlotsNeedPool;
         const rows_mod = @import("dspark_rows.zig");
         return .{
             .o = o,
@@ -283,6 +283,29 @@ pub const Served = struct {
     }
 };
 
+/// The served pool as model.zig opens it (kv_state.optionsFromEnv; null: no pool); TF_DSV41_NEEDS_POOL=1 / 0 forces it.
+pub fn poolFromEnv(limit: i64, world: u32) !?block.Pool {
+    const force: ?bool = if (std.c.getenv("TF_DSV41_NEEDS_POOL")) |v| std.mem.eql(u8, std.mem.span(v), "1") else null;
+    const ko = try kvs.optionsFromEnv(@intCast(limit), world);
+    if (!(force orelse (ko != null))) return null;
+    const pages = @divExact(limit, block.Pool.page);
+    const split = if (ko) |k| k.split else envOn("TF_DSV41_KV_SPLIT", false);
+    return .{
+        .comp_pages = if (split) @divExact(pages, 2) + 2 else pages + 1,
+        .ik_pages = pages + 1,
+        .pts = pages,
+        .split = split,
+        .early = split and earlyOn(),
+        .union_cap = if (ko) |k| @intCast(k.union_cap) else 128 << 20,
+    };
+}
+
+/// kv/split.zig's earlyOn (that file is the kv module's): TF_DSV41_KV_SPLIT_EARLY=1, blanks trimmed.
+fn earlyOn() bool {
+    const v = std.mem.span(std.c.getenv("TF_DSV41_KV_SPLIT_EARLY") orelse return false);
+    return std.mem.eql(u8, std.mem.trim(u8, v, " \t"), "1");
+}
+
 const period: i64 = 256;
 
 /// A program family over one position: `emit(end)` (the window or segment ending there).
@@ -291,7 +314,7 @@ const Family = struct {
     emit: *const fn (ctx: *const anyopaque, a: std.mem.Allocator, end: i64) anyerror![]const calls.Call,
 };
 
-/// The scan of the module doc over ends [lo, hi].
+/// Ends [lo, hi]: the first 512 each, then every 256th, plus 256 on each side where two samples' launches differ.
 fn scan(n: *Needs, fam: Family, lo: i64, hi: i64) !void {
     if (hi < lo) return;
     const fp = struct {
@@ -354,8 +377,7 @@ fn run(n: *Needs, cfg: *const Config, w: *const block.Widths, o: block.Options, 
     _ = try n.program(cs);
 }
 
-/// A run's every Triton tensor view 16-byte aligned from its role's base: a pointer's class in the key is then the
-/// one-segment programs' (the runs add only the fused core's OR); a misaligned slice is a specialization no fill holds.
+/// A run's every Triton view 16-byte aligned from its role's base (a misaligned slice is a variant no fill holds).
 fn aligned(cs: []const calls.Call) !void {
     for (cs) |c| {
         if (!c.triton) continue;
@@ -369,8 +391,7 @@ fn aligned(cs: []const calls.Call) !void {
     }
 }
 
-/// Decoder replay runs at a position: a 127-row tail ending at `end` beside a 33-row tail from 0 (`first`: the 127-row
-/// tail is the run's first segment).
+/// Decoder replay runs at a position: a 127-row tail ending at `end` beside a 33-row tail from 0 (`first`: 127 first).
 const MultiCtx = struct { c: Ctx, first: bool };
 
 fn tailsAt(ctx: *const anyopaque, a: std.mem.Allocator, end: i64) anyerror![]const calls.Call {
@@ -512,6 +533,7 @@ pub fn enumerate(gpa: std.mem.Allocator, n: *Needs, cfg: *const Config, w: *cons
                 try log.print("aot-needs: piece runs (pf4k {}, {d} rows), {d} programs, {d} variants\n", .{ o.pf4k, P, n.programs, n.keys.count() });
                 try log.flush();
             }
+            if (sv.images) try images(gpa, n, cfg, w, sv, layers, starts.items, log);
         }
     }
     // CED replay's decoder pass (ced.tailOf): a prompt of n > 128 tokens replays 127 rows ending at n - 1 (the scan),
@@ -566,8 +588,7 @@ pub fn enumerate(gpa: std.mem.Allocator, n: *Needs, cfg: *const Config, w: *cons
         if (sv.slot_drafts) {
             var k: i64 = 1;
             while (k <= sv.group) : (k += 1) _ = try n.program(try dspark_emit.emitPassSlots(pb, cfg, w, sv.o, cfg.dspark_block, k, sv.slots));
-            // TF_DSV41_DRAFT_CHAIN's `_chain` (one variant whatever the slots: they are its grid), with and without the
-            // confidence head (Python passes cval for its tensors without it); WORLD x k candidates a row
+            // TF_DSV41_DRAFT_CHAIN's `_chain`, with and without the confidence head; WORLD x k candidates a row
             const world: i64 = sv.o.world;
             const c = world * @min(64, @divTrunc(128, world));
             for ([_]bool{ true, false }) |conf| _ = try n.program(try dspark_emit.emitChain(pb, cfg, w, sv.o, cfg.dspark_block, sv.slots, c, conf));
@@ -629,6 +650,46 @@ fn stagePrograms(gpa: std.mem.Allocator, n: *Needs, cfg: *const Config, w: *cons
     }
 }
 
+/// TF_DSV41_IMAGES=native: image segments at every row count as the plan sizes them, CED's decoder, sampled splits.
+fn images(gpa: std.mem.Allocator, n: *Needs, cfg: *const Config, w: *const block.Widths, sv: Served, layers: []const u32, starts: []const i64, log: *std.Io.Writer) !void {
+    var o = sv.o;
+    o.image_keep = true;
+    if (sv.image_bias) o.image_rows = -1;
+    const P = sv.o.prefill_rows;
+    for (starts) |s0| {
+        var rows: i64 = 1;
+        while (rows <= P and s0 + rows <= sv.o.limit) : (rows += 1) {
+            var pa = std.heap.ArenaAllocator.init(gpa);
+            defer pa.deinit();
+            _ = try n.program(try block_prefill.emitPrefill(pa.allocator(), cfg, w, o, layers, rows, s0, true));
+        }
+    }
+    if (sv.replay) {
+        const dec = layers[try ced.decoderStart(cfg)..];
+        var m: i64 = 1;
+        while (m <= ced.keep) : (m += 1) {
+            var pa = std.heap.ArenaAllocator.init(gpa);
+            defer pa.deinit();
+            _ = try n.program(try block_prefill.emitReplay(pa.allocator(), cfg, w, o, dec, m, 0, .decoder));
+        }
+        const c: Ctx = .{ .cfg = cfg, .w = w, .o = o, .layers = dec, .rows = ced.keep };
+        try scan(n, .{ .ctx = &c, .emit = decoderAt }, ced.keep, sv.o.limit - 1);
+    }
+    const listed = n.keys.count();
+    try log.print("aot-needs: images (bias {}), {d} programs, {d} variants\n", .{ sv.image_bias, n.programs, listed });
+    if (sv.image_bias) {
+        for ([_]i64{ 17, 64, 1000, P }) |R| for ([_]i64{ 1, @divTrunc(R, 2), R - 1 }) |ni| {
+            var pa = std.heap.ArenaAllocator.init(gpa);
+            defer pa.deinit();
+            var x = o;
+            x.image_rows = ni;
+            _ = try n.program(try block_prefill.emitPrefill(pa.allocator(), cfg, w, x, layers, R, starts[0], true));
+        };
+        try log.print("aot-needs: images, sampled image / text splits: {d} variants past the plan's\n", .{n.keys.count() - listed});
+    }
+    try log.flush();
+}
+
 /// `tf-dsv41-m1 aot-needs SIGS OUT`.
 pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path: []const u8, log: *std.Io.Writer) !void {
     const cwd = std.Io.Dir.cwd();
@@ -640,12 +701,12 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path:
     defer arena.deinit();
     const a = arena.allocator();
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     const cfg: Config = .{};
-    // a prefill segment's x3gm instances (the pack's per-layer K2 sets): CUDA launches, no Triton variant depends on them
+    // a prefill segment's x3gm instances (per-layer K2 sets): CUDA launches, no Triton variant depends on them
     for (0..cfg.layers) |L| try w.gm.put(a, @intCast(L), .{ (1 << 4) | (1 << 6) | (1 << 8), (1 << 4) | (1 << 10) });
-    // DSpark's ingest main_proj (a DSpark block's width; its EXL3 linear is CUDA, as mdraft_test.zig sets it)
+    // DSpark's ingest main_proj (a DSpark block's width; its EXL3 linear is CUDA, as slot_drafts_test.zig sets it)
     try w.dense.put(a, "dspark.main_proj", try w.k2("L40.attn.wkv"));
     const sv = try Served.fromEnv();
     // a pipeline stage runs every wo_a group of its layers (the listing is a TP rank's)
@@ -657,7 +718,7 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path:
     var out: std.Io.Writer.Allocating = .init(gpa);
     defer out.deinit();
     const ow = &out.writer;
-    try ow.print("{{\"generator\":\"tf-dsv41-m1 aot-needs\",\"limit\":{d},\"slots\":{d},\"programs\":{d},\"kernels\":[\n", .{ sv.o.limit, sv.slots, n.programs });
+    try ow.print("{{\"generator\":\"tf-dsv41 aot-needs\",\"limit\":{d},\"slots\":{d},\"programs\":{d},\"kernels\":[\n", .{ sv.o.limit, sv.slots, n.programs });
     for (n.keys.keys(), n.keys.values(), 0..) |k, launches, i| {
         try ow.print("{s}{s},\"launches\":{d}}}", .{ if (i > 0) ",\n" else "", k[0 .. k.len - 1], launches });
     }
@@ -667,47 +728,6 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, sigs_path: []const u8, out_path:
     try log.flush();
 }
 
-// -- host tests ---------------------------------------------------------------------------------------------------
-
-const testing = std.testing;
-
-test "aot-needs: a launch reduces to Triton's specialization (constexprs, == 1, % 16, width, alignment)" {
-    var params = [_]Param{
-        .{ .name = "X", .constexpr = false, .nospec = false, .noalign = false },
-        .{ .name = "Y", .constexpr = false, .nospec = false, .noalign = true },
-        .{ .name = "N", .constexpr = false, .nospec = false, .noalign = false },
-        .{ .name = "M", .constexpr = false, .nospec = true, .noalign = false },
-        .{ .name = "S", .constexpr = false, .nospec = false, .noalign = false },
-        .{ .name = "F", .constexpr = false, .nospec = false, .noalign = false },
-        .{ .name = "P", .constexpr = false, .nospec = false, .noalign = false },
-        .{ .name = "K", .constexpr = true, .nospec = false, .noalign = false },
-        .{ .name = "E", .constexpr = true, .nospec = false, .noalign = false },
-    };
-    var fns = [_]Fn{.{ .function = "m._k", .params = &params }};
-    var sigs: Sigs = .{};
-    defer sigs.map.deinit(testing.allocator);
-    try sigs.map.put(testing.allocator, "_k", &fns);
-    var n: Needs = .{ .gpa = testing.allocator, .sigs = &sigs };
-    defer n.deinit();
-    var arena = std.heap.ArenaAllocator.init(testing.allocator);
-    defer arena.deinit();
-    const a = arena.allocator();
-    const t = calls.Tensor{ .role = .{ .buf = "w.x" }, .dt = .bf16, .shape = &.{4}, .stride = &.{1}, .offset = 8 };
-    const c: calls.Call = .{ .triton = true, .name = "_k", .args = &.{
-        .{ .name = "X", .arg = .{ .t = t } },       .{ .name = "Y", .arg = .{ .t = .{ .role = .{ .buf = "w.y" }, .dt = .f32, .shape = &.{4}, .stride = &.{1}, .offset = 0 } } },
-        .{ .name = "N", .arg = .{ .i = 1 } },       .{ .name = "M", .arg = .{ .i = 32 } },
-        .{ .name = "S", .arg = .{ .i = 1 << 33 } }, .{ .name = "F", .arg = .{ .f = 0.5 } },
-        .{ .name = "P", .arg = .none },             .{ .name = "K", .arg = .{ .i = 7 } },
-        .{ .name = "E", .arg = .{ .f = 0.125 } },
-    } };
-    const key = try n.reduce(a, &c);
-    try testing.expectEqualStrings(
-        "{\"fn\":\"_k\",\"function\":\"m._k\",\"consts\":{\"N\":1,\"P\":null,\"K\":7,\"E\":{\"fp64_bits\":\"0x3fc0000000000000\"}}," ++
-            "\"runtime\":{\"X\":{\"type\":\"*bf16\",\"div16\":false},\"Y\":{\"type\":\"*fp32\",\"div16\":false},\"M\":{\"type\":\"i32\",\"div16\":false}," ++
-            "\"S\":{\"type\":\"i64\",\"div16\":true},\"F\":{\"type\":\"fp32\"}}}",
-        key,
-    );
-    // a call naming a parameter no kernel of that name has is refused
-    const bad: calls.Call = .{ .triton = true, .name = "_k", .args = &.{.{ .name = "Z", .arg = .{ .i = 3 } }} };
-    try testing.expectError(error.NoKernel, n.reduce(a, &bad));
+test {
+    _ = @import("aot_needs_test.zig");
 }

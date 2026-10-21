@@ -1,7 +1,4 @@
-//! The sampling pipeline (sampling_pipe.zig) on in-process ranks (``tp.host``) against the Python engine's choices:
-//! the serving goldens (zig/tests/server/dsv41/gen_sampling.py: rows of logits, their sampling, position and token as
-//! ``batch._choose`` picks them from the ranks' candidates), each row split over its world's ranks and picked by the
-//! pipeline's own steps (each rank's top k, the gathers, the nucleus statistics, the whole-row fallback).
+//! The sampling pipeline on in-process ranks against the serving goldens: each row split over ranks and picked.
 
 const std = @import("std");
 const testing = std.testing;
@@ -24,8 +21,7 @@ const Case = struct {
     mirror: ?[]i64 = null,
 };
 
-/// The download hook on rank 0 (sampling_gpu.zig's place): the mirror over the gathered candidates, then the pipe's
-/// own download (false).
+/// The download hook on rank 0: the mirror over the gathered candidates, then the pipe's own download (false).
 const Mirror = struct {
     c: *Case,
     fn run(ctx: *anyopaque, gathered: u64, n: usize, k: usize, count: usize, host: []u8) anyerror!bool {
@@ -172,8 +168,7 @@ test "a window's rows pick as each row does alone (one call, several positions, 
 }
 
 test "vs_choose's arithmetic (its host mirror) picks the pipeline's tokens on the serving goldens' keyed rows" {
-    // the device choice (glue.cu vs_choose) only decides where the speculative pass starts; its mirror, with libc's
-    // exp / log, must equal the host pick on every non-nucleus keyed row, so only libdevice's last bits can differ
+    // the device choice only decides where the speculative pass starts; its host mirror must equal the host pick
     const a = testing.allocator;
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
@@ -252,8 +247,7 @@ const Multi = struct {
     mirror: []i64 = &.{},
 };
 
-/// The batched call's hook on rank 0 (sampling_gpu.segGather's place): each top_k segment's device choice as the
-/// GPU makes it from the shared gather, then the pipe's own download (false).
+/// The batched call's hook on rank 0: each top_k segment's device choice from the shared gather, then download.
 const SegMirror = struct {
     c: *Multi,
     fn run(ctx: *anyopaque, gathered: u64, n: usize, k: usize, segs: []const pipe.Pipe.Seg, host: []u8) anyerror!bool {
@@ -336,8 +330,7 @@ test "a forward's keyed segments in one call (TF_DSV41_SAMP_BATCH) pick the toke
         .{ .row0 = 6, .n = 2, .s = T{ .seed = 1 << 63 | 9, .temperature = 1.1, .top_k = 0, .top_p = 0.8, .min_p = 0.02 }, .positions = &.{ 900, 901 } },
         .{ .row0 = 8, .n = 4, .s = T{ .seed = 7, .temperature = 0.5, .top_k = 0, .top_p = 0.9 }, .positions = &.{ 3, 4, 5, 6 } },
     };
-    // the served shape (the Spark server's default top_k 20 under top_p 0.95), other top_k cuts beside it, a
-    // segment starting at a position below its row offset (its device draws wrap), and a nucleus segment among them
+    // the served default (top_k 20 under top_p 0.95), other cuts, a wrapping draw start, and a nucleus segment
     const topk_segs = [_]SegSpec{
         .{ .row0 = 0, .n = 5, .s = T{ .seed = 1234, .temperature = 0.7, .top_k = 20, .top_p = 0.95 }, .positions = &.{ 40, 41, 42, 43, 44 } },
         .{ .row0 = 6, .n = 2, .s = T{ .seed = 1 << 63 | 9, .temperature = 1.1, .top_k = 5, .top_p = 1.0, .min_p = 0.05 }, .positions = &.{ 2, 3 } },

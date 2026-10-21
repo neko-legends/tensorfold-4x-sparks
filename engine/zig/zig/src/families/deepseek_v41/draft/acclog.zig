@@ -1,12 +1,7 @@
-//! TF_DSV41_ACCEPT_LOG=<path> (default off; rank 0, which runs the draft policy): one JSON line a draft-policy event
-//! for offline draft-depth studies.
-//!   {"ev":"choose","r":<round>,"t":<ns>,"windows":W,"rows":R,"others":O,"asks":[{"slot","start","most","k","conf":[..],"q":[..]}]}
-//!   {"ev":"commit","r":<round>,"t":<ns>,"slot","rows","keep","drafted","finished","generated","max_new"}
-//! `rows` in choose is the round's planned rows (every window, the pending rows included); `conf` the drafter's raw
-//! confidences of the main chain, `q` the calibrated ones the depth model priced (Calibration.q). Times are
-//! CLOCK_MONOTONIC: a round's ms is the next choose's t minus this one's. Nothing is opened or written when unset.
+//! TF_DSV41_ACCEPT_LOG=<path>: one JSON line per draft-policy event (rank 0) for draft-depth studies; off when unset.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 
 var fd: c_int = -2; // -2: not looked up yet, -1: off
 var round: u64 = 0;
@@ -17,7 +12,7 @@ fn on() bool {
         fd = -1;
         if (std.c.getenv("TF_DSV41_ACCEPT_LOG")) |p| {
             const f = std.c.open(p, .{ .ACCMODE = .WRONLY, .CREAT = true, .APPEND = true }, @as(std.c.mode_t, 0o644));
-            if (f >= 0) fd = f else std.log.warn("TF_DSV41_ACCEPT_LOG: cannot open {s}", .{std.mem.span(p)});
+            if (f >= 0) fd = f else if (!quiet) std.log.warn("TF_DSV41_ACCEPT_LOG: cannot open {s}", .{std.mem.span(p)});
         }
     }
     return fd >= 0;

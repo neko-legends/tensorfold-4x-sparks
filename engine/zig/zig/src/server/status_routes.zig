@@ -12,20 +12,17 @@ const Allocator = std.mem.Allocator;
 
 /// With keys on, health names nothing about the model.
 pub fn health(srv: *Server, conn: *Conn, a: Allocator) !void {
-    // an engine that reports itself unhealthy is a minimal 503 (1.1.0's contract, health_test)
-    var engine_status: api.Status = .{};
-    srv.engine.status(&engine_status, &.{});
-    if (!engine_status.healthy) return conn.sendJson(503, "{\"status\": \"unavailable\"}");
     // draining: the engine is not asked, it may be stopping
     const drain = srv.draining.load(.seq_cst);
+    if (drain and srv.health == null) return routes.sendDraining(conn, try std.fmt.allocPrint(a, "{{\"status\": \"draining\", \"requests_in_progress\": {d}}}", .{srv.generating.load(.seq_cst)}));
+    var status: api.Status = .{};
+    srv.engine.status(&status, &.{});
     if (srv.health) |h| {
         // the Spark surface: ok / fatal / stalled and the live totals (503 in strict mode once the engine failed)
         var streams: ?spark.Streams = null;
         if (!drain) {
-            var st: api.Status = .{};
-            srv.engine.status(&st, &.{});
             const lanes = srv.info.lanes;
-            if (lanes > 1) streams = .{ .decoding = st.running -| st.waiting, .prefilling = st.waiting, .max = lanes };
+            if (lanes > 1) streams = .{ .decoding = status.running -| status.waiting, .prefilling = status.waiting, .max = lanes };
         }
         const r = try h.status(a, streams, srv.info.context_window);
         if (!drain) return routes.sendValue(conn, a, r.code, r.body);
@@ -34,9 +31,9 @@ pub fn health(srv: *Server, conn: *Conn, a: Allocator) !void {
         try r.body.object.put(a, "requests_in_progress", try json.intValue(a, srv.generating.load(.seq_cst)));
         return routes.sendDraining(conn, try json.stringify(a, r.body, .{}));
     }
-    if (drain) return routes.sendDraining(conn, try std.fmt.allocPrint(a, "{{\"status\": \"draining\", \"requests_in_progress\": {d}}}", .{srv.generating.load(.seq_cst)}));
+    if (!status.healthy) return conn.sendJson(503, "{\"status\": \"unavailable\"}");
     if (srv.keys) |k| if (k.enabled()) return conn.sendJson(200, "{\"status\": \"ok\"}");
-    routes.sendValue(conn, a, 200, try openHealth(srv, a, std.mem.indexOf(u8, conn.path, "reset_peak=1") != null));
+    routes.sendValue(conn, a, 200, try openHealth(srv, a, false));
 }
 
 /// The open health body: model, lanes, memory and live counts, then whichever of release, backend and GPU it knows.

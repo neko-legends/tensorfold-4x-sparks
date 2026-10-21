@@ -1,5 +1,4 @@
-//! Goldens from the Python side, read where the generators wrote them: TF_DSV41_MODEL (the release tokenizer.json's
-//! directory) and TF_DSV41_GOLDEN (zig/tests/server/dsv41/gen_*.py's output). Skipped when either is unset.
+//! Reference goldens from TF_DSV41_MODEL (tokenizer.json dir) and TF_DSV41_GOLDEN (gen_*.py output); skipped if unset.
 const std = @import("std");
 const testing = std.testing;
 const tokenizer = @import("tokenizer.zig");
@@ -115,7 +114,7 @@ fn imageText(ctx: ?*anyopaque, _: json.Value) []const u8 {
     return s.*;
 }
 
-/// Each line of a gen_template.py golden rendered here: equal text, or a refusal where Python refused.
+/// Each line of a gen_template.py golden rendered here: equal text, or a refusal where the reference refused.
 fn checkTemplates(lines: []const u8) !void {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -233,7 +232,7 @@ fn checkDsml(lines: []const u8) !void {
         const text = c.get("text").?.string;
         const thinking = c.get("thinking").?.bool;
         var offered = try tools.Tools.init(a, if (c.get("tools").? == .array) c.get("tools").?.array else &.{});
-        offered.unknown_calls = false; // dsml.py keeps a call to a tool not offered in the content
+        offered.unknown_calls = false; // the reference behaviour: a call to a tool not offered stays in the content
         var why: ?[]const u8 = null;
         const p = try tools.parse(a, text, thinking, offered, .{});
         const wp = c.get("parse").?;

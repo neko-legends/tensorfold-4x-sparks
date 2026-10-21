@@ -1,5 +1,4 @@
-//! Every DSpark slot's depth of a shared round chosen together (Python joint.py): the m largest marginal gains
-//! across slots for each total m, scanned against the window's cost by total rows (exact, not a stopping rule).
+//! A shared round's DSpark depths chosen together: the m best marginal gains, scanned against cost by total rows.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Costs = @import("costs.zig").Costs;
@@ -98,10 +97,7 @@ pub fn allocate(gpa: Allocator, slots: []const Slot, shared: u64, costs: Costs, 
     return best;
 }
 
-/// Expand an existing allocation only when its current expected tokens / full round ms improves by 1%.
-/// Sorting survival gains gives the best expansion at every total row count; scan all counts because row prices
-/// need not be convex. Fixed draft/slot/host costs matter to the ratio even though allocate cancels them out.
-/// Ineligible slots have top == ks[i]. No clock or sampling state is read here.
+/// Expand an allocation only when expected tokens / full round ms improves 1%; scans all row counts (nonconvex).
 pub fn expand(gpa: Allocator, slots: []const Slot, shared: u64, costs: Costs, fixed_ms: f64, max_rows: u64, priced_rows: ?u64, ks: []usize) !usize {
     var rows: u64 = shared;
     var tokens: f64 = 0;

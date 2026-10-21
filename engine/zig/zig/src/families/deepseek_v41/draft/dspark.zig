@@ -1,6 +1,4 @@
-//! DSpark's host glue (Python dspark.py and drafter.chain_host): the block's ids and positions, its context rows,
-//! the keyed sampling parameters, and the chain rule (Markov bias over candidates, keyed choice, confidence head).
-//! Drafts only propose: verification decides every token, so nothing here can change a reply.
+//! DSpark host glue: block ids/positions, context rows, keyed params, the chain rule; drafts only ever propose.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
@@ -108,9 +106,7 @@ pub const Markov = struct {
         return m.confidenceAfter(acc[0], hid.len, prev);
     }
 
-    /// The hidden part of each of `rows` rows' confidence sum (hid [rows][d], d = hid.len / rows): w_conf[0..d] . h,
-    /// each row's sum in index order. The rows run in vector lanes, each lane its own row's sequential sum: the same
-    /// f32 products and additions as one row at a time (no contraction: Zig's strict float mode), so the same bits.
+    /// Each row's hidden confidence part w_conf[0..d] . h, rows in vector lanes, each in index order: same bits.
     pub fn hidDots(m: Markov, hid: []const f32, rows: usize, out: []f32) void {
         const cw = m.conf.?;
         const d = hid.len / rows;
@@ -144,9 +140,7 @@ pub const Markov = struct {
 const vlanes = 8;
 const V = @Vector(vlanes, f32);
 
-/// z over a row's live candidates: base + the Markov bias after `prev` (-inf where id < 0). The candidates run in
-/// vector lanes, each lane its own candidate's sum over the rank in index order (Markov.bias's order; the bf16
-/// products are exact in f32): the bits of one candidate at a time, without its add-latency chain.
+/// z = base + Markov bias after `prev` (-inf where id < 0); candidates in vector lanes, each in rank order: same bits.
 pub fn markovZ(m: Markov, ids: []const i32, base: []const f32, prev: u32, z: []f32) void {
     const a = m.w1[@as(usize, prev) * m.rank ..][0..m.rank];
     var c0: usize = 0;
@@ -183,7 +177,7 @@ pub fn greedy(ids: []const i32, z: []const f32) ?u32 {
     return if (best) |b| @intCast(ids[b]) else null;
 }
 
-/// The keyed choice over a row's live candidates (exact_sampling.choose; greedy when `s` is null).
+/// The keyed choice over a row's live candidates (greedy when `s` is null).
 pub fn pick(scratch: Allocator, ids: []const i32, z: []const f32, position: u64, s: ?Sampling) !?u32 {
     const smp = s orelse return greedy(ids, z);
     var vals: std.ArrayList(f64) = .empty;
@@ -198,7 +192,7 @@ pub fn pick(scratch: Allocator, ids: []const i32, z: []const f32, position: u64,
     return @intCast(try lanes.sampling.choose(scratch, vals.items, live.items, position, smp));
 }
 
-/// One slot's chain: candidates `ids` / base logits `base` [n][c] -> drafts and confidences [n] (chain_host).
+/// One slot's chain: candidates `ids` / base logits `base` [n][c] -> drafts and confidences [n].
 pub fn chain(scratch: Allocator, m: Markov, ids: []const i32, base: []const f32, c: usize, anchor: u32, params: Params, hid: ?[]const f32, drafts: []u32, conf: []f32) !void {
     const z = try scratch.alloc(f32, c);
     defer scratch.free(z);
@@ -224,9 +218,7 @@ fn rankedBefore(_: void, a: Ranked, b: Ranked) bool {
     return a.value > b.value or (a.value == b.value and a.id < b.id);
 }
 
-/// A row's best `ids.len` by (value desc, id asc) as token ids (`id0`: the rank's first column); any top-k agrees.
-/// A bounded selection under the same strict order: the first k of a full sort, without sorting the vocabulary (a
-/// whole-row sort was 40 ms a pass on the Spark, the pass's largest host cost).
+/// A row's best `ids.len` by (value desc, id asc) as token ids (`id0`: first column), bounded selection, no full sort.
 pub fn candidates(scratch: Allocator, logits: []const f32, id0: u32, ids: []i32, vals: []f32) !void {
     const k = @min(ids.len, logits.len);
     const best = try scratch.alloc(Ranked, k);

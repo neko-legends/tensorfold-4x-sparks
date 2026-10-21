@@ -1,24 +1,8 @@
-//! DSpark's drafting pass on the prod kernel path (drafter.py on the CUDA engine, row mode, one slot), emitted as calls
-//! (calls.zig) with block.zig's Emitter, in the Python engine's order:
-//!
-//! - **ingest** (`Drafter.ingest`): the committed rows' taps [n, 3 x hidden] through main_proj (upstream linear, split
-//!   K) and main_norm, then each block's wkv, kv_norm and a ratio-0 store into the block's context ring at the rows'
-//!   positions ("w.ds.pos").
-//! - **pass** (`Drafter._device_pass`): block ids [anchor, noise x (n - 1)] embedded into the streams; each block an
-//!   mHC site (the first: mhc_cuda; then the Triton boundary `_site` + `_finish_k` over the exchanged partials),
-//!   attention over the ring (the context rows as the compressed list plus the block itself, lo = P, hi = P + n - 1;
-//!   q is rotated from fp32, the cast a glue step), the 128-expert MoE (block_moe.moe), then the final norm with
-//!   DSpark's own `dspark.norm` and the target's head.
-//!
-//! The pass's static inputs live in two staged buffers laid out as Python's DraftInputs (one slot): "w.ds.i64" = ids,
-//! positions, the chain's integer parameters, the read and write ring rows; "w.ds.i32" = P, the context list [n,
-//! window], counts, lo, hi, the anchor, the float parameters. Python's candidates (torch top-k over `_keys`), their
-//! exchange and the `_chain` kernel are not emitted: the glue step "ds_out" hands the logits and the head hidden to the
-//! host, which ranks, gathers and chains them (draft/dspark.zig, the same rule; drafts never change a reply).
+//! DSpark's drafting pass (row mode, one slot) as calls: ingest, then the pass; candidates and chain stay on the host.
 
 const std = @import("std");
 const dk = @import("dsv41_kernels");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const moe = @import("block_moe.zig");
 const Config = @import("config.zig").Config;
@@ -27,114 +11,13 @@ const Arg = calls.Arg;
 const dense = dk.dense;
 const wide = @import("block_wide.zig");
 const buffers = @import("buffers.zig");
+const layout = @import("dspark_layout.zig");
 
-/// The rows of one ring (a power of two holding the window and a block).
-pub fn ringRows(cfg: *const Config) i64 {
-    return @intCast(std.math.ceilPowerOfTwo(u32, cfg.window + cfg.dspark_block) catch unreachable);
-}
-
-/// The DSpark blocks' layer indices (after the backbone).
-pub fn blocks(cfg: *const Config, out: []u32) []u32 {
-    const k = @min(out.len, cfg.mtp_layers);
-    for (out[0..k], 0..) |*b, i| b.* = cfg.layers + @as(u32, @intCast(i));
-    return out[0..k];
-}
-
-/// "w.ds.i64" / "w.ds.i32" (DraftInputs' l64 / l32 for one slot of `n` rows): element offsets. `lay`: a pass over
-/// several slots (dspark_slots.zig), its arrays placed by `Layout.of`; only the arrays the launches read are placed.
-pub const Statics = struct {
-    n: i64,
-    window: i64,
-    lay: ?Layout = null,
-    pub fn ids(s: Statics) i64 {
-        return if (s.lay) |l| l.ids else 0;
-    }
-    pub fn positions(s: Statics) i64 {
-        return if (s.lay) |l| l.positions else s.n;
-    }
-    pub fn ipar(s: Statics) i64 {
-        return 2 * s.n;
-    }
-    pub fn readRows(s: Statics) i64 {
-        return if (s.lay) |l| l.read else 2 * s.n + 4;
-    }
-    pub fn writeRows(s: Statics) i64 {
-        return if (s.lay) |l| l.write else 3 * s.n + 4;
-    }
-    pub fn len64(s: Statics) i64 {
-        return if (s.lay) |l| l.len64 else 4 * s.n + 4;
-    }
-    pub fn start(_: Statics) i64 {
-        return 0;
-    }
-    pub fn tokens(s: Statics) i64 {
-        return if (s.lay) |l| l.tokens else 1;
-    }
-    pub fn counts(s: Statics) i64 {
-        return if (s.lay) |l| l.counts else 1 + s.n * s.window;
-    }
-    pub fn lo(s: Statics) i64 {
-        return if (s.lay) |l| l.lo else 1 + s.n * s.window + s.n;
-    }
-    pub fn hi(s: Statics) i64 {
-        return if (s.lay) |l| l.hi else 1 + s.n * s.window + 2 * s.n;
-    }
-    pub fn anchor(s: Statics) i64 {
-        return 1 + s.n * s.window + 3 * s.n;
-    }
-    pub fn fpar(s: Statics) i64 {
-        return 2 + s.n * s.window + 3 * s.n;
-    }
-    pub fn len32(s: Statics) i64 {
-        return if (s.lay) |l| l.len32 else 5 + s.n * s.window + 3 * s.n;
-    }
-};
-
-/// A pass over `slots` slots of `n` rows each: the launches' arrays back to back, each placed at the same address
-/// residue (mod 16 bytes) as the one-slot pass's, so every Triton launch keeps its one-slot specialization (the AOT
-/// set's variant: pointer alignment, ints never 1 or a multiple of 16 below 16 rows).
-pub const Layout = struct {
-    ids: i64,
-    positions: i64,
-    read: i64,
-    write: i64,
-    len64: i64,
-    tokens: i64,
-    counts: i64,
-    lo: i64,
-    hi: i64,
-    len32: i64,
-    /// the i32 elements the launches read (staged up to here: the role ends here)
-    end32: i64,
-
-    /// The first offset >= `at` with the one-slot offset's residue mod `m` elements.
-    fn place(at: i64, one: i64, m: i64) i64 {
-        return at + @mod(one - at, m);
-    }
-
-    pub fn of(slots: i64, n: i64, window: i64) Layout {
-        const one: Statics = .{ .n = n, .window = window };
-        const R = slots * n;
-        var l: Layout = undefined;
-        // DraftInputs' arrays in its order and sizes (the chain's parameters, starts and anchors kept as gaps)
-        l.ids = place(0, one.ids(), 2);
-        l.positions = place(l.ids + R, one.positions(), 2);
-        l.read = place(l.positions + R + 4 * slots, one.readRows(), 2);
-        l.write = place(l.read + R, one.writeRows(), 2);
-        l.len64 = l.write + R;
-        l.tokens = place(slots, one.tokens(), 4);
-        l.counts = place(l.tokens + R * window, one.counts(), 4);
-        l.lo = place(l.counts + R, one.lo(), 4);
-        l.hi = place(l.lo + R, one.hi(), 4);
-        l.end32 = l.hi + R;
-        l.len32 = l.end32 + 4 * slots;
-        return l;
-    }
-};
-
-/// Several slots' DSpark state: every block's ring holds `ring_slots` rings back to back (Python's stacked rings, G8);
-/// an ingest writes slot `slot`'s ring from `taps_role` (batch.zig's stash when a later forward overwrote "w.taps").
-pub const Slots = struct { ring_slots: i64 = 1, slot: i64 = 0, taps_role: []const u8 = "w.taps" };
+pub const ringRows = layout.ringRows;
+pub const blocks = layout.blocks;
+pub const Statics = layout.Statics;
+pub const Layout = layout.Layout;
+pub const Slots = layout.Slots;
 
 const Ds = struct {
     e: *E,
@@ -170,38 +53,35 @@ const Ds = struct {
     /// Triton `_rms` (rms with a weight, bf16 in and out).
     fn rms(d: *Ds, x: Arg, w: Arg, out: Arg, k: i64) !void {
         try d.e.triton("_rms", .{ d.e.n, 1, 1 }, &.{
-            .{ .name = "X", .arg = x },                                                .{ .name = "x_rs", .arg = .{ .i = k } },
-            .{ .name = "W", .arg = w },                                                .{ .name = "OUT", .arg = out },
-            .{ .name = "o_rs", .arg = .{ .i = k } },                                   .{ .name = "K", .arg = .{ .i = k } },
+            .{ .name = "X", .arg = x },                                              .{ .name = "x_rs", .arg = .{ .i = k } },
+            .{ .name = "W", .arg = w },                                              .{ .name = "OUT", .arg = out },
+            .{ .name = "o_rs", .arg = .{ .i = k } },                                 .{ .name = "K", .arg = .{ .i = k } },
             .{ .name = "inv_k", .arg = .{ .f = 1.0 / @as(f64, @floatFromInt(k)) } }, .{ .name = "eps", .arg = .{ .f = E.dec(d.cfg().eps) } },
-            .{ .name = "BK", .arg = .{ .i = 512 } },                                   .{ .name = "HAS_W", .arg = .{ .b = true } },
-            .{ .name = "NARROW", .arg = .{ .b = true } },                              .{ .name = "PDL", .arg = .{ .b = false } },
+            .{ .name = "BK", .arg = .{ .i = 512 } },                                 .{ .name = "HAS_W", .arg = .{ .b = true } },
+            .{ .name = "NARROW", .arg = .{ .b = true } },                            .{ .name = "PDL", .arg = .{ .b = false } },
         });
     }
 
-    /// `_kv_store` into a block's ring (ratio 0): ingest at "w.ds.pos" (consecutive rows), a pass at each row's own
-    /// position and write row (ROWS).
+    /// `_kv_store` into a block's ring (ratio 0): ingest at "w.ds.pos", a pass at each row's own position (ROWS).
     fn store(d: *Ds, lat: Arg, L: u32, rows: bool) !void {
         const r = try d.ring(L, !rows);
         const n = d.e.n;
         try d.e.triton("_kv_store", .{ n, 1, 1 }, &.{
-            .{ .name = "LAT", .arg = lat },                                         .{ .name = "l_stride", .arg = .{ .i = d.cfg().head_dim } },
-            .{ .name = "CS", .arg = try d.e.ropeTable() },                         .{ .name = "cs_stride", .arg = .{ .i = 64 } },
-            .{ .name = "V", .arg = r[0] },                                          .{ .name = "S", .arg = r[1] },
-            .{ .name = "v_stride", .arg = .{ .i = 576 } },                          .{ .name = "s_stride", .arg = .{ .i = 8 } },
-            .{ .name = "POS", .arg = if (rows) try d.i64s(d.st.positions(), &.{n}) else try d.e.buf("w.ds.pos", .{}, .i32, &.{1}) },
-            .{ .name = "RATIO", .arg = .{ .i = 0 } },                               .{ .name = "RING", .arg = .{ .i = ringRows(d.cfg()) } },
-            .{ .name = "PT", .arg = .none },                                        .{ .name = "PSH", .arg = .{ .i = 0 } },
-            .{ .name = "SL", .arg = if (rows) try d.i64s(d.st.writeRows(), &.{n}) else .none }, .{ .name = "PTS", .arg = .{ .i = 0 } },
-            .{ .name = "ROWS", .arg = .{ .b = rows } },                             .{ .name = "PDL", .arg = .{ .b = false } },
+            .{ .name = "LAT", .arg = lat },                                                                                          .{ .name = "l_stride", .arg = .{ .i = d.cfg().head_dim } },
+            .{ .name = "CS", .arg = try d.e.ropeTable() },                                                                           .{ .name = "cs_stride", .arg = .{ .i = 64 } },
+            .{ .name = "V", .arg = r[0] },                                                                                           .{ .name = "S", .arg = r[1] },
+            .{ .name = "v_stride", .arg = .{ .i = 576 } },                                                                           .{ .name = "s_stride", .arg = .{ .i = 8 } },
+            .{ .name = "POS", .arg = if (rows) try d.i64s(d.st.positions(), &.{n}) else try d.e.buf("w.ds.pos", .{}, .i32, &.{1}) }, .{ .name = "RATIO", .arg = .{ .i = 0 } },
+            .{ .name = "RING", .arg = .{ .i = ringRows(d.cfg()) } },                                                                 .{ .name = "PT", .arg = .none },
+            .{ .name = "PSH", .arg = .{ .i = 0 } },                                                                                  .{ .name = "SL", .arg = if (rows) try d.i64s(d.st.writeRows(), &.{n}) else .none },
+            .{ .name = "PTS", .arg = .{ .i = 0 } },                                                                                  .{ .name = "ROWS", .arg = .{ .b = rows } },
+            .{ .name = "PDL", .arg = .{ .b = false } },
         });
     }
 
     fn normStore(d: *Ds, kv: Arg, L: u32, rows: bool) !void {
         const r = try d.ring(L, !rows);
-        try d.e.normStore(kv, try d.e.weight("L{d}.attn.kv_norm", .{L}, .f32, &.{d.cfg().head_dim}), r[0], r[1],
-            if (rows) try d.i64s(d.st.positions(), &.{d.e.n}) else try d.e.buf("w.ds.pos", .{}, .i32, &.{1}),
-            if (rows) try d.i64s(d.st.writeRows(), &.{d.e.n}) else .none, ringRows(d.cfg()), rows);
+        try d.e.normStore(kv, try d.e.weight("L{d}.attn.kv_norm", .{L}, .f32, &.{d.cfg().head_dim}), r[0], r[1], if (rows) try d.i64s(d.st.positions(), &.{d.e.n}) else try d.e.buf("w.ds.pos", .{}, .i32, &.{1}), if (rows) try d.i64s(d.st.writeRows(), &.{d.e.n}) else .none, ringRows(d.cfg()), rows);
     }
 
     /// main_proj: upstream rot_in + linear with split K (its workspace "L.ds.z"), [n, 3 D] -> [n, D].
@@ -217,10 +97,8 @@ const Ds = struct {
         const st = dense.strides(@intCast(K), @intCast(k2));
         const sk: i64 = @intCast(pl[0]);
         try e.ext("tensorfold_exl3_linear_v4.linear", &.{
-            xh, try e.strips(w, K, D), .{ .i = st[0] }, .{ .i = st[1] }, try e.weight("{s}.svh", .{w}, .f16, &.{D}), .none, y,
-            if (sk > 1) try e.buf("L.ds.z", .{}, .f32, &.{sk * e.n * D}) else .none,
-            try e.buf("L.{s}.cnt", .{w}, .i32, &.{8 * @divExact(D, 128)}),
-            .{ .i = k2 }, .{ .i = 2 }, .{ .i = sk }, .{ .i = @intCast(pl[1]) },
+            xh,                                                                      try e.strips(w, K, D),                                         .{ .i = st[0] }, .{ .i = st[1] }, try e.weight("{s}.svh", .{w}, .f16, &.{D}), .none,                     y,
+            if (sk > 1) try e.buf("L.ds.z", .{}, .f32, &.{sk * e.n * D}) else .none, try e.buf("L.{s}.cnt", .{w}, .i32, &.{8 * @divExact(D, 128)}), .{ .i = k2 },    .{ .i = 2 },     .{ .i = sk },                               .{ .i = @intCast(pl[1]) },
         });
     }
 
@@ -242,8 +120,7 @@ const Ds = struct {
         try d.rms(mp, try e.weight("dspark.main_norm", .{}, .f32, &.{D}), mx, D);
     }
 
-    /// An ingest's second half: each block's wkv, kv_norm and store of `n` rows of "w.ds.mx" from row `mx_row` into
-    /// slot `sl.slot`'s rings at "w.ds.pos".
+    /// An ingest's second half: each block's wkv, kv_norm and store of `n` "w.ds.mx" rows into slot `sl.slot`'s rings.
     fn ingestBlocks(d: *Ds, mx_row: i64) !void {
         const e = d.e;
         const D: i64 = d.cfg().hidden;
@@ -274,12 +151,10 @@ const Ds = struct {
         };
     }
 
-    /// A boundary on the Triton mHC path (ops.boundary off mhc_cuda: `_site` post + collapse + mix in place over the
-    /// exchanged partials `recv`, then `_finish_k` the next coefficients and the normed sublayer input).
+    /// A boundary on the Triton mHC path: `_site` over the exchanged partials `recv`, then `_finish_k`.
     fn site(d: *Ds, L: u32, which: []const u8, recv: []const u8) !void {
         const e = d.e;
-        // MHC_DEFER: block 0's site (mhc_cuda, <= 16 rows) may have left its coefficients on the deferred stream;
-        // they are this boundary's post and pre (Python's mhc.boundary: await_coefs(prev) first)
+        // MHC_DEFER: block 0's site may have left its coefficients on the deferred stream; this boundary reads them
         moe.awaitCoefs(e);
         // TF_DSV41_MHC_PFDEC: mhc_pf in place (a CTA reads only what it writes) + coef_kernel (block_wide.zig)
         if (wide.pfOn(e, wide.Mode.boundary)) return wide.mhc(e, L, which, .boundary, true, null, null);
@@ -292,34 +167,40 @@ const Ds = struct {
         const c = try e.buf("L.mhc.c", .{}, .bf16, &.{ n, D });
         const hm: i64 = d.cfg().hc_mult;
         try e.triton("_site", .{ std.math.divCeil(i64, n, 16) catch unreachable, 40, 1 }, &.{
-            .{ .name = "X", .arg = x },                                    .{ .name = "x_stride", .arg = .{ .i = hm * D } },
-            .{ .name = "XOUT", .arg = x },                                 .{ .name = "G", .arg = try e.buf("w.recv.{s}", .{recv}, .bf16, &.{ e.o.world, n, D }) },
-            .{ .name = "g_rank", .arg = .{ .i = n * D } },                 .{ .name = "POST", .arg = prev[1] },
-            .{ .name = "COMB", .arg = prev[2] },                           .{ .name = "PRE", .arg = prev[0] },
-            .{ .name = "FN", .arg = try e.buf("s.L{d}.{s}.fn16", .{ L, which }, .bf16, &.{ 6 * hm, hm * D }) },
-            .{ .name = "PART", .arg = part },                              .{ .name = "C", .arg = c },
-            .{ .name = "TAP", .arg = x },                                  .{ .name = "tap_stride", .arg = .{ .i = 0 } },
-            .{ .name = "R", .arg = .{ .i = n } },                          .{ .name = "D", .arg = .{ .i = D } },
-            .{ .name = "NB", .arg = .{ .i = 40 } },                        .{ .name = "BM", .arg = .{ .i = 16 } },
-            .{ .name = "BK", .arg = .{ .i = 16 } },                        .{ .name = "WORLD", .arg = .{ .i = e.o.world } },
-            .{ .name = "POST_ON", .arg = .{ .b = true } },                 .{ .name = "COLLAPSE", .arg = .{ .i = 2 } },
-            .{ .name = "MIX", .arg = .{ .b = true } },                     .{ .name = "TAP_ON", .arg = .{ .b = false } },
-            .{ .name = "SPLIT", .arg = .{ .b = false } },
+            .{ .name = "X", .arg = x },                                                                         .{ .name = "x_stride", .arg = .{ .i = hm * D } },
+            .{ .name = "XOUT", .arg = x },                                                                      .{ .name = "G", .arg = try e.buf("w.recv.{s}", .{recv}, .bf16, &.{ e.o.world, n, D }) },
+            .{ .name = "g_rank", .arg = .{ .i = n * D } },                                                      .{ .name = "POST", .arg = prev[1] },
+            .{ .name = "COMB", .arg = prev[2] },                                                                .{ .name = "PRE", .arg = prev[0] },
+            .{ .name = "FN", .arg = try e.buf("s.L{d}.{s}.fn16", .{ L, which }, .bf16, &.{ 6 * hm, hm * D }) }, .{ .name = "PART", .arg = part },
+            .{ .name = "C", .arg = c },                                                                         .{ .name = "TAP", .arg = x },
+            .{ .name = "tap_stride", .arg = .{ .i = 0 } },                                                      .{ .name = "R", .arg = .{ .i = n } },
+            .{ .name = "D", .arg = .{ .i = D } },                                                               .{ .name = "NB", .arg = .{ .i = 40 } },
+            .{ .name = "BM", .arg = .{ .i = 16 } },                                                             .{ .name = "BK", .arg = .{ .i = 16 } },
+            .{ .name = "WORLD", .arg = .{ .i = e.o.world } },                                                   .{ .name = "POST_ON", .arg = .{ .b = true } },
+            .{ .name = "COLLAPSE", .arg = .{ .i = 2 } },                                                        .{ .name = "MIX", .arg = .{ .b = true } },
+            .{ .name = "TAP_ON", .arg = .{ .b = false } },                                                      .{ .name = "SPLIT", .arg = .{ .b = false } },
         });
         const norm = if (std.mem.eql(u8, which, "hc_attn")) "attn_norm" else "ffn_norm";
         try e.triton("_finish_k", .{ n, 1, 1 }, &.{
             .{ .name = "PART", .arg = part },
             .{ .name = "BASE", .arg = try e.weight("L{d}.{s}.base", .{ L, which }, .f32, &.{6 * hm}) },
             .{ .name = "SCALE", .arg = try e.weight("L{d}.{s}.scale", .{ L, which }, .f32, &.{3}) },
-            .{ .name = "PRE", .arg = next[0] },                            .{ .name = "POST", .arg = next[1] },
-            .{ .name = "COMB", .arg = next[2] },                           .{ .name = "C", .arg = c },
+            .{ .name = "PRE", .arg = next[0] },
+            .{ .name = "POST", .arg = next[1] },
+            .{ .name = "COMB", .arg = next[2] },
+            .{ .name = "C", .arg = c },
             .{ .name = "NW", .arg = try e.weight("L{d}.{s}", .{ L, norm }, .f32, &.{D}) },
             .{ .name = "OUT", .arg = try e.buf("w.out", .{}, .bf16, &.{ n, D }) },
-            .{ .name = "eps", .arg = .{ .f = E.dec(d.cfg().eps) } },       .{ .name = "hc_eps", .arg = .{ .f = E.dec(d.cfg().hc_eps) } },
-            .{ .name = "post_alpha", .arg = .{ .f = E.dec(d.cfg().hc_post_alpha) } }, .{ .name = "D", .arg = .{ .i = D } },
-            .{ .name = "NB", .arg = .{ .i = 40 } },                        .{ .name = "ITERS", .arg = .{ .i = d.cfg().hc_sinkhorn_iters } },
-            .{ .name = "COEF", .arg = .{ .b = true } },                    .{ .name = "BLOCK", .arg = .{ .i = 1024 } },
-            .{ .name = "UNROLL", .arg = .{ .b = true } },                  .{ .name = "NORM_FIRST", .arg = .{ .b = true } },
+            .{ .name = "eps", .arg = .{ .f = E.dec(d.cfg().eps) } },
+            .{ .name = "hc_eps", .arg = .{ .f = E.dec(d.cfg().hc_eps) } },
+            .{ .name = "post_alpha", .arg = .{ .f = E.dec(d.cfg().hc_post_alpha) } },
+            .{ .name = "D", .arg = .{ .i = D } },
+            .{ .name = "NB", .arg = .{ .i = 40 } },
+            .{ .name = "ITERS", .arg = .{ .i = d.cfg().hc_sinkhorn_iters } },
+            .{ .name = "COEF", .arg = .{ .b = true } },
+            .{ .name = "BLOCK", .arg = .{ .i = 1024 } },
+            .{ .name = "UNROLL", .arg = .{ .b = true } },
+            .{ .name = "NORM_FIRST", .arg = .{ .b = true } },
         });
         e.coef = 1 - e.coef;
     }
@@ -350,14 +231,14 @@ const Ds = struct {
         try e.glue("widen", &.{ q, qf });
         const qr = try e.buf("L.qr", .{}, .bf16, &.{ n, H, hd });
         try e.triton("_rope", .{ n, @divExact(H, 4), 1 }, &.{
-            .{ .name = "X", .arg = qf },                               .{ .name = "x_rs", .arg = .{ .i = H * hd } },
-            .{ .name = "x_hs", .arg = .{ .i = hd } },                  .{ .name = "OUT", .arg = qr },
-            .{ .name = "o_rs", .arg = .{ .i = H * hd } },              .{ .name = "o_hs", .arg = .{ .i = hd } },
-            .{ .name = "CS", .arg = try e.ropeTable() },              .{ .name = "cs_rs", .arg = .{ .i = 64 } },
+            .{ .name = "X", .arg = qf },                                    .{ .name = "x_rs", .arg = .{ .i = H * hd } },
+            .{ .name = "x_hs", .arg = .{ .i = hd } },                       .{ .name = "OUT", .arg = qr },
+            .{ .name = "o_rs", .arg = .{ .i = H * hd } },                   .{ .name = "o_hs", .arg = .{ .i = hd } },
+            .{ .name = "CS", .arg = try e.ropeTable() },                    .{ .name = "cs_rs", .arg = .{ .i = 64 } },
             .{ .name = "POS", .arg = try d.i64s(d.st.positions(), &.{n}) }, .{ .name = "H", .arg = .{ .i = H } },
-            .{ .name = "NOPE", .arg = .{ .i = hd - 64 } },             .{ .name = "NB", .arg = .{ .i = 64 } },
-            .{ .name = "HALF", .arg = .{ .i = 32 } },                  .{ .name = "BH", .arg = .{ .i = 4 } },
-            .{ .name = "INV", .arg = .{ .b = false } },                .{ .name = "COPY", .arg = .{ .b = true } },
+            .{ .name = "NOPE", .arg = .{ .i = hd - 64 } },                  .{ .name = "NB", .arg = .{ .i = 64 } },
+            .{ .name = "HALF", .arg = .{ .i = 32 } },                       .{ .name = "BH", .arg = .{ .i = 4 } },
+            .{ .name = "INV", .arg = .{ .b = false } },                     .{ .name = "COPY", .arg = .{ .b = true } },
             .{ .name = "PDL", .arg = .{ .b = false } },
         });
         if (e.kvNormStoreOn()) try d.normStore(kv, L, true) else try d.store(kvn, L, true);
@@ -366,20 +247,20 @@ const Ds = struct {
         const rows_scr = n * 5 * H;
         const o = try e.buf("L.o", .{}, .bf16, &.{ n, H, hd });
         try e.ext("tf_dsv41_attn_cuda_v1.attn", &.{
-            qr,                                                        r[0],
-            r[1],                                                      try d.i32s(d.st.tokens(), &.{ n, W }, &.{ W, 1 }),
-            try d.i32s(d.st.counts(), &.{n}, &.{1}),                   r[0],
-            r[1],                                                      try d.i32s(d.st.lo(), &.{n}, &.{1}),
-            try d.i32s(d.st.hi(), &.{n}, &.{1}),                       try d.i64s(d.st.positions(), &.{n}),
-            try d.i64s(d.st.readRows(), &.{n}),                        try e.empty(.i32),
-            try e.weight("L{d}.attn.sink", .{L}, .f32, &.{H}),         try e.ropeTable(),
-            try e.buf("s.attn.po", .{}, .f32, &.{rows_scr * 512}),     try e.buf("s.attn.pm", .{}, .f32, &.{rows_scr}),
-            try e.buf("s.attn.pl", .{}, .f32, &.{rows_scr}),           o,
+            qr,                                                       r[0],
+            r[1],                                                     try d.i32s(d.st.tokens(), &.{ n, W }, &.{ W, 1 }),
+            try d.i32s(d.st.counts(), &.{n}, &.{1}),                  r[0],
+            r[1],                                                     try d.i32s(d.st.lo(), &.{n}, &.{1}),
+            try d.i32s(d.st.hi(), &.{n}, &.{1}),                      try d.i64s(d.st.positions(), &.{n}),
+            try d.i64s(d.st.readRows(), &.{n}),                       try e.empty(.i32),
+            try e.weight("L{d}.attn.sink", .{L}, .f32, &.{H}),        try e.ropeTable(),
+            try e.buf("s.attn.po", .{}, .f32, &.{rows_scr * 512}),    try e.buf("s.attn.pm", .{}, .f32, &.{rows_scr}),
+            try e.buf("s.attn.pl", .{}, .f32, &.{rows_scr}),          o,
             try e.buf("s.attn.ticket", .{}, .i32, &.{e.ticketLen()}), .{ .i = ringRows(cf) },
-            .{ .i = 0 },                                               .{ .i = 0 },
+            .{ .i = 0 },                                              .{ .i = 0 },
             .{ .i = 4 },
         });
-        // R1: the split kernel's CTAs a chunk; q arrives rotated (the drafter keeps its `_rope`: no ATTN_ROPE fold)
+        // `r1`: the split kernel's CTAs a chunk; q arrives rotated (no ATTN_ROPE fold)
         if (e.o.r1) try d.appendArgs(&.{ .{ .i = E.attnSplit(n) }, .{ .i = 0 } }) else if (e.o.r1_sig) try d.appendArgs(&.{ .{ .i = 0 }, .{ .i = 0 } });
         // o: wo_a's groups over the heads' columns, then wo_b (this rank's fp32 partial)
         const g: usize = cf.o_groups / e.o.world;
@@ -411,24 +292,24 @@ const Ds = struct {
         const prev = try d.coefs(e.coef);
         moe.awaitCoefs(e); // mhc.final: await_coefs(prev)
         try e.ext("tf_dsv41_mhc_cuda_v1.run", &.{
-            x,                                                                x,
-            try e.buf("w.recv.moe", .{}, .bf16, &.{ e.o.world, n, D }),       prev[1],
-            prev[2],                                                          prev[0],
-            b0,                                                               f0,
-            f0,                                                               try e.buf("L.mhc.part", .{}, .f32, &.{ n, 4, 40, 32 }),
-            try e.buf("L.mhc.c", .{}, .bf16, &.{ n, D }),                     b0,
-            try e.weight("dspark.norm", .{}, .f32, &.{D}),                    try e.buf("w.out", .{}, .bf16, &.{ n, D }),
-            f0,                                                               f0,
-            f0,                                                               try e.buf("w.mhc.cnt", .{}, .i32, &.{4}),
-            .{ .i = n },                                                      .{ .i = @intFromEnum(moe.Mode.final) },
-            .{ .f = E.dec(d.cfg().eps) },                                     .{ .f = E.dec(d.cfg().hc_eps) },
-            .{ .f = E.dec(d.cfg().hc_post_alpha) },                           .{ .i = d.cfg().hc_sinkhorn_iters },
+            x,                                                          x,
+            try e.buf("w.recv.moe", .{}, .bf16, &.{ e.o.world, n, D }), prev[1],
+            prev[2],                                                    prev[0],
+            b0,                                                         f0,
+            f0,                                                         try e.buf("L.mhc.part", .{}, .f32, &.{ n, 4, 40, 32 }),
+            try e.buf("L.mhc.c", .{}, .bf16, &.{ n, D }),               b0,
+            try e.weight("dspark.norm", .{}, .f32, &.{D}),              try e.buf("w.out", .{}, .bf16, &.{ n, D }),
+            f0,                                                         f0,
+            f0,                                                         try e.buf("w.mhc.cnt", .{}, .i32, &.{4}),
+            .{ .i = n },                                                .{ .i = @backingInt(moe.Mode.final) },
+            .{ .f = E.dec(d.cfg().eps) },                               .{ .f = E.dec(d.cfg().hc_eps) },
+            .{ .f = E.dec(d.cfg().hc_post_alpha) },                     .{ .i = d.cfg().hc_sinkhorn_iters },
         });
         if (e.o.r1) try d.appendArgs(&.{ .{ .i = e.o.mhc_spin }, .{ .i = 0 } }) // MHC_TAIL; a final mixes nothing
         else if (e.o.r1_sig) try d.appendArgs(&.{ .{ .i = -1 }, .{ .i = 0 } });
     }
 
-    /// R1's trailing arguments onto the last call.
+    /// The `r1` trailing arguments onto the last call.
     fn appendArgs(d: *Ds, args: []const Arg) !void {
         const e = d.e;
         const last = &e.out.items[e.out.items.len - 1];
@@ -468,10 +349,7 @@ pub fn emitIngest(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widt
     return emitIngestAt(a, cfg, w, o, n, skip, .{});
 }
 
-/// TF_DSV41_DRAFT_BATCH_PROJ (dspark_slots.zig): main_proj and main_norm of `n` taps rows from row `skip` of
-/// `taps_role` into "w.ds.mx" rows [0, n): one call over every slot of a round instead of one a slot. linear.cu's
-/// bits of a row depend on that row alone (its k ranges fixed by (K, N): dense.plan takes no row count; mma keeps
-/// rows apart; warp and split sums in a fixed order), so a row's projection is its slot's alone, bit for bit.
+/// TF_DSV41_DRAFT_BATCH_PROJ: main_proj + main_norm of `n` taps rows in one call; rows stay independent, bit for bit.
 pub fn emitIngestProj(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, n: i64, skip: i64, taps_role: []const u8) ![]calls.Call {
     var e: E = .{ .a = a, .cfg = cfg, .w = w, .o = o, .n = n, .start = 0 };
     var d: Ds = .{ .e = &e, .st = .{ .n = n, .window = cfg.window }, .sl = .{ .taps_role = taps_role } };
@@ -479,8 +357,7 @@ pub fn emitIngestProj(a: std.mem.Allocator, cfg: *const Config, w: *const block.
     return e.out.items;
 }
 
-/// The rest of a slot's ingest after emitIngestProj: `n` rows of "w.ds.mx" from row `mx_row` through every block
-/// into slot `sl.slot`'s rings. emitIngestProj(n, skip) ++ emitIngestBlocks(n, 0) is emitIngestAt(n, skip).
+/// The rest of a slot's ingest after emitIngestProj: `n` rows of "w.ds.mx" from `mx_row` into slot `sl.slot`'s rings.
 pub fn emitIngestBlocks(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, n: i64, mx_row: i64, sl: Slots) ![]calls.Call {
     var e: E = .{ .a = a, .cfg = cfg, .w = w, .o = o, .n = n, .start = 0, .begin = .none };
     var d: Ds = .{ .e = &e, .st = .{ .n = n, .window = cfg.window }, .sl = sl };
@@ -496,57 +373,11 @@ pub fn emitIngestAt(a: std.mem.Allocator, cfg: *const Config, w: *const block.Wi
     return e.out.items;
 }
 
-/// TF_DSV41_DRAFT_OVERLAP (dspark_slots.zig): `cs` (an ingest) with every scratch role - a window or layer role but the
-/// taps - renamed "w.ovl.<role>", its own arena storage (buffers.zig: one offset a role name), so it can run on its
-/// own stream while a row window still uses the names it shares with block.zig ("L.kv", "L.kvn", ...). The rings,
-/// the weights and the taps keep their roles: the same kernels, arguments and launches, other scratch addresses.
-pub fn sideRoles(a: std.mem.Allocator, cs: []const calls.Call) ![]calls.Call {
-    return renameRoles(a, cs, "w.ovl.");
-}
+pub const sideRoles = layout.sideRoles;
+pub const renameRoles = layout.renameRoles;
+pub const sideRole = layout.sideRole;
 
-/// `cs` with every role sideRole names renamed `prefix` ++ role (sideRoles; TF_DSV41_DRAFT_BATCH_PROJ=check's
-/// one-slot projections beside the batched one: "w.chk.").
-pub fn renameRoles(a: std.mem.Allocator, cs: []const calls.Call, prefix: []const u8) ![]calls.Call {
-    const out = try a.dupe(calls.Call, cs);
-    for (out) |*c| {
-        const args = try a.dupe(calls.Named, c.args);
-        for (args) |*x| x.arg = try sideArg(a, x.arg, prefix);
-        c.args = args;
-    }
-    return out;
-}
-
-/// A role sideRoles renames.
-pub fn sideRole(role: []const u8) bool {
-    return buffers.scopeOf(role) != .persistent and !std.mem.eql(u8, role, "w.taps");
-}
-
-fn sideArg(a: std.mem.Allocator, x: Arg, prefix: []const u8) !Arg {
-    return switch (x) {
-        .t => |t| .{ .t = try sideTensor(a, t, prefix) },
-        .opaque_table => |t| .{ .opaque_table = try sideTensor(a, t, prefix) },
-        .list => |items| blk: {
-            const l = try a.alloc(Arg, items.len);
-            for (items, l) |y, *z| z.* = try sideArg(a, y, prefix);
-            break :blk .{ .list = l };
-        },
-        else => x,
-    };
-}
-
-fn sideTensor(a: std.mem.Allocator, t: calls.Tensor, prefix: []const u8) !calls.Tensor {
-    var u = t;
-    switch (t.role) {
-        .buf => |r| if (sideRole(r)) {
-            u.role = .{ .buf = try std.fmt.allocPrint(a, "{s}{s}", .{ prefix, r }) };
-        },
-        else => {},
-    }
-    return u;
-}
-
-/// The chain's roles (TF_DSV41_DRAFT_CHAIN, dspark_dev.zig binds them to its own buffers): Python's DraftInputs
-/// tensors the `_chain` kernel reads and writes, at the most slots a round has.
+/// The chain's roles (TF_DSV41_DRAFT_CHAIN; dspark_dev.zig binds them): `_chain`'s tensors at the most slots a round.
 pub const chain_roles = struct {
     pub const cand = "s.ds.chain.cand";
     pub const cval = "s.ds.chain.cval";
@@ -559,15 +390,12 @@ pub const chain_roles = struct {
     pub const scr = "s.ds.chain.scr";
 };
 
-/// Python's chain's constants (dspark.py: KP, CH, RB).
+/// The chain kernel's constants (KP, CH, RB).
 pub const chain_kp = 128;
 pub const chain_ch = 16;
 pub const chain_rb = 32;
 
-/// TF_DSV41_DRAFT_CHAIN: Python's `dspark.chain` over `slots` slots of `n` rows (`_chain[(S,)]`, one program a slot),
-/// candidates `c` a row (WORLD x k: cand / cval [S, n, c] contiguous, c_stride = n_cand = c), with the confidence head
-/// when `conf` (hid bf16 [S, n, D], cw fp32 [D + rank], conf fp32 [S, n]); without it HID / CW / CONF are cval, as
-/// Python passes them. The kernel is Python's own (AOT), so its drafts are prod's bit for bit.
+/// TF_DSV41_DRAFT_CHAIN: the `_chain` kernel over `slots` slots of `n` rows, `c` candidates a row, optional conf head.
 pub fn emitChain(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, n: i64, slots: i64, c: i64, conf: bool) ![]calls.Call {
     if (c > chain_kp) return error.CandidateWidth;
     var e: E = .{ .a = a, .cfg = cfg, .w = w, .o = o, .n = slots * n, .start = 0 };
@@ -583,16 +411,16 @@ pub fn emitChain(a: std.mem.Allocator, cfg: *const Config, w: *const block.Width
     const cw = if (conf) try e.weight("dspark.conf", .{}, .f32, &.{D + R}) else cval;
     const cf = if (conf) try e.buf(r.conf, .{}, .f32, &.{ S, n }) else cval;
     try e.triton("_chain", .{ S, 1, 1 }, &.{
-        .{ .name = "CAND", .arg = cand },                                                  .{ .name = "CVAL", .arg = cval },
-        .{ .name = "c_stride", .arg = .{ .i = c } },                                      .{ .name = "n_cand", .arg = .{ .i = c } },
-        .{ .name = "W1", .arg = try e.weight("dspark.markov.w1", .{}, .bf16, &.{ V, R }) }, .{ .name = "W2", .arg = try e.weight("dspark.markov.w2", .{}, .bf16, &.{ V, R }) },
-        .{ .name = "HID", .arg = hid },                                                    .{ .name = "CW", .arg = cw },
-        .{ .name = "ANCHOR", .arg = try e.buf(r.anchor, .{}, .i32, &.{S}) },              .{ .name = "IPAR", .arg = try e.buf(r.ipar, .{}, .i64, &.{ S, 4 }) },
-        .{ .name = "FPAR", .arg = try e.buf(r.fpar, .{}, .f32, &.{ S, 3 }) },             .{ .name = "DRAFT", .arg = try e.buf(r.draft, .{}, .i32, &.{ S, n }) },
-        .{ .name = "CONF", .arg = cf },                                                    .{ .name = "SCR", .arg = try e.buf(r.scr, .{}, .f64, &.{ S, 2, chain_kp }) },
-        .{ .name = "D", .arg = .{ .i = d } },                                              .{ .name = "N", .arg = .{ .i = n } },
-        .{ .name = "KP", .arg = .{ .i = chain_kp } },                                      .{ .name = "CH", .arg = .{ .i = chain_ch } },
-        .{ .name = "R", .arg = .{ .i = R } },                                              .{ .name = "RB", .arg = .{ .i = @max(16, @min(chain_rb, R)) } },
+        .{ .name = "CAND", .arg = cand },                                                        .{ .name = "CVAL", .arg = cval },
+        .{ .name = "c_stride", .arg = .{ .i = c } },                                             .{ .name = "n_cand", .arg = .{ .i = c } },
+        .{ .name = "W1", .arg = try e.weight("dspark.markov.w1", .{}, .bf16, &.{ V, R }) },      .{ .name = "W2", .arg = try e.weight("dspark.markov.w2", .{}, .bf16, &.{ V, R }) },
+        .{ .name = "HID", .arg = hid },                                                          .{ .name = "CW", .arg = cw },
+        .{ .name = "ANCHOR", .arg = try e.buf(r.anchor, .{}, .i32, &.{S}) },                     .{ .name = "IPAR", .arg = try e.buf(r.ipar, .{}, .i64, &.{ S, 4 }) },
+        .{ .name = "FPAR", .arg = try e.buf(r.fpar, .{}, .f32, &.{ S, 3 }) },                    .{ .name = "DRAFT", .arg = try e.buf(r.draft, .{}, .i32, &.{ S, n }) },
+        .{ .name = "CONF", .arg = cf },                                                          .{ .name = "SCR", .arg = try e.buf(r.scr, .{}, .f64, &.{ S, 2, chain_kp }) },
+        .{ .name = "D", .arg = .{ .i = d } },                                                    .{ .name = "N", .arg = .{ .i = n } },
+        .{ .name = "KP", .arg = .{ .i = chain_kp } },                                            .{ .name = "CH", .arg = .{ .i = chain_ch } },
+        .{ .name = "R", .arg = .{ .i = R } },                                                    .{ .name = "RB", .arg = .{ .i = @max(16, @min(chain_rb, R)) } },
         .{ .name = "HB", .arg = .{ .i = @intCast(std.math.gcd(@as(u64, @intCast(d)), 1024)) } }, .{ .name = "HAS_CONF", .arg = .{ .b = conf } },
     });
     return e.out.items;
@@ -607,8 +435,7 @@ pub fn emitPass(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths
     return e.out.items;
 }
 
-/// A pass over `slots` slots of `n` rows each (slots x n rows, row mode over `ring_slots` stacked rings; the
-/// statics placed by `Layout.of`).
+/// A pass over `slots` slots of `n` rows each (row mode over `ring_slots` stacked rings; statics by `Layout.of`).
 pub fn emitPassSlots(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, n: i64, slots: i64, ring_slots: i64) ![]calls.Call {
     var e: E = .{ .a = a, .cfg = cfg, .w = w, .o = o, .n = slots * n, .start = 0 };
     var d: Ds = .{ .e = &e, .st = .{ .n = n, .window = cfg.window, .lay = Layout.of(slots, n, cfg.window) }, .sl = .{ .ring_slots = ring_slots } };
@@ -617,8 +444,7 @@ pub fn emitPassSlots(a: std.mem.Allocator, cfg: *const Config, w: *const block.W
     return e.out.items;
 }
 
-/// A capture's set P ops by drafter phase (i0, d0, i1, d1), without `_keys` / `_chain` (the host's), and each phase's
-/// rows and taps row skip as the capture ran them.
+/// A capture's set P ops by drafter phase (i0, d0, i1, d1), without `_keys` / `_chain`, with rows and taps row skip.
 pub const Phase = struct { name: []const u8, n: i64, skip: i64, ops: []std.json.ObjectMap };
 
 pub fn phases(a: std.mem.Allocator, io: std.Io, dir: []const u8, cfg: *const Config) ![]Phase {
@@ -639,15 +465,14 @@ pub fn phases(a: std.mem.Allocator, io: std.Io, dir: []const u8, cfg: *const Con
     }
     const out = try a.alloc(Phase, by.count());
     for (out, by.keys(), by.values()) |*p, ph, ops| {
-        // an ingest's rows: the prompt's last `window` (i0) or the decode row (i1); a pass: the block; a pass over k
-        // slots (M1_DRAFT_SLOTS, phase "q<k>"): k blocks
+        // rows: the prompt's last `window` (i0) or the decode row (i1); a pass: the block; "q<k>": k blocks
         const n: i64 = if (ph[0] == 'i') (if (std.mem.eql(u8, ph, "i0")) cfg.window else 1) else if (ph[0] == 'q') try slotsOf(ph) * cfg.dspark_block else cfg.dspark_block;
         p.* = .{ .name = ph, .n = n, .skip = if (std.mem.eql(u8, ph, "i0")) prompt - cfg.window else 0, .ops = ops.items };
     }
     return out;
 }
 
-/// "q<k>": a capture's pass over k slots (M1_DRAFT_SLOTS=k, Python's row-mode pass, slots padded to a power of two).
+/// "q<k>": a capture's pass over k slots (row mode, slots padded to a power of two).
 fn slotsOf(name: []const u8) !i64 {
     return std.fmt.parseInt(i64, name[1..], 10);
 }
@@ -661,10 +486,9 @@ pub fn phaseCalls(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widt
     return calls.launches(a, all);
 }
 
-/// M3's host gate of the emitters against a capture's set P (dsv41_m1_capture.py): each drafter phase's launches call
-/// for call, the Triton variants and the dataflow, as m1_check does for the decode windows.
+/// Host gate of the emitters against a capture's set P: each drafter phase's launches, Triton variants and dataflow.
 pub fn checkDraft(gpa: std.mem.Allocator, io: std.Io, dir: []const u8, experts: []const u8, log: *std.Io.Writer, show: usize) !usize {
-    const check = @import("m1_check.zig");
+    const check = @import("calls_check.zig");
     const cuda = @import("cuda");
     var arena = std.heap.ArenaAllocator.init(gpa);
     defer arena.deinit();

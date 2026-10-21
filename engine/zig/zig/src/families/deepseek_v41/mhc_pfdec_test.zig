@@ -1,31 +1,26 @@
-//! TF_DSV41_MHC_PFDEC (block_wide.zig) on the real emitters, host only (`zig build test-dsv41-wide`): with the knob,
-//! each mixing mHC site of a decode window, a DSpark pass and a short prefill segment is mhc_pf's `site_kernel`, the
-//! normed input (`_finish_k` without COEF) and mhc_cuda's `coef_kernel`, reading and writing exactly the tensors the
-//! site it replaces did (mhc_cuda's boundary at <= 16 rows, Triton's `_site` + `_finish_k` above); every other call is
-//! unchanged, the deferred coefficients keep MHC_DEFER's stream rules, row mode takes the programs. The bits are the
-//! GPU gate's (oracle case `mhcdec`).
+//! TF_DSV41_MHC_PFDEC on the real emitters, host only (`zig build test-dsv41-wide`): mixing sites become site + coef.
 
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const rowmode = @import("rowmode.zig");
 const branches = @import("branches.zig");
 const dspark_emit = @import("dspark_emit.zig");
-const pk = @import("prod_knobs.zig");
+const pk = @import("serve_knobs.zig");
 const Config = @import("config.zig").Config;
 const Arg = calls.Arg;
 const Call = calls.Call;
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
     return w;
 }
 
-fn prodOptions(limit: i64, pf: i64, deferred: bool) block.Options {
+fn servedOptions(limit: i64, pf: i64, deferred: bool) block.Options {
     var o: block.Options = .{ .limit = limit, .r1 = true, .mhc_defer = deferred, .expert_topp = 0.85, .index_budget = 64 << 20, .rows = true, .rope_rows = limit + 2048, .taps = true, .mhc_pf_rows = pf };
     const pages = @divExact(limit, block.Pool.page);
     o.pool = .{ .comp_pages = pages + 1, .ik_pages = pages + 1, .pts = pages };
@@ -101,8 +96,7 @@ const Site = struct {
     calls: usize,
 };
 
-/// The site the off path runs at cs[i] (mhc_cuda's boundary [+ R1's coefficient launch], or `_site` + `_finish_k`),
-/// or null when cs[i] is not a mixing site.
+/// The site the off path runs at cs[i] (mhc_cuda's boundary or `_site` + `_finish_k`), or null when not a mixing site.
 fn offSite(cs: []const Call, i: usize) ?Site {
     const c = cs[i];
     if (eq(c.name, "tf_dsv41_mhc_cuda_v1.run")) {
@@ -111,16 +105,26 @@ fn offSite(cs: []const Call, i: usize) ?Site {
         if (mode == 3) return null;
         const has_coef = i + 1 < cs.len and eq(cs[i + 1].name, "tf_dsv41_mhc_cuda_v1.coef");
         return .{
-            .mode = mode,                                         .n = a[18].arg.i,
-            .x = a[0].arg,                                        .xout = if (mode == 0) a[1].arg else null,
-            .g = if (mode == 0) a[2].arg else null,               .post = if (mode == 0) a[3].arg else null,
-            .comb = if (mode == 0) a[4].arg else null,            .pre = if (mode != 1) a[5].arg else null,
-            .fnw = a[6].arg,                                      .part = a[9].arg,
-            .c = a[10].arg,                                       .tap = if (isEmpty(a[11].arg)) null else a[11].arg,
-            .nw = a[12].arg,                                      .out = a[13].arg,
-            .base = a[7].arg,                                     .scale = a[8].arg,
-            .next = .{ a[14].arg, a[15].arg, a[16].arg },         .consts = .{ a[20].arg, a[21].arg, a[22].arg, a[23].arg },
-            .begin = c.begin,                                     .calls = if (has_coef) 2 else 1,
+            .mode = mode,
+            .n = a[18].arg.i,
+            .x = a[0].arg,
+            .xout = if (mode == 0) a[1].arg else null,
+            .g = if (mode == 0) a[2].arg else null,
+            .post = if (mode == 0) a[3].arg else null,
+            .comb = if (mode == 0) a[4].arg else null,
+            .pre = if (mode != 1) a[5].arg else null,
+            .fnw = a[6].arg,
+            .part = a[9].arg,
+            .c = a[10].arg,
+            .tap = if (isEmpty(a[11].arg)) null else a[11].arg,
+            .nw = a[12].arg,
+            .out = a[13].arg,
+            .base = a[7].arg,
+            .scale = a[8].arg,
+            .next = .{ a[14].arg, a[15].arg, a[16].arg },
+            .consts = .{ a[20].arg, a[21].arg, a[22].arg, a[23].arg },
+            .begin = c.begin,
+            .calls = if (has_coef) 2 else 1,
         };
     }
     if (eq(c.name, "_site") and named(c, "MIX").b) {
@@ -129,17 +133,26 @@ fn offSite(cs: []const Call, i: usize) ?Site {
         const post = named(c, "POST_ON").b;
         const coll = named(c, "COLLAPSE").i;
         return .{
-            .mode = if (post) 0 else if (coll == 1) 1 else 2,     .n = named(c, "R").i,
-            .x = named(c, "X"),                                   .xout = if (post) named(c, "XOUT") else null,
-            .g = if (post) named(c, "G") else null,               .post = if (post) named(c, "POST") else null,
-            .comb = if (post) named(c, "COMB") else null,         .pre = if (coll == 2) named(c, "PRE") else null,
-            .fnw = named(c, "FN"),                                .part = named(c, "PART"),
-            .c = named(c, "C"),                                   .tap = if (named(c, "TAP_ON").b) named(c, "TAP") else null,
-            .nw = named(f, "NW"),                                 .out = named(f, "OUT"),
-            .base = named(f, "BASE"),                             .scale = named(f, "SCALE"),
+            .mode = if (post) 0 else if (coll == 1) 1 else 2,
+            .n = named(c, "R").i,
+            .x = named(c, "X"),
+            .xout = if (post) named(c, "XOUT") else null,
+            .g = if (post) named(c, "G") else null,
+            .post = if (post) named(c, "POST") else null,
+            .comb = if (post) named(c, "COMB") else null,
+            .pre = if (coll == 2) named(c, "PRE") else null,
+            .fnw = named(c, "FN"),
+            .part = named(c, "PART"),
+            .c = named(c, "C"),
+            .tap = if (named(c, "TAP_ON").b) named(c, "TAP") else null,
+            .nw = named(f, "NW"),
+            .out = named(f, "OUT"),
+            .base = named(f, "BASE"),
+            .scale = named(f, "SCALE"),
             .next = .{ named(f, "PRE"), named(f, "POST"), named(f, "COMB") },
             .consts = .{ named(f, "eps"), named(f, "hc_eps"), named(f, "post_alpha"), named(f, "ITERS") },
-            .begin = c.begin,                                     .calls = 2,
+            .begin = c.begin,
+            .calls = 2,
         };
     }
     return null;
@@ -195,8 +208,7 @@ fn expectSwap(off: []const Call, on: []const Call, pf: bool, deferred: bool) !us
         };
         try testing.expect(j < on.len);
         try testing.expect(sameCall(off[i], on[j]));
-        // the deferred stream's marks: the off path's coefficient launch moves into PFDEC's triple, a join may move
-        // to an mHC call that reads the coefficients (any site, the final, Engram's post)
+        // the deferred stream's marks: the off path's coefficient launch moves into PFDEC's triple; a join may move
         try testing.expectEqual(off[i].defer_side, on[j].defer_side);
         i += 1;
         j += 1;
@@ -211,9 +223,7 @@ fn mixingSites(cs: []const Call) usize {
     return m;
 }
 
-/// MHC_DEFER's rules on a program: one pending coefficient launch at a time (sharedDeferred), each joined before the
-/// next mHC call reads the coefficients (a site, a final, Engram's post-only: mhc.await_coefs) and before the program
-/// ends.
+/// MHC_DEFER's rules: one pending coefficient launch at a time, joined before the next reader and the program's end.
 fn expectJoined(a: std.mem.Allocator, cs: []const Call) ![]const []const u8 {
     var pending = false;
     for (cs, 0..) |c, i| {
@@ -273,8 +283,8 @@ test "TF_DSV41_MHC_PFDEC: decode windows of 1-64 rows, each mixing site as mhc_p
     for ([_]bool{ true, false }) |deferred| for ([_]i64{ 1, 17 }) |rows| for ([_]i64{ 1, 2, 5, 16, 17, 20, 24, 32, 33, 48, 64 }) |n| {
         errdefer std.debug.print("pfdec {d}, {d} rows, defer {}\n", .{ rows, n, deferred });
         const start: i64 = 300_000;
-        const off = try block.emit(a, &cfg, &w, prodOptions(limit, 0, deferred), &backbone, n, start, true);
-        const on = try block.emit(a, &cfg, &w, prodOptions(limit, rows, deferred), &backbone, n, start, true);
+        const off = try block.emit(a, &cfg, &w, servedOptions(limit, 0, deferred), &backbone, n, start, true);
+        const on = try block.emit(a, &cfg, &w, servedOptions(limit, rows, deferred), &backbone, n, start, true);
         const pf = n >= rows;
         const sites = try expectSwap(off, on, pf, deferred);
         // 40 layers' two sites (an Engram layer's site after its post-only included); none left for the old path
@@ -282,7 +292,7 @@ test "TF_DSV41_MHC_PFDEC: decode windows of 1-64 rows, each mixing site as mhc_p
         try testing.expectEqual(@as(usize, 0), if (pf) mixingSites(on) else 0);
         if (deferred) try expectDeferred(a, off, on);
         if (n > 1) {
-            const rw = try rowmode.transform(a, on, @intCast(n), .{ .slots = 4, .rmax = 64, .pts = prodOptions(limit, 0, false).pool.?.pts });
+            const rw = try rowmode.transform(a, on, @intCast(n), .{ .slots = 4, .rmax = 64, .pts = servedOptions(limit, 0, false).pool.?.pts });
             try testing.expectEqual(on.len, rw.len);
         }
     };
@@ -296,8 +306,8 @@ test "TF_DSV41_MHC_PFDEC: DSpark passes (1 and 4 slots) take it at their in-plac
     const cfg: Config = .{};
     for ([_]bool{ true, false }) |deferred| for ([_]i64{ 1, 17 }) |rows| for ([_]i64{ 1, 4 }) |slots| {
         errdefer std.debug.print("pfdec {d}, {d} slots, defer {}\n", .{ rows, slots, deferred });
-        const off = try dspark_emit.emitPassSlots(a, &cfg, &w, prodOptions(1 << 20, 0, deferred), cfg.dspark_block, slots, 4);
-        const on = try dspark_emit.emitPassSlots(a, &cfg, &w, prodOptions(1 << 20, rows, deferred), cfg.dspark_block, slots, 4);
+        const off = try dspark_emit.emitPassSlots(a, &cfg, &w, servedOptions(1 << 20, 0, deferred), cfg.dspark_block, slots, 4);
+        const on = try dspark_emit.emitPassSlots(a, &cfg, &w, servedOptions(1 << 20, rows, deferred), cfg.dspark_block, slots, 4);
         const pf = slots * cfg.dspark_block >= rows;
         const sites = try expectSwap(off, on, pf, deferred);
         try testing.expectEqual(if (pf) @as(usize, 2 * cfg.mtp_layers) else 0, sites);
@@ -308,10 +318,7 @@ test "TF_DSV41_MHC_PFDEC: DSpark passes (1 and 4 slots) take it at their in-plac
 
 // -- TF_DSV41_MHC_DEFER_AT=exchange (calls.holdDeferred) ----------------------------------------------------------
 
-/// `held` is `cs` with each deferred coefficient launch moved later: the other calls in the same order (marks
-/// included), the deferred ones the same calls in the same order, each now just before an exchange or the call that
-/// joins it, still joined before its coefficients' next reader and sharing no role with main's calls before its
-/// join. Returns how many sit before an exchange.
+/// `held` is `cs` with deferred coefficient launches moved later, still joined; returns those before an exchange.
 fn expectHeld(a: std.mem.Allocator, cs: []const Call, held: []const Call) !usize {
     try testing.expectEqual(cs.len, held.len);
     var i: usize = 0;
@@ -350,7 +357,7 @@ fn expectHeld(a: std.mem.Allocator, cs: []const Call, held: []const Call) !usize
     return at_exchange;
 }
 
-test "TF_DSV41_MHC_DEFER_AT reader: unset / empty / 0 / off prod's, exchange the hold, anything else refused" {
+test "TF_DSV41_MHC_DEFER_AT reader: unset / empty / 0 / off the reference's, exchange the hold, anything else refused" {
     for ([_]?[]const u8{ null, "", "0", "off", " OFF " }) |v| try testing.expect(!try branches.deferAt(v));
     for ([_][]const u8{ "exchange", "Exchange", " exchange\n" }) |v| try testing.expect(try branches.deferAt(v));
     for ([_][]const u8{ "1", "on", "experts", "exchanges" }) |v| try testing.expectError(error.BadDeferAt, branches.deferAt(v));
@@ -369,7 +376,7 @@ test "TF_DSV41_MHC_DEFER_AT=exchange: decode windows' coefficient launches each 
         errdefer std.debug.print("pfdec {d}, {d} rows\n", .{ pf, n });
         // the off path's windows past 16 rows run Triton's site with its coefficients inline: nothing deferred
         const deferred = pf > 0 and n >= pf or n <= 16;
-        const o = prodOptions(limit, pf, true);
+        const o = servedOptions(limit, pf, true);
         var oh = o;
         oh.mhc_defer_hold = true;
         const cs = try block.emit(a, &cfg, &w, o, &backbone, n, 300_000, true);
@@ -381,7 +388,7 @@ test "TF_DSV41_MHC_DEFER_AT=exchange: decode windows' coefficient launches each 
         try testing.expectEqual(if (deferred) @as(usize, 2 * cfg.layers) else 0, coefs);
         try testing.expectEqual(coefs, moved);
         if (n > 1) {
-            const rw = try rowmode.transform(a, held, @intCast(n), .{ .slots = 4, .rmax = 64, .pts = prodOptions(limit, 0, false).pool.?.pts });
+            const rw = try rowmode.transform(a, held, @intCast(n), .{ .slots = 4, .rmax = 64, .pts = servedOptions(limit, 0, false).pool.?.pts });
             try testing.expectEqual(held.len, rw.len);
         }
         // and the hold is what the knob adds: off, the emitter's program is the old one call for call
@@ -398,7 +405,7 @@ test "TF_DSV41_MHC_DEFER_AT=exchange: DSpark passes (1 and 4 slots) keep their c
     const cfg: Config = .{};
     for ([_]i64{ 0, 1, 17 }) |pf| for ([_]i64{ 1, 4 }) |slots| {
         errdefer std.debug.print("pfdec {d}, {d} slots\n", .{ pf, slots });
-        const o = prodOptions(1 << 20, pf, true);
+        const o = servedOptions(1 << 20, pf, true);
         var oh = o;
         oh.mhc_defer_hold = true;
         const cs = try dspark_emit.emitPassSlots(a, &cfg, &w, o, cfg.dspark_block, slots, 4);
@@ -440,7 +447,7 @@ test "TF_DSV41_MHC_DEFER_AT_ROWS: the reader; programs over the threshold keep t
     const cfg: Config = .{};
     var backbone: [40]u32 = undefined;
     for (&backbone, 0..) |*l, i| l.* = @intCast(i);
-    const o = prodOptions(1 << 20, 17, true);
+    const o = servedOptions(1 << 20, 17, true);
     var oh = o;
     oh.mhc_defer_hold = true;
     oh.mhc_defer_hold_rows = 16;

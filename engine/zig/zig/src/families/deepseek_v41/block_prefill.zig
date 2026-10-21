@@ -1,48 +1,10 @@
-//! A prefill segment on the prod fast-prefill path (TF_DSV41_PREFILL_KERNELS=fast with prod-knobs.env), emitted as
-//! calls (calls.zig) by block.zig's Emitter: every launch with its arguments and its tensors named by role, in the
-//! Python engine's order (forward._run / _layers, blocks.attention's serial path, prefill_moe.forward, mhc_pf). M1
-//! checks the calls against the capture's prefill phase launch by launch; the forward issues the same calls.
-//!
-//! What differs from a decode window (block.zig):
-//! - a dense projection is prefill_mm.matmul: upstream's rot_in into the workspace, W_q unpacked from the words
-//!   (dense3's lanes, upstream's strips, or the shared expert's stored tiles), the Triton `_gemm`, in column blocks
-//!   whose W_q fits the 64 MiB workspace;
-//! - an mHC site is mhc_pf.run + `_finish_k` from 256 rows (Triton `_site` below, and for the post-only / final sites);
-//! - the SWA rows go through the staging ring (forward.staging) when the slot's ring cannot hold the segment;
-//! - the indexer materialises its scores (`_scores`, `_keys`, the candidate source's `_block_keys`; in row blocks
-//!   under the index budget) and torch picks the top-k (glue);
-//! - the attention core is the fused prefill kernel (`_fused`), group-major for wo_a's groups (TF_DSV41_PF_COPIES);
-//! - the routed experts are x3gm (rot, then gate/up and down once a K2 width present, upstream's combine), the shared
-//!   expert three GEMMs, the partial bf16(routed + shared) before its exchange;
-//! - the head is the decode path's linear over every row, 128 rows a launch.
-//!
-//! Roles as block.zig's ("s." persistent, "w." the segment, "L." a layer), plus the workspace "s.pf.*", the staging
-//! ring "s.stage.*" and x3gm's pointer tables "s.L<i>.gm.*". The attention's exchange lands in "L.recv.attn": the
-//! caching allocator hands each layer another storage for it.
-//!
-//! Glue steps (no captured launch; the forward runs them): positions, embed, ix_w (the head weights' fp64 -> bf16 ->
-//! fp32 casts), proj (a compressor projection to fp32, ratio 2: [kv | gate], then [carry | rows]), zeros, stage_in /
-//! stage_out, block_pos (a row block's first position), cand_keys, topk (index.top_positions), counts
-//! (visible_counts), exchange, gm_picks (kit weights, the shared slot masked, the routed slots' contiguous copies),
-//! gm_ticket, gm_plan (x3gm.plan of one width's picks), swiglu (the shared expert's clamped SiLU product), moe_sum
-//! (bf16(routed + shared)), engram_rows, trace, kit_logits.
-//!
-//! A short segment (at most 16 rows: a prompt's ragged tail, or a whole short prompt) is Python's mix (pod 24's
-//! captures at 1, 12 and 16 rows): the prefill projections, indexer scores, fused attention, x3gm experts and shared
-//! GEMMs as above, but every kernel that has a row path for at most 16 rows takes it, as in a decode window
-//! (block.zig, block_moe.zig): mhc_cuda for every site, post-only and the final norm (no `_finish_k`), the L2 prefetch
-//! (o / f / x sites), attn_cuda's top-k (a Reindex layer scoring over its candidate blocks, no `_keys` or torch top-k)
-//! and the narrow router. The exchanges land in the decode window's "w.recv.*" that mhc_cuda reads.
-//!
-//! From TF_DSV41_INDEX_STREAM_MIN visible keys a full-mode layer without the candidates' scores (2 / 8 / 14) selects
-//! with stream_topk (`_stream` + the merge glue, longpf.zig): no materialised scores, so any prompt up to the limit.
-//!
-//! Not taken here (error.Unsupported): uniform (not ragged) expert stacks, gate / up sharing their sign vector (x3gm
-//! shx).
+//! A prefill segment on the fast-prefill path, emitted as calls (block_calls.zig) by the Emitter in reference order.
+
+// Short segments (<= 16 rows) take the decode window's row paths; past TF_DSV41_INDEX_STREAM_MIN keys, stream_topk.
 
 const std = @import("std");
 const dk = @import("dsv41_kernels");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const config = @import("config.zig");
 const moe = @import("block_moe.zig");
@@ -50,18 +12,23 @@ const longpf = @import("longpf.zig");
 const gm2pf = @import("gm2pf.zig");
 const ced = @import("ced.zig");
 const Config = config.Config;
-const E = block.Emitter;
+pub const E = block.Emitter;
 const Arg = calls.Arg;
 const Dt = calls.Dt;
 const dense = dk.dense;
-const PfDense = @import("prod_knobs.zig").PfDense;
+const PfDense = @import("knob_types.zig").PfDense;
+const block_prefill_mhc = @import("block_prefill_mhc.zig");
+const block_prefill_attn = @import("block_prefill_attn.zig");
+const block_prefill_select = @import("block_prefill_select.zig");
+const block_prefill_moe = @import("block_prefill_moe.zig");
+const block_prefill_emit = @import("block_prefill_emit.zig");
 
-// prod knobs and the Python engine's constants
+// reference knobs and constants
 const ws_limit: i64 = 64 << 20; // TF_DSV41_PREFILL_WS_MIB: a workspace W_q's bytes at most (column blocks)
 const had_scale: f64 = 0.08838834764831845; // exl3.prefill.HAD_SCALE (the literal: 1 / sqrt(128) rounds the other way)
 const pf_rows: i64 = 256; // TF_DSV41_MHC_PF_ROWS / TF_DSV41_MHC_ROWS: mhc_pf and the wide `_site` tile from here
 const mhc_bm: i64 = 64; // TF_DSV41_MHC_BM
-const split_rows: i64 = 32; // TF_DSV41_MHC_SPLIT_ROWS: out-of-place boundaries, a program a stream
+pub const split_rows: i64 = 32; // TF_DSV41_MHC_SPLIT_ROWS: out-of-place boundaries, a program a stream
 pub const stream_min: i64 = 4096; // TF_DSV41_INDEX_STREAM_MIN (block.zig: a decode window past it would stream)
 const bmq: i64 = 32; // TF_DSV41_PREFILL_ATTN_BMQ
 
@@ -71,14 +38,14 @@ fn attnBmq(H: i64) i64 {
     return @min(bmq, H);
 }
 const kt: i64 = 32; // csa2.attn.KT
-const router_chunk: i64 = 2048; // router_gemv.CHUNK: rows a route launch
+pub const router_chunk: i64 = 2048; // router_gemv.CHUNK: rows a route launch
 const gm_bm: i64 = 64; // x3gm: members a pass of the gate/up (cfg 1) and down (cfg 0) tiles below 3,072 rows
 const gm_widths: u32 = 7; // x3gm.MAX_WIDTHS: the ticket's down half starts there
 const index_budget: i64 = 256 << 20; // TF_DSV41_INDEX_BUDGET_MIB's default: block.Options.index_budget is the run's
-const dtopk_rows: i64 = 64; // dtopk.MAX_ROWS: windows up to this many rows select with attn_cuda's top-k (backend._dt)
-const overlap_min: i64 = 256; // TF_DSV41_PF_OVERLAP: rows a piece at least (a smaller GEMM's waves cost more than it hides)
+pub const dtopk_rows: i64 = 64; // dtopk.MAX_ROWS: windows up to this many rows select with attn_cuda's top-k (backend._dt)
+const overlap_min: i64 = 256; // TF_DSV41_PF_OVERLAP: min rows a piece (smaller GEMMs cost more than they hide)
 
-fn size(dt: Dt) i64 {
+pub fn size(dt: Dt) i64 {
     return switch (dt) {
         .bf16, .f16, .i16 => 2,
         .f32, .i32 => 4,
@@ -87,36 +54,30 @@ fn size(dt: Dt) i64 {
     };
 }
 
-fn cdiv(a: i64, b: i64) i64 {
+pub fn cdiv(a: i64, b: i64) i64 {
     return @divFloor(a + b - 1, b);
 }
 
-/// How a matrix's words are kept: dense3's lanes, upstream's strips, or the checkpoint's tiles as stored (the shared
-/// expert: prefill_moe.shared_linears, layout "stored").
+/// How a matrix's words are kept: dense3's lanes, upstream's strips, or the checkpoint's tiles (the shared expert).
 const Form = enum { lanes, strips, stored };
 
 /// Where a matmul's [m, N] result goes: `role`'s rows of `stride` elements from byte `offset`.
-const Out = struct { role: calls.Role, dt: Dt, stride: i64, offset: i64 = 0 };
+pub const Out = struct { role: calls.Role, dt: Dt, stride: i64, offset: i64 = 0 };
 
-/// One prefill segment: the emitter, the SWA ring its rows go through, and what the segment's layers left (layer
-/// 20's candidates).
-const Seg = struct {
+/// One prefill segment: the emitter, the SWA ring its rows go through, and what its layers left (the candidates).
+pub const Seg = struct {
     e: *E,
     /// the SWA ring the layers store into and attend over: the slot's (2 x window rows) or the staging ring
     staged: bool,
     ring: i64,
     /// the candidate source ran in this segment (reindex layers read its candidates)
     cand: bool = false,
-    /// at most 16 rows: Python's short segment (the module doc)
+    /// at most 16 rows: the short segment's kernel mix
     short: bool = false,
     /// CED replay's passes (`emitReplay`, ced.zig); `.whole`: a full segment
     part: Part = .whole,
-    /// a multi-segment run (`emitMulti`): its segments; the attention core and the compressor run a segment at a
-    /// time on that segment's slot (glue "pf_seg"), every other step over all the run's rows
-    multi: ?[]const Span = null,
-    /// TF_DSV41_PF_OVERLAP: this layer's attention / MoE partial already went out a piece at a time (`pieces`), so
-    /// `run` emits no whole exchange after it
-    sent_attn: bool = false,
+    multi: ?[]const Span = null, // a multi-segment run: core and compressor a segment at a time (glue "pf_seg")
+    sent_attn: bool = false, // TF_DSV41_PF_OVERLAP: the partial already went out in pieces; no whole exchange
     sent_moe: bool = false,
     /// TF_DSV41_PF_OVERLAP_SITE: the last exchange's k pieces are all on the side stream, marks 1..k; the next
     /// boundary site runs in those pieces (`sitePieces`), anything else joins first. 0: none pending
@@ -124,12 +85,10 @@ const Seg = struct {
     /// TF_DSV41_PREFILL_PIPE (`emitStage`): this program is a pipeline stage, its entry and exit
     stage: ?StageIo = null,
 
-    // -----------------------------------------------------------------------------------------------------------
-    // TF_DSV41_PF_OVERLAP: the exchanges in row pieces, overlapped with their producers' next piece
+    // -- TF_DSV41_PF_OVERLAP: the exchanges in row pieces, overlapped with their producers' next piece -------------
 
-    /// Row pieces of this segment's exchanges: Options.pf_overlap when it applies (branches' side stream, TP=2, not a
-    /// short segment, at least `overlap_min` rows a piece), else 1 (one exchange after its producer).
-    fn pieces(s: *const Seg) i64 {
+    /// Row pieces of this segment's exchanges: Options.pf_overlap when it applies, else 1.
+    pub fn pieces(s: *const Seg) i64 {
         const e = s.e;
         const k = e.o.pf_overlap;
         if (k < 2 or s.short or !e.o.branches or e.o.pf_tbo or e.o.world != 2 or e.n < k * overlap_min) return 1;
@@ -137,7 +96,7 @@ const Seg = struct {
     }
 
     /// Piece `p` of `k` over `n` rows: [r0, r1) on the 16-row grid, the last to `n`.
-    fn pieceAt(n: i64, k: i64, p: i64) [2]i64 {
+    pub fn pieceAt(n: i64, k: i64, p: i64) [2]i64 {
         const cut = struct {
             fn at(nn: i64, kk: i64, q: i64) i64 {
                 return if (q >= kk) nn else @divFloor(@divFloor(nn * q, kk), 16) * 16;
@@ -146,13 +105,8 @@ const Seg = struct {
         return .{ cut.at(n, k, p), cut.at(n, k, p + 1) };
     }
 
-    /// Exchange of rows [r0, r0 + rows) of `part` [n, D] into `into` [world, n, D] (glue exchange_rows: this rank's
-    /// rows copied, the peer's received: the whole exchange's bytes at the same places, a piece at a time). Every piece
-    /// but the last goes on the side stream once the main stream issued its producer (fork); the last runs on the main
-    /// stream after the side stream's pieces (join), so the consumer (the next mHC site) reads a whole buffer.
-    /// TF_DSV41_PF_OVERLAP_SITE: every piece p (the last too) on the side, marking p + 1 for the next site's piece p;
-    /// the call after the last piece joins unless that site takes the pieces (`pend`).
-    fn sendPiece(s: *Seg, part: Arg, into: Arg, r0: i64, rows: i64, p: i64, k: i64) !void {
+    /// Exchange of rows [r0, r0 + rows) of `part` into `into` [world, n, D]: side-stream pieces, the last joins main.
+    pub fn sendPiece(s: *Seg, part: Arg, into: Arg, r0: i64, rows: i64, p: i64, k: i64) !void {
         const e = s.e;
         const send = try rowsOf(e, part, .bf16, r0, rows, e.cfg.hidden);
         const last = p + 1 == k;
@@ -162,8 +116,7 @@ const Seg = struct {
             if (e.o.pf_overlap_site) e.br_mark = @intCast(p + 1);
         }
         defer e.br_side = false;
-        // the piece's all-gather lands in "L.xrows" [world, rows, D] (a planned role: in the 4K workspace and its
-        // price), then each rank's rows are copied into `into`: the collective's own channels, no NCCL p2p state
+        // the piece's all-gather lands in "L.xrows" [world, rows, D], then each rank's rows are copied into `into`
         const tmp = try e.buf("L.xrows", .{}, .bf16, &.{ e.o.world, rows, e.cfg.hidden });
         try e.glue("exchange_rows", &.{ send, into, .{ .i = r0 }, tmp });
         if (last and e.o.pf_overlap_site) {
@@ -172,11 +125,10 @@ const Seg = struct {
         }
     }
 
-    // -----------------------------------------------------------------------------------------------------------
-    // dense EXL3 projections (prefill_mm.matmul)
+    // -- dense EXL3 projections ----------------------------------------------------------------------------------
 
     /// y = x [m, K] @ W [K, N] (`w`'s prefix): per column block, upstream's rot_in, the W_q unpack, `_gemm`.
-    fn matmul(s: *Seg, w: []const u8, form: Form, x: Arg, k: i64, n: i64, y: Out) !void {
+    pub fn matmul(s: *Seg, w: []const u8, form: Form, x: Arg, k: i64, n: i64, y: Out) !void {
         const e = s.e;
         const m = e.n;
         const k2: i64 = try e.w.k2(w);
@@ -198,7 +150,10 @@ const Seg = struct {
             switch (form) {
                 .lanes => try e.ext("tf_dsv41_dense3_v1.unpack", &.{
                     try e.view(.{ .buf = try e.fmt("s.{s}.lanes", .{w}) }, .i32, &.{ b1 - b0, @divExact(k, 16), 8, tw }, &.{ blk_words, 8 * tw, tw, 1 }, b0 * blk_words * 4),
-                    wq, .{ .i = st[0] }, .{ .i = st[1] }, .{ .i = k2 },
+                    wq,
+                    .{ .i = st[0] },
+                    .{ .i = st[1] },
+                    .{ .i = k2 },
                 }),
                 .strips => try e.ext("tensorfold_exl3_linear_v4.unpack", &.{
                     // one block of 128 columns: the stored trellis is the strips (block.zig's upstream)
@@ -206,32 +161,39 @@ const Seg = struct {
                         try e.view(.{ .weight = try e.fmt("{s}.trellis", .{w}) }, .i32, &.{ 1, @divExact(k, 16), 8, tw }, &.{ 8 * tw, 8 * tw, tw, 1 }, 0)
                     else
                         try e.view(.{ .buf = try e.fmt("s.{s}.T", .{w}) }, .i32, &.{ b1 - b0, @divExact(k, 16), 8, tw }, &.{ blk_words, 8 * tw, tw, 1 }, b0 * blk_words * 4),
-                    wq, .{ .i = st[0] }, .{ .i = st[1] }, .{ .i = k2 }, .{ .i = 2 },
+                    wq,
+                    .{ .i = st[0] },
+                    .{ .i = st[1] },
+                    .{ .i = k2 },
+                    .{ .i = 2 },
                 }),
                 // Exl3Linear.strides of the stored layout: (words between k tiles, between 16-column tiles)
                 .stored => try e.ext("tensorfold_exl3_linear_v4.unpack", &.{
                     try e.view(.{ .weight = try e.fmt("{s}.trellis", .{w}) }, .i32, &.{ @divExact(k, 16), @divExact(n, 16), tw }, &.{ @divExact(n, 16) * tw, tw, 1 }, 0),
-                    wq, .{ .i = @divExact(n, 16) * tw }, .{ .i = 8 * tw }, .{ .i = k2 }, .{ .i = 2 },
+                    wq,
+                    .{ .i = @divExact(n, 16) * tw },
+                    .{ .i = 8 * tw },
+                    .{ .i = k2 },
+                    .{ .i = 2 },
                 }),
             }
             const svh = try e.view(.{ .weight = try e.fmt("{s}.svh", .{w}) }, .f16, &.{nc}, &.{1}, c0 * 2);
             const out = try e.view(y.role, y.dt, &.{ m, nc }, &.{ y.stride, 1 }, y.offset + c0 * size(y.dt));
             // exl3.prefill.tiles: BM 128, BK 32, group 8 (the shape's alone)
             try e.triton("_gemm", .{ cdiv(m, 128) * @divExact(nc, 128), 1, 1 }, &.{
-                .{ .name = "X", .arg = xh },                                   .{ .name = "W", .arg = wq },
+                .{ .name = "X", .arg = xh },                                                .{ .name = "W", .arg = wq },
                 .{ .name = "H", .arg = try e.buf("s.pf.had", .{}, .bf16, &.{ 128, 128 }) }, .{ .name = "SVH", .arg = svh },
-                .{ .name = "BIAS", .arg = svh },                               .{ .name = "OUT", .arg = out },
-                .{ .name = "M", .arg = .{ .i = m } },                          .{ .name = "o_stride", .arg = .{ .i = y.stride } },
-                .{ .name = "K", .arg = .{ .i = k } },                          .{ .name = "N", .arg = .{ .i = nc } },
-                .{ .name = "BM", .arg = .{ .i = 128 } },                       .{ .name = "BK", .arg = .{ .i = 32 } },
-                .{ .name = "GROUP", .arg = .{ .i = 8 } },                      .{ .name = "HAS_BIAS", .arg = .{ .b = false } },
+                .{ .name = "BIAS", .arg = svh },                                            .{ .name = "OUT", .arg = out },
+                .{ .name = "M", .arg = .{ .i = m } },                                       .{ .name = "o_stride", .arg = .{ .i = y.stride } },
+                .{ .name = "K", .arg = .{ .i = k } },                                       .{ .name = "N", .arg = .{ .i = nc } },
+                .{ .name = "BM", .arg = .{ .i = 128 } },                                    .{ .name = "BK", .arg = .{ .i = 32 } },
+                .{ .name = "GROUP", .arg = .{ .i = 8 } },                                   .{ .name = "HAS_BIAS", .arg = .{ .b = false } },
                 .{ .name = "SCALE", .arg = .{ .f = had_scale } },
             });
         }
     }
 
-    /// pfdense.matmul (TF_DSV41_PF_DENSE=fused): upstream's rot_in into the workspace, then one fused GEMM over the
-    /// whole layer (no W_q workspace, so no column blocks) reading the same words the unpack would.
+    /// TF_DSV41_PF_DENSE=fused: rot_in into the workspace, then one fused GEMM over the whole layer (no column blocks).
     fn fused(s: *Seg, p: *const PfDense, w: []const u8, form: Form, x: Arg, k: i64, n: i64, y: Out) !void {
         const e = s.e;
         const m = e.n;
@@ -252,22 +214,20 @@ const Seg = struct {
         };
         const c = p.pick(@intCast(k), @intCast(n), k2, @intCast(m));
         try e.ext("tf_dsv41_pfdense_v1.gemm", &.{
-            xh,                                                          words,
-            .{ .i = sk },                                                .{ .i = snb },
-            try e.weight("{s}.svh", .{w}, .f16, &.{n}),                  .none,
+            xh,                                                                words,
+            .{ .i = sk },                                                      .{ .i = snb },
+            try e.weight("{s}.svh", .{w}, .f16, &.{n}),                        .none,
             try e.view(y.role, y.dt, &.{ m, n }, &.{ y.stride, 1 }, y.offset), .{ .i = k2 },
-            .{ .b = form == .lanes },                                    .{ .i = c[0] },
+            .{ .b = form == .lanes },                                          .{ .i = c[0] },
             .{ .i = c[1] },
         });
     }
 
     /// A projection into a whole contiguous buffer.
-    fn proj(s: *Seg, w: []const u8, form: Form, x: Arg, k: i64, n: i64, y: Arg) !void {
+    pub fn proj(s: *Seg, w: []const u8, form: Form, x: Arg, k: i64, n: i64, y: Arg) !void {
         return s.matmul(w, form, x, k, n, .{ .role = y.t.role, .dt = y.t.dt, .stride = n, .offset = y.t.offset });
     }
 
-    // -----------------------------------------------------------------------------------------------------------
-    // mHC (mhc.py with mhc_pf)
 
     fn coefs(e: *E, set: u1) ![3]Arg {
         return .{
@@ -1041,7 +1001,7 @@ const Seg = struct {
     }
 
     /// Back at the whole run (`total` rows from its first segment's start): the glue's state the run's again.
-    fn leave(s: *Seg, total: i64) !void {
+    pub fn leave(s: *Seg, total: i64) !void {
         const e = s.e;
         const first = s.multi.?[0];
         e.row0 = 0;
@@ -1053,22 +1013,15 @@ const Seg = struct {
     }
 
     /// forward.staging for `e.n` rows: the slot's ring (2 x window rows), or the staging ring past it.
-    fn setRing(s: *Seg) void {
+    pub fn setRing(s: *Seg) void {
         const e = s.e;
         const W: i64 = e.cfg.window;
         s.staged = e.n + W - 1 > 2 * W;
         s.ring = if (s.staged) stageRows(e) else 2 * W;
     }
 
-    // -----------------------------------------------------------------------------------------------------------
-    // MoE (prefill_moe.forward: router, x3gm's ragged launches, the shared expert's GEMMs)
 
-    fn moeBlock(s: *Seg, L: u32) !void {
-        const e = s.e;
-        if (e.o.image_rows != 0) return s.moeSplit(L);
-        const D: i64 = e.cfg.hidden;
-        return s.moeRows(L, e.n, try e.buf("w.out", .{}, .bf16, &.{ e.n, D }), "bias", try e.buf("L.moe16", .{}, .bf16, &.{ e.n, D }), false);
-    }
+    // -- the segment ---------------------------------------------------------------------------------------------
 
     /// vision.moe (TF_DSV41_BIAS_VL): the segment's image rows through the MoE as their own call, routed with
     /// gate.bias_vl, then the text rows with gate.bias, each a whole prefill_moe.forward at its own row count; the
@@ -1272,6 +1225,13 @@ const Seg = struct {
     }
 
     /// Engram before the layer's first site (blocks.engram): wkv over the hashed rows (a prefill matmul), the fusion.
+    fn moeBlock(s: *Seg, L: u32) !void {
+        const e = s.e;
+        if (e.o.image_rows != 0) return s.moeSplit(L);
+        const D: i64 = e.cfg.hidden;
+        return s.moeRows(L, e.n, try e.buf("w.out", .{}, .bf16, &.{ e.n, D }), "bias", try e.buf("L.moe16", .{}, .bf16, &.{ e.n, D }), false);
+    }
+
     fn engram(s: *Seg, L: u32) !void {
         const e = s.e;
         const n = e.n;
@@ -1308,13 +1268,12 @@ const Seg = struct {
         return e.buf("{s}.recv." ++ which, .{if (s.short) "w" else "L"}, .bf16, &.{ e.o.world, e.n, e.cfg.hidden });
     }
 
-    fn run(s: *Seg, layers: []const u32, head: bool) !void {
+    pub fn run(s: *Seg, layers: []const u32, head: bool) !void {
         const e = s.e;
         const n = e.n;
         const D: i64 = e.cfg.hidden;
         if (s.part == .decoder and s.multi != null) {
-            // several slots' decoder replays (`emitMulti`): every segment's positions (rope over the run's rows), then
-            // each segment's rows entering the decoder from its slot's stash, at its rows of the run
+            // several slots' decoder replays: every segment's positions, then each one's entering rows from its stash
             try e.glue("mpositions", &.{try e.buf("w.mpos64", .{}, .i64, &.{n})});
             for (s.multi.?, 0..) |sp, j| {
                 try s.enter(sp, j);
@@ -1322,8 +1281,7 @@ const Seg = struct {
             }
             try s.leave(n);
         } else if (s.part == .decoder) {
-            // replay.finish: every row's window starts at the pass's first row R0 (ctx.lo), and the rows entering the
-            // decoder come from the stash (its Streams: the streams, the normed input, coefficient set 0)
+            // decoder replay: every row's window starts at R0 (ctx.lo); the entering rows come from the stash
             try e.glue("positions", &.{ try pos(e), try e.buf("w.pos64", .{}, .i64, &.{n}), try e.buf("w.lo", .{}, .i32, &.{n}), .{ .i = e.start } });
             const st = try stashArgs(e);
             try e.glue("ced_load", &st);
@@ -1418,25 +1376,23 @@ const Seg = struct {
     }
 };
 
-/// The CED stash glue's tensors (ced_stash / ced_load): the run's streams, normed input and current coefficient set,
-/// then the ring's roles (ced.roles, `ced.ring` rows; position p at row p % ring).
-fn stashArgs(e: *E) ![10]Arg {
+/// The CED stash glue's tensors: the run's streams, normed input and coefficients, then the ring's roles.
+pub fn stashArgs(e: *E) ![10]Arg {
     const D: i64 = e.cfg.hidden;
     const R: i64 = ced.ring;
     const c = try Seg.coefs(e, e.coef);
     const x = try e.streams();
     const r0 = e.row0;
     return .{
-        try Seg.rowsOf(e, x, .bf16, r0, e.n, 4 * D),              try Seg.rowsOf(e, try e.buf("w.out", .{}, .bf16, &.{ e.n, D }), .bf16, r0, e.n, D),
-        try Seg.rowsOf(e, c[0], .f32, r0, e.n, 4),                try Seg.rowsOf(e, c[1], .f32, r0, e.n, 4),
-        try Seg.rowsOf(e, c[2], .f32, r0, e.n, 16),               try e.buf(ced.roles[0], .{}, .bf16, &.{ R, 4 * D }),
-        try e.buf(ced.roles[1], .{}, .bf16, &.{ R, D }),      try e.buf(ced.roles[2], .{}, .f32, &.{ R, 4 }),
-        try e.buf(ced.roles[3], .{}, .f32, &.{ R, 4 }),       try e.buf(ced.roles[4], .{}, .f32, &.{ R, 16 }),
+        try Seg.rowsOf(e, x, .bf16, r0, e.n, 4 * D),     try Seg.rowsOf(e, try e.buf("w.out", .{}, .bf16, &.{ e.n, D }), .bf16, r0, e.n, D),
+        try Seg.rowsOf(e, c[0], .f32, r0, e.n, 4),       try Seg.rowsOf(e, c[1], .f32, r0, e.n, 4),
+        try Seg.rowsOf(e, c[2], .f32, r0, e.n, 16),      try e.buf(ced.roles[0], .{}, .bf16, &.{ R, 4 * D }),
+        try e.buf(ced.roles[1], .{}, .bf16, &.{ R, D }), try e.buf(ced.roles[2], .{}, .f32, &.{ R, 4 }),
+        try e.buf(ced.roles[3], .{}, .f32, &.{ R, 4 }),  try e.buf(ced.roles[4], .{}, .f32, &.{ R, 16 }),
     };
 }
 
-/// One segment of a multi-segment run (`emitMulti`): its slot's rows from position `start`, rows [row0, row0 + n) of
-/// the run.
+/// One segment of a multi-segment run: its slot's rows from position `start`, rows [row0, row0 + n) of the run.
 pub const Span = struct { slot: u32, start: i64, n: i64, row0: i64 = 0, cnt0: i64 = 0 };
 
 /// The most rows a prefill program takes: one router CHUNK (Python prod's segment), 4,096 under TF_DSV41_PF_4K (the
@@ -1451,65 +1407,6 @@ fn stageRows(e: *const E) i64 {
     return @intCast(std.math.ceilPowerOfTwo(u64, @intCast(e.o.prefill_rows + W - 1)) catch unreachable);
 }
 
-/// Several slots' prompt segments in one run (Python's slots.prefill_runs / forward._run over several contexts, GLM
-/// 0560), or several slots' CED decoder replays (`.decoder`: each segment a slot's prefilled tail from its R0, its rows
-/// entering the decoder from its slot's stash; Python replays a slot at a time): the embedding, the mHC sites, every dense projection, the experts and the exchanges over all the run's rows
-/// (the segments' rows in order), and each segment's CSA2 steps (SWA store, compressor, selection, fused core) on its
-/// own slot (glue "pf_seg" switches the slot's views), as blocks.attention's loop over its contexts. `part`: `.whole`
-/// (full mode, no head: a prompt's pieces never take logits) or `.encoder` (CED replay's encoder pass, each segment's
-/// stash). Every segment past 16 rows (a short segment's decode-kernel mix is one segment's), the run within one
-/// prefill segment's rows, no image rows; error.Unsupported otherwise (the caller runs the segments one at a time).
-pub fn emitMulti(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, layers: []const u32, spans_in: []const Span, part: Part) ![]calls.Call {
-    if (spans_in.len == 0 or o.image_rows != 0) return error.Unsupported;
-    if (o.pool) |pl| if (pl.split) return error.Unsupported; // split KV's exchanges: one segment a run
-    const spans = try a.dupe(Span, spans_in);
-    var total: i64 = 0;
-    // the decoder replay's rows past the split mHC programs' 32 (a replay batched is the one-slot replay's arithmetic
-    // row for row: the same kernel paths at every row count it takes); a prompt piece's past the short segment's 16
-    const floor: i64 = if (part == .decoder) split_rows else 16;
-    var cnt: i64 = 0;
-    for (spans) |*sp| {
-        if (sp.n <= floor) return error.Unsupported;
-        sp.row0 = total;
-        sp.cnt0 = cnt;
-        total += sp.n;
-        cnt = std.mem.alignForward(i64, cnt + sp.n, 4);
-    }
-    if (total > o.prefill_rows or total > rowsCap(o)) return error.Unsupported;
-    var e: E = .{ .a = a, .cfg = cfg, .w = w, .o = o, .n = total, .start = spans[0].start };
-    var s: Seg = .{ .e = &e, .staged = false, .ring = 0, .part = part, .multi = spans };
-    s.setRing();
-    try s.run(layers, false);
-    return e.out.items;
-}
-
-/// The multi-segment runs' programs at their largest, for the buffer plan (forward_prefill.plan): a run reads roles no
-/// one-segment program has (the run's positions "w.mpos64") and the run's rows' roles at up to `rows` rows. `enc`: a
-/// prompt piece run's layers (CED's encoder, or every layer in full mode: `part`); `dec`: CED's decoder layers (null in
-/// full mode), its runs of tails of 127 rows (ced.keep) up to `rows`. A run its options refuse (split KV) adds nothing.
-pub fn planRuns(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o: block.Options, enc: []const u32, dec: ?[]const u32, rows: i64, part: Part) !std.ArrayList([]const calls.Call) {
-    var out: std.ArrayList([]const calls.Call) = .empty;
-    if (rows > 2 * 17) {
-        const sp = [_]Span{ .{ .slot = 0, .start = 0, .n = rows - 17 }, .{ .slot = 1, .start = 0, .n = 17 } };
-        if (emitMulti(a, cfg, w, o, enc, &sp, part)) |cs| try out.append(a, cs) else |e| if (e != error.Unsupported) return e;
-    }
-    // the counts' widest layout: 15 segments of 17 rows (each padded 3 to the next multiple of 4) and the rest
-    if (rows > 16 * 17) {
-        var sp: [16]Span = undefined;
-        for (sp[0..15], 0..) |*x, i| x.* = .{ .slot = @intCast(i), .start = 0, .n = 17 };
-        sp[15] = .{ .slot = 15, .start = 0, .n = rows - 15 * 17 };
-        if (emitMulti(a, cfg, w, o, enc, &sp, part)) |cs| try out.append(a, cs) else |e| if (e != error.Unsupported) return e;
-    }
-    if (dec) |d| {
-        var tails: [16]Span = undefined;
-        const k: usize = @intCast(@min(16, @divFloor(rows, ced.keep)));
-        if (k >= 2) {
-            for (tails[0..k], 0..) |*t, i| t.* = .{ .slot = @intCast(i), .start = 0, .n = ced.keep };
-            if (emitMulti(a, cfg, w, o, d, tails[0..k], .decoder)) |cs| try out.append(a, cs) else |e| if (e != error.Unsupported) return e;
-        }
-    }
-    return out;
-}
 
 /// A prefill program's part: a whole segment, or one of CED replay's passes (ced.zig).
 pub const Part = enum { whole, encoder, decoder };
@@ -1809,3 +1706,7 @@ fn emitCore(a: std.mem.Allocator, cfg: *const Config, w: *const block.Widths, o:
     if (o.holdsDeferred(n)) calls.holdDeferred(e.out.items);
     return e.out.items;
 }
+
+/// The multi-segment emitters live in block_prefill_emit.zig (1.1.1's split); re-exported for their callers.
+pub const emitMulti = block_prefill_emit.emitMulti;
+pub const planRuns = block_prefill_emit.planRuns;

@@ -1,4 +1,4 @@
-//! A rank's weights as named host tensors in the forms the Python loader holds them (weights.py Loader: fp32 norms, bf16 router, bf16-rounded indexer weights, Engram q.k), named as the M1 capture names the Python tree.
+//! A rank's weights as named host tensors in the reference loader's forms, named as the reference capture names them.
 
 const std = @import("std");
 const plan = @import("plan.zig");
@@ -27,7 +27,7 @@ const Out = enum {
     bf16,
     /// fp32 holding bf16-rounded values (`native(name, bf16_param=True)`: the indexer's weights_proj)
     f32_via_bf16,
-    /// Engram's q / k: combined into `engram.qk` = bf16(q) * bf16(k) in fp32
+    /// Engram q/k: decode the stored F32/BF16/F16 values, then multiply in FP32.
     qk,
 };
 
@@ -55,7 +55,7 @@ const rules = std.StaticStringMap(Rule).initComptime(.{
     .{ "engram.k_weight", Rule{ .name = "engram.qk", .out = .qk } },
 });
 
-/// The capture's name of a block group (weights.py AttnW / MoEW / EngramW fields).
+/// The capture's name of a block group (AttnW / MoEW / EngramW fields).
 fn groupField(g: plan.GroupPlan, gl: u32, buf: []u8) ![]const u8 {
     return switch (g.proj) {
         .wq_a => "attn.wq_a",
@@ -100,6 +100,7 @@ pub const Builder = struct {
     io: Io,
     pack: *const Pack,
     out: std.ArrayList(Named) = .empty,
+    metadata_only: bool = false,
 
     pub fn deinit(b: *Builder) void {
         for (b.out.items) |n| {
@@ -110,9 +111,12 @@ pub const Builder = struct {
     }
 
     fn put(b: *Builder, name: []const u8, kind: Kind, shape: []const usize, bytes: []align(16) u8) !void {
-        var n: Named = .{ .name = try b.gpa.dupe(u8, name), .kind = kind, .shape = @splat(1), .rank = @intCast(shape.len), .bytes = bytes };
+        errdefer b.gpa.free(bytes);
+        try b.out.ensureUnusedCapacity(b.gpa, 1);
+        const key = try b.gpa.dupe(u8, name);
+        var n: Named = .{ .name = key, .kind = kind, .shape = @splat(1), .rank = @intCast(shape.len), .bytes = bytes };
         @memcpy(n.shape[0..shape.len], shape);
-        try b.out.append(b.gpa, n);
+        b.out.appendAssumeCapacity(n);
     }
 
     fn copy(b: *Builder, src: []const u8) ![]align(16) u8 {
@@ -123,7 +127,7 @@ pub const Builder = struct {
 
     /// A group's part as `<base>.trellis`, `.suh`, `.svh`.
     fn group(b: *Builder, base: []const u8, g: plan.GroupPlan) !void {
-        var img = try stage.group(b.gpa, b.io, b.pack, g);
+        var img: stage.GroupImage = if (b.metadata_only) .{ .trellis = &.{}, .suh = &.{}, .svh = &.{} } else try stage.group(b.gpa, b.io, b.pack, g);
         defer img.deinit(b.gpa);
         const p = g.part.group;
         var nb: [160]u8 = undefined;
@@ -132,9 +136,9 @@ pub const Builder = struct {
         try b.put(try std.fmt.bufPrint(&nb, "{s}.svh", .{base}), .f16, &.{p.n()}, try b.copy(img.svh));
     }
 
-    /// A routed projection: `.trellis` [E, kt, nt, words] (stack) or `.data` (ragged, int16 back to back), `.suh` [E, K], `.svh` [E, N].
+    /// A routed projection: `.trellis` [E, kt, nt, words] (stack) or `.data` (ragged), `.suh` [E, K], `.svh` [E, N].
     fn experts(b: *Builder, base: []const u8, x: *const plan.ExpertsPlan) !void {
-        var img = try stage.experts(b.gpa, b.io, b.pack, x);
+        var img: stage.ExpertsImage = if (b.metadata_only) .{ .trellis = &.{}, .suh = &.{}, .svh = &.{}, .k2 = &.{}, .offsets = &.{} } else try stage.experts(b.gpa, b.io, b.pack, x);
         defer img.deinit(b.gpa);
         const l = &x.layout;
         const e = l.count();
@@ -158,13 +162,18 @@ pub const Builder = struct {
 
     /// A native tensor in its forward form; Engram's q waits for its k (`pending`).
     fn native(b: *Builder, name: []const u8, rule: Rule, v: plan.NativePlan, rank: u32, world: u32, pending: *?[]f32) !void {
-        const bytes = try b.raw(v, rank, world);
-        defer b.gpa.free(bytes);
-        const count = bytes.len / v.info.dtype.size();
         var shape: [4]usize = @splat(1);
         const dims = v.info.dims();
         @memcpy(shape[0..dims.len], dims);
         if (v.slice != .whole) shape[0] /= world;
+        if (v.info.dtype != .f32 and v.info.dtype != .bf16 and v.info.dtype != .f16) return error.UnexpectedTensor;
+        if (b.metadata_only) {
+            if (rule.out == .qk and std.mem.endsWith(u8, v.name, "q_weight")) return;
+            return b.put(name, if (rule.out == .bf16) .bf16 else .f32, shape[0..dims.len], try b.copy(&.{}));
+        }
+        const bytes = try b.raw(v, rank, world);
+        defer b.gpa.free(bytes);
+        const count = bytes.len / v.info.dtype.size();
         switch (rule.out) {
             .bf16 => {
                 const out = try b.gpa.alignedAlloc(u8, .@"16", 2 * count);
@@ -182,14 +191,14 @@ pub const Builder = struct {
             },
             .qk => {
                 const vals = try b.gpa.alloc(f32, count);
-                for (vals, 0..) |*x, i| x.* = bf16Widen(bf16Round(try load(v.info.dtype, bytes, i)));
+                for (vals, 0..) |*x, i| x.* = try load(v.info.dtype, bytes, i);
                 if (pending.*) |q| {
+                    pending.* = null;
                     defer b.gpa.free(q);
                     defer b.gpa.free(vals);
                     if (q.len != vals.len) return error.UnexpectedTensor;
                     const out = try b.gpa.alignedAlloc(u8, .@"16", 4 * count);
                     for (q, vals, 0..) |x, y, i| std.mem.writeInt(u32, out[4 * i ..][0..4], @bitCast(x * y), .little);
-                    pending.* = null;
                     try b.put(name, .f32, shape[0..dims.len], out);
                 } else pending.* = vals;
             },
@@ -223,8 +232,7 @@ pub const Builder = struct {
         if (p.head) |h| try b.group("head", h);
     }
 
-    /// DSpark's heads as drafter.load holds them: main_proj (whole, every rank), main_norm and norm fp32, the Markov
-    /// embed / head bf16 (bf16_param), the confidence head fp32 [D + r].
+    /// DSpark's heads: main_proj (whole), main_norm and norm fp32, Markov embed / head bf16, confidence head fp32.
     pub fn dspark(b: *Builder, p: *const plan.Plan) !void {
         const d = p.dspark orelse return;
         var none: ?[]f32 = null;
@@ -259,4 +267,82 @@ test "the loader's conversions: bf16 round to nearest even, widening, fp16 stora
     var h: [2]u8 = undefined;
     std.mem.writeInt(u16, &h, @bitCast(@as(f16, 0.333251953125)), .little);
     try testing.expectEqual(@as(f32, 0.333251953125), try load(.f16, &h, 0));
+}
+test "named image publication consumes its owned input on every allocation failure" {
+    const control = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var b: Builder = .{ .gpa = a, .io = std.testing.io, .pack = undefined };
+            defer b.deinit();
+            const bytes = try a.alignedAlloc(u8, .@"16", 16);
+            try b.put("owned", .bf16, &.{8}, bytes);
+        }
+    };
+    try testing.checkAllAllocationFailures(testing.allocator, control.run, .{});
+}
+
+test "Engram native qk partial allocation has one pending owner" {
+    const a = testing.allocator;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const data = try @import("pack.zig").image(a, &.{.{ .name = "q", .dtype = "F32", .shape = &.{4} }});
+    defer a.free(data);
+    try tmp.dir.writeFile(testing.io, .{ .sub_path = "model.safetensors", .data = data });
+    const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", a);
+    defer a.free(dir);
+    var pack = try Pack.open(a, testing.io, dir);
+    defer pack.deinit();
+    const control = struct {
+        fn run(gpa: std.mem.Allocator, p: *const Pack) !void {
+            var b: Builder = .{ .gpa = gpa, .io = testing.io, .pack = p };
+            defer b.deinit();
+            var pending: ?[]f32 = null;
+            defer if (pending) |owned| gpa.free(owned);
+            const tensor: plan.NativePlan = .{ .name = "q", .info = p.get("q").?, .slice = .whole, .bytes = 16 };
+            try b.native("qk", .{ .name = "qk", .out = .qk }, tensor, 0, 1, &pending);
+            try b.native("qk", .{ .name = "qk", .out = .qk }, tensor, 0, 1, &pending);
+        }
+    };
+    try testing.checkAllAllocationFailures(a, control.run, .{&pack});
+}
+
+test "Engram qk decodes stored F32 BF16 F16 before an independently widened product" {
+    const a = testing.allocator;
+    inline for (.{ "F32", "BF16", "F16" }) |dtype| {
+        var tmp = testing.tmpDir(.{});
+        defer tmp.cleanup();
+        const data = try @import("pack.zig").image(a, &.{.{ .name = "q", .dtype = dtype, .shape = &.{1} }});
+        defer a.free(data);
+        const value: f32 = 1.001;
+        const size = (DType.parse(dtype).?).size();
+        const expected: f64 = if (size == 4) value else if (comptime std.mem.eql(u8, dtype, "BF16")) bf16Widen(bf16Round(value)) else @as(f16, @floatCast(value));
+        if (size == 4) std.mem.writeInt(u32, data[data.len - 4 ..][0..4], @bitCast(value), .little) else std.mem.writeInt(u16, data[data.len - 2 ..][0..2], if (comptime std.mem.eql(u8, dtype, "BF16")) bf16Round(value) else @bitCast(@as(f16, @floatCast(value))), .little);
+        try tmp.dir.writeFile(testing.io, .{ .sub_path = "model.safetensors", .data = data });
+        const dir = try tmp.dir.realPathFileAlloc(testing.io, ".", a);
+        defer a.free(dir);
+        var p = try Pack.open(a, testing.io, dir);
+        defer p.deinit();
+        var b: Builder = .{ .gpa = a, .io = testing.io, .pack = &p };
+        defer b.deinit();
+        var pending: ?[]f32 = null;
+        defer if (pending) |q| a.free(q);
+        const tensor: plan.NativePlan = .{ .name = "q", .info = p.get("q").?, .slice = .whole, .bytes = size };
+        try b.native("qk", .{ .name = "qk", .out = .qk }, tensor, 0, 1, &pending);
+        try b.native("qk", .{ .name = "qk", .out = .qk }, tensor, 0, 1, &pending);
+        const got: f32 = @bitCast(std.mem.readInt(u32, b.out.items[0].bytes[0..4], .little));
+        // Independent scalar FP64 gate reference: RMS-normalized h=2, k=3, D=1, value=5, residual=2.
+        const norm: f64 = 1.0 / @sqrt(4.0 + 1e-6) / @sqrt(9.0 + 1e-6);
+        const ideal_gate = 1 / (1 + @exp(-@sqrt(6 * expected * expected * norm)));
+        const image_gate = 1 / (1 + @exp(-@sqrt(6 * @as(f64, got) * norm)));
+        try testing.expectApproxEqAbs(2 + 5 * ideal_gate, 2 + 5 * image_gate, 1e-6);
+        if (size == 4) {
+            const old_weight = bf16Widen(bf16Round(value)) * bf16Widen(bf16Round(value));
+            const old_gate = 1 / (1 + @exp(-@sqrt(6 * @as(f64, old_weight) * norm)));
+            try testing.expect(@abs(ideal_gate - old_gate) > 1e-5);
+        }
+        try testing.expectEqual(@as(f32, @floatCast(expected * expected)), got);
+        if (size == 4) try testing.expect(got != bf16Widen(bf16Round(value)) * bf16Widen(bf16Round(value)));
+        pending = try a.alloc(f32, 2);
+        try testing.expectError(error.UnexpectedTensor, b.native("qk", .{ .name = "qk", .out = .qk }, tensor, 0, 1, &pending));
+        try testing.expect(pending == null);
+    }
 }

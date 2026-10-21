@@ -1,7 +1,4 @@
-//! The keyed sampler on the GPU forward (sampling_pipe.zig's steps over "w.logits"): topk_keys.cu for each rank's
-//! candidates, sampling.cu for their packed rows and the nucleus statistics, the TP Collective for the gathers.
-//! Rank 0 (the GPU target) sends each call's sampling on the plan link (`Forward.op_sample`) before its gathers;
-//! the followers run the same steps from `Forward.follow` (their tokens are dropped).
+//! The keyed sampler on the GPU forward: rank 0 sends each call's sampling on the plan link; followers run the steps.
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -26,14 +23,12 @@ pub const GpuSampler = struct {
     f: *fwd.Forward,
     gpu: Gpu,
     p: pipe.Pipe,
-    /// the call in flight (its rows, sampling and first draw position; null pos0: no device choice) for the
-    /// download hook; the device choice's pinned copy, its event and the chosen tokens (Forward.after_sample)
+    /// the call in flight (rows, sampling, first draw position) and the device choice's pinned copy, event and tokens
     cur: ?Cur = null,
     pinned: ?cuda.HostBuffer = null,
     done: ?cuda.Event = null,
     chosen: ?cuda.DeviceBuffer = null,
-    /// TF_DSV41_SAMP_BATCH=1 (rank 0 decides; followers run what op 13 brings): a forward's keyed segments in one call
-    /// (`chooseSegments`), as Python's one candidates gather (+ one statistics exchange) a forward
+    /// TF_DSV41_SAMP_BATCH=1 (rank 0 decides): a forward's keyed segments in one call, one gather a forward
     batch: bool = false,
     /// the batched call's per-segment device-choice start (null: none), for its hook
     seg_pos0: []const ?u64 = &.{},
@@ -72,9 +67,7 @@ pub const GpuSampler = struct {
     pub const max_segments = 16;
     const seg_words = 8;
 
-    /// Rank 0: several keyed segments of "w.logits" in one call (op 13 first: [op, n, (row0, rows, T, top_k, top_p,
-    /// min_p, seed, pos0) a segment], pos0 -1: no device choice). A top_k segment with consecutive draws gets its
-    /// device choice (vsample.choose) as `choose` gives it, from the one gather.
+    /// Rank 0: several keyed segments of "w.logits" in one call (op 13 first), each choosing from the one gather.
     pub fn chooseSegments(x: *GpuSampler, segs: []const pipe.Pipe.Seg) !void {
         if (segs.len == 0 or segs.len > max_segments) return error.BadSegments;
         var msg: [2 + seg_words * max_segments]i64 = undefined;
@@ -126,10 +119,7 @@ pub const GpuSampler = struct {
         try x.runSegments(segs[0..ns], pos0[0..ns]);
     }
 
-    /// chooseSegments' hook (every rank): with a device choice wanted for any segment, the candidates' copy goes to
-    /// pinned memory with an event, then each such segment's vsample.choose over the shared gather (row r of the span
-    /// drawn at pos0 - (row0 - first row0) + r, its own count; only its rows are read) and the forward's after_sample
-    /// with its rows; then the host waits for the copy alone. False: the pipe's own download.
+    /// chooseSegments' hook (every rank): device choices from the shared gather, then wait for the copy; false: none.
     fn segGather(ctx: *anyopaque, gathered: u64, n: usize, k: usize, segs: []const pipe.Pipe.Seg, host: []u8) anyerror!bool {
         const x: *GpuSampler = @ptrCast(@alignCast(ctx));
         const h = x.f.after_sample orelse return false;
@@ -174,8 +164,7 @@ pub const GpuSampler = struct {
         if (x.done == null) x.done = try cuda.Event.init(r.d, false);
     }
 
-    /// Rank 0, once a path: which keyed path serving takes. The server's default sampling decides it (the Spark
-    /// server's is top_k 20, top_p 0.95: a request without top_k never reaches the nucleus path).
+    /// Rank 0, once a path: which keyed path serving takes (the server's default sampling decides it).
     fn note(x: *GpuSampler, s: Sampling, batched: bool) void {
         if (x.f.comm.rank() != 0) return;
         const V: usize = x.p.vs.min;
@@ -202,8 +191,6 @@ pub const GpuSampler = struct {
         x.p.deinit();
         x.gpa.destroy(x);
     }
-
-    /// Rank 0: the keyed choices of "w.logits" rows [row0, row0 + n) under `s` (T > 0), row i drawn at `draws[i]`.
 
     /// Rank 0: the keyed choices of "w.logits" rows [row0, row0 + n) under `s` (T > 0), row i drawn at `draws[i]`.
     pub fn choose(x: *GpuSampler, row0: u32, n: u32, s: Sampling, draws: []const u64, out: []u32) !void {
@@ -255,10 +242,7 @@ pub const GpuSampler = struct {
         try x.run(@intCast(msg[1]), n, s, null, out[0..n], if (dev) @intCast(msg[8]) else null);
     }
 
-    /// sampling_pipe's download hook (every rank): with a device start wanted (Forward.after_sample, a non-nucleus
-    /// call with its draw positions), the candidates' copy goes to pinned memory with an event, vsample.choose's
-    /// device tokens follow (glue.cu vs_choose) and the pass's start is enqueued behind them; then the host waits for
-    /// the copy alone and picks as before (its draws are the authority, unchanged). False: the pipe's own download.
+    /// The download hook (every rank): device tokens before the pass when a start is wanted, then wait; false: none.
     fn afterGather(ctx: *anyopaque, gathered: u64, n: usize, k: usize, count: usize, host: []u8) anyerror!bool {
         const x: *GpuSampler = @ptrCast(@alignCast(ctx));
         const c = x.cur orelse return false;

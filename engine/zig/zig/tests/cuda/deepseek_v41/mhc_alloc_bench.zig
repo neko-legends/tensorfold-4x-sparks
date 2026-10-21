@@ -1,13 +1,4 @@
-//! `tf-dsv41-test mhc-alloc [windows]`: does where the buffers live slow the mHC boundary (TF_DSV41_ARENA)?
-//! Prod's 16-row decode boundary (mhc_cuda boundary_kernel with R1's tail and deferred coefficients, bf16 fn and
-//! partials, 2 ranks' gathered rows) over 80 sites a window, each site its own layer's fn16 / base / scale / norm as the
-//! engine holds them, and between two boundaries a 512 MiB fill (the window's weight streaming: cold L2 and TLB). The
-//! same launches with the buffers from:
-//!   per-buffer  one cuMemAlloc each (the engine today), a big decoy allocation between layers as the weights are;
-//!   plain       the arena on cuMemAlloc'd 64 MiB chunks (TF_DSV41_ARENA=plain);
-//!   vmm         the arena on CUDA virtual memory, 2 MiB+ pages (TF_DSV41_ARENA=1).
-//! Each line: the boundary's and coef_kernel's median / p10 / p90 in us over windows x 80 launches (CUDA events
-//! around each launch). Round 4's nsys: Zig 26-32 us, Python 16-26 us for this launch. Synthetic values: time only.
+//! `tf-dsv41-test mhc-alloc [windows]`: mHC boundary time with per-buffer / arena / VMM buffers (TF_DSV41_ARENA).
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -59,8 +50,7 @@ fn one(gpu: Gpu, k: *const dsv41.Kernels, mode: Mode, windows: usize) !void {
         if (have_vmm) vmm.close();
     };
 
-    // the window's buffers: one block as run.zig's window arena (x, xout, gathered, part, c, out, two coefficient sets,
-    // the tail's counter), then each layer's site weights in load order with a weight-sized decoy between layers
+    // the window's buffers as one block like run.zig's window arena, then per-layer site weights with decoys between
     const off = struct {
         const x = 0;
         const xout = x + R * 4 * D * 2;
@@ -121,17 +111,34 @@ fn one(gpu: Gpu, k: *const dsv41.Kernels, mode: Mode, windows: usize) !void {
     for (0..windows + 1) |wi| for (&sites, 0..) |*s, si| {
         const cur: u64 = @intCast(si % 2);
         const a: ops.mhc.Args = .{
-            .x = p + off.x,                .xs = 4 * D,                 .xout = p + off.xout,
-            .g = p + off.g,                .gr = R * D,                 .world = W,
-            .gbf16 = 1,                    .post = p + off.coef + cur * R * 24 * 4 + R * 4 * 4,
-            .comb = p + off.coef + cur * R * 24 * 4 + R * 8 * 4,          .pre = p + off.coef + cur * R * 24 * 4,
-            .@"fn" = s.fnw.ptr,            .base = s.base.ptr,          .scale = s.scale.ptr,
-            .part = p + off.part,          .c = p + off.c,              .nw = s.nw.ptr,
-            .out = p + off.out,            .opre = p + off.coef + (1 - cur) * R * 24 * 4,
-            .opost = p + off.coef + (1 - cur) * R * 24 * 4 + R * 4 * 4, .ocomb = p + off.coef + (1 - cur) * R * 24 * 4 + R * 8 * 4,
-            .cnt = p + off.cnt,            .R = R,                      .eps = 1e-6,
-            .hc_eps = 1e-6,                .post_alpha = 2.0,           .iters = 20,
-            .spin = 8000,                  .@"defer" = 1,
+            .x = p + off.x,
+            .xs = 4 * D,
+            .xout = p + off.xout,
+            .g = p + off.g,
+            .gr = R * D,
+            .world = W,
+            .gbf16 = 1,
+            .post = p + off.coef + cur * R * 24 * 4 + R * 4 * 4,
+            .comb = p + off.coef + cur * R * 24 * 4 + R * 8 * 4,
+            .pre = p + off.coef + cur * R * 24 * 4,
+            .@"fn" = s.fnw.ptr,
+            .base = s.base.ptr,
+            .scale = s.scale.ptr,
+            .part = p + off.part,
+            .c = p + off.c,
+            .nw = s.nw.ptr,
+            .out = p + off.out,
+            .opre = p + off.coef + (1 - cur) * R * 24 * 4,
+            .opost = p + off.coef + (1 - cur) * R * 24 * 4 + R * 4 * 4,
+            .ocomb = p + off.coef + (1 - cur) * R * 24 * 4 + R * 8 * 4,
+            .cnt = p + off.cnt,
+            .R = R,
+            .eps = 1e-6,
+            .hc_eps = 1e-6,
+            .post_alpha = 2.0,
+            .iters = 20,
+            .spin = 8000,
+            .@"defer" = 1,
         };
         try pollute.fill32(@intCast(si), stream.handle);
         try e0.record(stream);

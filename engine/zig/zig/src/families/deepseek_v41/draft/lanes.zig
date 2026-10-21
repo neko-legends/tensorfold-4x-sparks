@@ -1,6 +1,4 @@
-//! DeepSeek-V4.1's lane backend (lanes.backend.Backend) over a `Target` forward and a DSpark `Pass`, with the DSpark
-//! depth as the round's row policy (lanes.trim, policy.zig). Drafts come back to the host every pass (the depth reads
-//! their confidences), so windows carry them as host tokens; trees are first-position siblings (tree.zig).
+//! DeepSeek-V4.1's lane backend over a `Target` and a DSpark `Pass`, the DSpark depth as the round's row policy.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
@@ -23,7 +21,7 @@ pub const Options = struct {
     depth: depth.Settings = .{},
     siblings: u32 = 0, // first-position siblings (TF_DSV41_TREE - 1; 0: chains only)
     sib_rows: u32 = 4, // a sibling branch's rows at most (TF_DSV41_TREE_ROWS)
-    dup: tree.Dup = .{}, // tree.plan's sibling pricing (Python's: TF_DSV41_TREE_DUP_MS a sibling, its pending row counted)
+    dup: tree.Dup = .{}, // sibling pricing: TF_DSV41_TREE_DUP_MS a sibling, its pending row counted
     slots: u32 = 4, // streams at once
     spec: spec_mod.Settings = .{}, // the speculative pass (TF_DSV41_SPEC_DRAFT / _SPEC_NUCLEUS)
 };
@@ -72,52 +70,13 @@ pub const Lanes = struct {
     spec: ?spec_mod.Spec = null,
     /// each slot's stream state (null: free)
     by_slot: []?*St,
+    retired: [16]bool = @splat(false),
+    release_requested: [16]bool = @splat(false),
 
-    pub fn init(gpa: Allocator, target: iface.Target, pass: iface.Pass, costs: costs_mod.Costs, opts: Options) !*Lanes {
-        const x = try gpa.create(Lanes);
-        errdefer gpa.destroy(x);
-        const b = opts.shape.block;
-        if (b > max_block or opts.siblings > tree.max_siblings) return error.BadOptions;
-        const c = opts.shape.candidates;
-        x.* = .{
-            .gpa = gpa,
-            .target = target,
-            .pass = pass,
-            .opts = opts,
-            .policy = try Policy.init(gpa, costs, opts),
-            .scratch = std.heap.ArenaAllocator.init(gpa),
-            .drafts = try gpa.alloc(u32, opts.slots * b),
-            .conf = try gpa.alloc(f32, opts.slots * b),
-            .cand = try gpa.alloc(i32, opts.slots * b * c),
-            .base = try gpa.alloc(f32, opts.slots * b * c),
-            .by_slot = try gpa.alloc(?*St, opts.slots),
-        };
-        @memset(x.by_slot, null);
-        x.policy.owner = x;
-        if (opts.spec.on) x.spec = try spec_mod.Spec.init(gpa, opts.spec, opts.slots, b, c);
-        var s = opts.slots;
-        while (s > 0) : (s -= 1) try x.free.append(gpa, s - 1);
-        return x;
-    }
+    pub const init = @import("lane_owner.zig").init;
+    pub const deinit = @import("lane_owner.zig").deinit;
 
-    pub fn deinit(x: *Lanes) void {
-        var it = x.streams.valueIterator();
-        while (it.next()) |st| x.drop(st.*);
-        x.streams.deinit(x.gpa);
-        x.free.deinit(x.gpa);
-        x.drawn.deinit(x.gpa);
-        x.policy.deinit();
-        x.scratch.deinit();
-        x.gpa.free(x.drafts);
-        x.gpa.free(x.conf);
-        x.gpa.free(x.cand);
-        x.gpa.free(x.base);
-        if (x.spec) |*sp| sp.deinit();
-        x.gpa.free(x.by_slot);
-        x.gpa.destroy(x);
-    }
-
-    fn drop(x: *Lanes, st: *St) void {
+    pub fn drop(x: *Lanes, st: *St) void {
         st.shown.deinit(x.gpa);
         x.gpa.destroy(st);
     }
@@ -140,7 +99,7 @@ pub const Lanes = struct {
         break :blk v;
     };
 
-    /// The speculative pass's counts (Python's describe()) on stderr, when it is on: the gates' and the server's line.
+    /// The speculative pass's counts on stderr when it is on (the gates' and the server's line).
     pub fn reportSpec(x: *const Lanes) void {
         const sp = x.spec orelse return;
         var buf: [256]u8 = undefined;
@@ -168,7 +127,7 @@ pub const Lanes = struct {
         return envOn("TF_DSV41_TAIL_JOIN");
     }
 
-    /// TF_DSV41_PIECE_RUNS=1: a round's prompt pieces of several slots in one forward (target.zig `pieces`; default off).
+    /// TF_DSV41_PIECE_RUNS=1: a round's prompt pieces of several slots in one forward (default off).
     fn envOn(name: [*:0]const u8) bool {
         const v = std.c.getenv(name) orelse return false;
         return std.mem.eql(u8, std.mem.span(v), "1");
@@ -211,11 +170,18 @@ pub const Lanes = struct {
     fn prefill(ptr: *anyopaque, s: *Stream) anyerror!void {
         const x = self(ptr);
         if (x.streams.get(s) != null) return error.StreamLive;
+        @import("lane_retire.zig").recover(x);
         const slot = x.free.pop() orelse return error.NoSlot;
-        errdefer x.free.append(x.gpa, slot) catch {};
-        const st = try x.gpa.create(St);
-        errdefer x.gpa.destroy(st);
+        const st = x.gpa.create(St) catch |e| {
+            x.free.appendAssumeCapacity(slot);
+            return e;
+        };
         st.* = .{ .slot = slot };
+        x.by_slot[slot] = st;
+        errdefer {
+            x.retired[slot] = true;
+            _ = @import("lane_retire.zig").retire(x, st);
+        }
         try x.settle();
         if (x.spec) |*sp| sp.forget(slot);
         x.pass.reset(slot);
@@ -225,8 +191,7 @@ pub const Lanes = struct {
         st.first = try x.target.prefill(slot, ids, s.sampling, ids.len);
         st.len = ids.len;
         _ = x.scratch.reset(.retain_capacity);
-        // the taps hold the prompt's last rows (its last window or segment; after a verify-tail prompt only that row,
-        // the target handed the prefilled tail to the pass itself): those rows, at their positions
+        // the taps hold the prompt's last rows (after a verify-tail prompt only that row), at their positions
         const tr: usize = @min(x.target.taps(slot).rows, ids.len);
         const rows = try x.scratch.allocator().alloc(u32, tr);
         for (rows, 0..) |*r, i| r.* = @intCast(i);
@@ -235,16 +200,22 @@ pub const Lanes = struct {
         x.by_slot[slot] = st;
     }
 
-    /// A prompt in pieces (the round planner, lane_host.zig `Rounds`): the stream takes a slot, its drafter context and
-    /// depth start over (prod's admission `fwd.reset`), the target admits it and restores a saved prefix.
+    /// A prompt in pieces (lane_host.zig `Rounds`): new slot, drafter context and depth reset, target admits/restores.
     fn begin(ptr: *anyopaque, s: *Stream) anyerror!be.Backend.Begun {
         const x = self(ptr);
         if (x.streams.get(s) != null) return error.StreamLive;
+        @import("lane_retire.zig").recover(x);
         const slot = x.free.pop() orelse return error.NoSlot;
-        errdefer x.free.append(x.gpa, slot) catch {};
-        const st = try x.gpa.create(St);
-        errdefer x.gpa.destroy(st);
+        const st = x.gpa.create(St) catch |e| {
+            x.free.appendAssumeCapacity(slot);
+            return e;
+        };
         st.* = .{ .slot = slot };
+        x.by_slot[slot] = st;
+        errdefer {
+            x.retired[slot] = true;
+            _ = @import("lane_retire.zig").retire(x, st);
+        }
         try x.settle();
         if (x.spec) |*sp| sp.forget(slot);
         x.pass.reset(slot);
@@ -295,10 +266,7 @@ pub const Lanes = struct {
         return x.finished(st, ids, try x.target.finish(st.slot, ids, s.sampling, ids.len));
     }
 
-    /// `finish` without the last token's window (Config.join_tail, iface.Target.tail): the slot holds the prompt but
-    /// its last row, the drafter its context (the target handed the prefilled tail's taps over), so the head drafts
-    /// after the last token and the stream's first round verifies it. A target that ran the row anyway (a grammar's
-    /// first mask) gives its choice: `finish`'s end.
+    /// `finish` without the last token's window (TF_DSV41_TAIL_JOIN); true when the target ran the row anyway.
     fn join(ptr: *anyopaque, s: *Stream) anyerror!bool {
         const x = self(ptr);
         const st = try x.get(s);
@@ -382,8 +350,7 @@ pub const Lanes = struct {
         if (x.spec != null) try x.speculate(a, windows, segs, choices);
     }
 
-    /// Before the window: the slots whose next pass `speculate` would launch (its rules, without the window's choices)
-    /// are armed, so the pass may start from the window's device pick (Pass.arm; spec.py's order).
+    /// Before the window: arm the slots `speculate` would launch, so passes start from the device pick (Pass.arm).
     fn armSpec(x: *Lanes, windows: []const be.Window, segs: []const iface.Segment) void {
         const arm = x.pass.vtable.arm orelse return;
         const sp = &x.spec.?;
@@ -404,9 +371,7 @@ pub const Lanes = struct {
         }
     }
 
-    /// A DSpark round: the window verifies the pass's drafts (none when the depth chose 0), no host drafts. The lane
-    /// core reads a chain's held drafts back as host tokens (Backend.tree after every draft), so a window of `w.tokens`
-    /// that are a prefix of the slot's held chain is one too.
+    /// A DSpark round: the window verifies the pass's drafts only (a prefix of the held chain counts too).
     fn dsparkRound(st: *const St, w: be.Window) bool {
         if (st.n == 0) return false;
         if (w.tokens.len == 0) return true;
@@ -414,7 +379,7 @@ pub const Lanes = struct {
     }
 
     /// Collects a speculative pass still running (before any other pass, target or ingest work).
-    fn settle(x: *Lanes) !void {
+    pub fn settle(x: *Lanes) !void {
         if (x.spec) |*sp| try sp.settle(x.pass);
     }
 
@@ -432,8 +397,7 @@ pub const Lanes = struct {
         var n: usize = 0;
         for (windows, segs, choices) |w, g, c| {
             const st = try x.get(w.stream);
-            // a DSpark round (dsparkRound; before 6237ee39 chain rounds read back as host tokens were skipped: the
-            // night's run A speculated 800 of 7,493 passes)
+            // a DSpark round only (dsparkRound counts chain rounds read back as host tokens)
             if (!dsparkRound(st, w)) continue;
             var acc: u32 = 0;
             while (acc + 1 < g.tokens.len and g.tokens[acc + 1] == c[acc]) acc += 1;
@@ -485,7 +449,7 @@ pub const Lanes = struct {
             }
             if (r.position != at + 1) return error.PositionMismatch;
             const anchor = if (r.first) |f| x.value(f) else r.follow[r.follow.len - 1];
-            // Python's commit warm (decode.prefetch_pending): the next window's pending row, before the pass
+            // commit warm: the next window's pending row, before the pass
             if (x.target.vtable.warm != null and n_row0 < row0.len) {
                 row0_ids[n_row0] = anchor;
                 row0[n_row0] = .{ .slot = st.slot, .start = at, .ids = row0_ids[n_row0..][0..1] };
@@ -515,8 +479,7 @@ pub const Lanes = struct {
         };
         const took = if (x.spec) |*sp| sp.take(asks[0..n], props) else false;
         if (!took) try x.pass.propose(asks[0..n], props);
-        // Python's draft-end warm (decode.draft's gate.warm): the pending row and every drafted one, before the depth
-        // cuts them
+        // draft-end warm: the pending row and every drafted one, before the depth cuts them
         if (x.target.vtable.warm != null) {
             const ws = try a.alloc(iface.Warm, n);
             for (ws, props, asks[0..n]) |*w, p, ask| {
@@ -590,13 +553,7 @@ pub const Lanes = struct {
         const x = self(ptr);
         const kv = x.streams.fetchRemove(s) orelse return;
         const st = kv.value;
-        x.settle() catch |e| std.log.err("dsv41 lanes: the speculative pass did not settle ({t})", .{e});
-        if (x.spec) |*sp| sp.forget(st.slot);
-        x.by_slot[st.slot] = null;
-        x.target.release(st.slot);
-        x.pass.reset(st.slot);
-        x.policy.depth.reset(st.slot);
-        x.free.append(x.gpa, st.slot) catch {};
-        x.drop(st);
+        x.retired[st.slot] = true;
+        _ = @import("lane_retire.zig").retire(x, st);
     }
 };

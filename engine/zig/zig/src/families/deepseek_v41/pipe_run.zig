@@ -21,7 +21,7 @@
 
 const std = @import("std");
 const cuda = @import("cuda");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const buffers = @import("buffers.zig");
 const run = @import("run.zig");
@@ -32,7 +32,7 @@ const ced = @import("ced.zig");
 const hs = @import("host_stage.zig");
 const eh = @import("engram_host.zig");
 const plan = @import("plan.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const vision_rows = @import("vision_rows.zig");
 const fwd = @import("forward.zig");
 const pf = @import("forward_prefill.zig");

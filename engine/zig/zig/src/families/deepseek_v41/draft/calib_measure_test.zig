@@ -1,7 +1,4 @@
-//! calib_measure.zig against Python prod's own calib.measure (fixtures/calib-measure-golden.json,
-//! tools/calib_measure_golden.py on tensorfold-decode1 8474f31): the same timed runs in the same order on the same
-//! slots, every rank's gathered microsecond ints from the same samples, and the same Costs bit for bit; and the pure
-//! helpers (method, statistic, table_of raw / fit, extend, split, wide_buckets, fallback_ids) on Python's outputs.
+//! calib_measure.zig against fixtures/calib-measure-golden.json: same runs, same gathered ints, same Costs bits.
 const std = @import("std");
 const Value = std.json.Value;
 const cm = @import("calib_measure.zig");
@@ -72,7 +69,7 @@ test "the measurement equals Python's calib.measure: runs, gathered ints and the
                 try std.testing.expectEqual(@as(u32, @intCast(s.array.items[1].integer)), r.rows);
             }
         }
-        // each rank's kept values as Python's gathered ints, then the table from both
+        // each rank's kept values as the golden's gathered ints, then the table from both
         var ranks: [2][]f64 = undefined;
         for (0..2) |rk| {
             const samples = try floats(a, c.get("samples").?.array.items[rk]);
@@ -142,7 +139,7 @@ test "method, statistic, table_of, extend, split, wide_buckets and fallback_ids 
         try std.testing.expectEqual(want.len, got.len);
         for (want, got) |w, g| try std.testing.expectEqual(@as(u32, @intCast(w.integer)), g);
     }
-    try std.testing.expectEqualStrings(pure.get("text").?.string, cm.text); // glm5_next.spark.calib.TEXT
+    try std.testing.expectEqualStrings(pure.get("text").?.string, cm.text); // the calibration text
     var methods: usize = 0;
     for (pure.get("method").?.array.items) |x| {
         const got = methodOf(x.object.get("env").?);

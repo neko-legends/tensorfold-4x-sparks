@@ -22,6 +22,27 @@ pub fn serveModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: st
     });
 }
 
+/// A builder that makes its own server root (the HIP, Metal and XPU natives) gets the tree's serving imports:
+/// `json` and DeepSeek-V4.1's `dsv41_serve` module (server/deepseek.zig), over its tokenizer and lanes modules.
+pub fn attachServing(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, tokenizer: *std.Build.Module, lanes: *std.Build.Module) void {
+    if (m.import_table.get("dsv41_serve") != null) return;
+    const j = m.import_table.get("json") orelse blk: {
+        const nj = jsonModule(b, target, optimize);
+        m.addImport("json", nj);
+        break :blk nj;
+    };
+    m.addImport("dsv41_serve", serveModule(b, target, optimize, j, tokenizer, lanes));
+}
+
+/// The server's JSON values as a module (zig/src/server/json.zig), so a family's serving code shares them.
+pub fn jsonModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("zig/src/server/json.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+}
+
 const Server = struct { json: *std.Build.Module, serve: *std.Build.Module, server: *std.Build.Module, api: *std.Build.Module };
 
 /// The server module (zig/src/server/root.zig) and everything it imports, for ``target``.
@@ -32,6 +53,8 @@ fn server(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
     const lanes = b.createModule(.{ .root_source_file = b.path("zig/src/core/lanes/lanes.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const api = b.createModule(.{ .root_source_file = b.path("zig/src/core/engine_api.zig"), .target = target, .optimize = optimize, .link_libc = true, .imports = &.{.{ .name = "lanes", .module = lanes }} });
     const serve = serveModule(b, target, optimize, json, tokenizer, lanes);
+    // the server's Living Weights families (slide_model): the engines' own module when there is one, so their types are shared
+    const living = if (natives) |n| n.import_table.get("living") orelse b.createModule(.{ .root_source_file = b.path("zig/src/living/living.zig"), .target = target, .optimize = optimize, .link_libc = true }) else b.createModule(.{ .root_source_file = b.path("zig/src/living/living.zig"), .target = target, .optimize = optimize, .link_libc = true });
     const m = b.createModule(.{
         .root_source_file = b.path(root),
         .target = target,
@@ -43,6 +66,7 @@ fn server(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin
             .{ .name = "template", .module = template },
             .{ .name = "json", .module = json },
             .{ .name = "dsv41_serve", .module = serve },
+            .{ .name = "living", .module = living },
         },
     });
     m.addOptions("build_options", build_options);
@@ -92,23 +116,8 @@ pub fn tests(b: *std.Build, build_options: *std.Build.Step.Options, test_step: *
         server_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = s.json })).step);
         server_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = s.api })).step);
         test_step.dependOn(server_step);
-        // test-golden: the frozen server parity goldens, checked by Zig driving fake_serve (macOS: nativeServer)
-        const fake_serve = b.addExecutable(.{ .name = "fake_serve", .root_module = b.createModule(.{
-            .root_source_file = b.path("zig/tests/server/fake_serve.zig"),
-            .target = host,
-            .optimize = .Debug,
-            .link_libc = true,
-            .imports = &.{ .{ .name = "server", .module = s.server }, .{ .name = "engine_api", .module = s.api }, .{ .name = "tokenizer", .module = s.server.import_table.get("tokenizer").? }, .{ .name = "template", .module = s.server.import_table.get("template").? } },
-        }) });
-        const golden_check = b.addExecutable(.{ .name = "golden_check", .root_module = b.createModule(.{ .root_source_file = b.path("zig/tests/server/golden_check.zig"), .target = host, .optimize = .Debug, .link_libc = true }) });
-        const golden_run = b.addRunArtifact(golden_check);
-        golden_run.addArtifactArg(fake_serve);
-        golden_run.addFileArg(b.path("zig/tests/server/golden/cases.json"));
-        golden_run.addDirectoryArg(b.path("zig/tests/server/golden"));
-        golden_run.addDirectoryArg(b.path("zig/tests/server/fixtures"));
-        golden_run.setCwd(b.path("."));
-        b.step("test-golden", "The frozen server parity goldens checked by a Zig step driving fake_serve").dependOn(&golden_run.step);
-        test_step.dependOn(&golden_run.step);
+        // the goldens (cases + security cases) are wired by 1.1.1's zig/build/golden.zig from the CUDA build's
+        // host tests, which own `zig build test-golden` on Linux; macOS runs them from nativeServer
         const none = b.createModule(.{ .root_source_file = b.path("zig/src/native/none.zig"), .target = host, .optimize = .ReleaseSafe, .link_libc = true });
         const exe = b.addExecutable(.{ .name = "tensorfold-native", .root_module = server(b, host, .ReleaseSafe, "zig/src/server/main.zig", none, build_options).server });
         b.step("server-none", "tensorfold-native without an engine (the server's own checks) into zig-out/server").dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = .{ .custom = "server" } } }).step);
@@ -125,9 +134,15 @@ pub fn tests(b: *std.Build, build_options: *std.Build.Step.Options, test_step: *
 }
 
 /// Adds the shared `json` import (and `lanes` through `engine_api` when present); returns the json module.
+/// Attach a server's shared JSON module (tests run apart), and Living Weights' families where the build gave none.
 pub fn addTo(b: *std.Build, m: *std.Build.Module, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const j = b.createModule(.{ .root_source_file = b.path("zig/src/server/json.zig"), .target = target, .optimize = optimize });
-    m.addImport("json", j);
+    const j = m.import_table.get("json") orelse blk: {
+        const nj = jsonModule(b, target, optimize);
+        m.addImport("json", nj);
+        break :blk nj;
+    };
     if (m.import_table.get("engine_api")) |api| if (api.import_table.get("lanes")) |lanes| m.addImport("lanes", lanes);
+    // a build whose engines learn hands the server their own living module; the rest read only its families
+    if (m.import_table.get("living") == null) m.addImport("living", b.createModule(.{ .root_source_file = b.path("zig/src/living/living.zig"), .target = target, .optimize = optimize, .link_libc = true }));
     return j;
 }

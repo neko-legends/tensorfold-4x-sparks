@@ -9,6 +9,7 @@ pub const Context = @import("context.zig").Context;
 pub const DeviceBuffer = @import("memory.zig").DeviceBuffer;
 pub const HostBuffer = @import("memory.zig").HostBuffer;
 pub const memory = @import("memory.zig");
+pub const setAllocationLimit = @import("memory.zig").setAllocationLimit;
 pub const usage = @import("memory.zig").usage;
 pub const Usage = @import("memory.zig").Usage;
 pub const carveout = @import("carveout.zig");
@@ -36,6 +37,7 @@ pub const exlr8 = @import("exlr8.zig");
 pub const nvfp4 = @import("nvfp4.zig");
 pub const segments = @import("segments.zig");
 pub const arena = @import("arena.zig");
+pub const memory_receipt = @import("memory_receipt.zig");
 pub const grouped = @import("grouped.zig");
 pub const qlinear = @import("qlinear.zig");
 pub const norms = @import("norms.zig");
@@ -64,9 +66,14 @@ pub const exl3_experts = @import("exl3_experts.zig");
 pub const exl3_upload = @import("exl3_upload.zig");
 pub const exl3_candidate = @import("exl3_candidate.zig");
 pub const exl3_grouped = @import("exl3_grouped.zig");
-pub const memory_receipt = @import("memory_receipt.zig");
+
+pub const pack = @import("pack.zig");
+
 test {
     _ = exl3_grouped;
+    _ = gdn_train;
+    _ = train_q4;
+    _ = train_attn;
     _ = @import("memory.zig");
     _ = memory_receipt;
     _ = @import("grouped.zig");
@@ -120,3 +127,21 @@ test {
 }
 
 pub const ggml = @import("ggml.zig");
+
+pub const gdn_train = @import("gdn_train.zig");
+pub const train_q4 = @import("train_q4.zig");
+pub const train_attn = @import("train_attn.zig");
+
+test {
+    _ = tp_group;
+    _ = arena;
+    _ = pack;
+    _ = graph_cache;
+    _ = @import("graph_registry.zig");
+    _ = @import("graph_cache_regression_test.zig");
+    _ = @import("graph_cache_ranks_test.zig");
+    _ = exl3.block.dense;
+    _ = exl3.block.experts;
+    _ = exl3.block.lin2;
+    _ = exl3.block.x3gm;
+}

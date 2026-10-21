@@ -15,8 +15,7 @@ pub const Stream = struct {
         return .{ .d = d, .handle = s };
     }
 
-    /// A non-blocking stream at `priority`, clamped to the context's range (lower numbers run first; the greatest
-    /// priority is the range's lowest number). `highest`: the greatest the context allows.
+    /// A non-blocking stream at `priority`, clamped to the context's range (lower numbers run first).
     pub const Priority = enum { default, highest };
 
     pub fn initPriority(d: *const Driver, priority: Priority) Error!Stream {
@@ -78,8 +77,7 @@ pub const Event = struct {
         try self.d.check(self.d.api.cuEventRecord(self.handle, stream.handle), "cuEventRecord");
     }
 
-    /// A record that a stream capture keeps as an event record node (abi.event_record_external): a stream outside the
-    /// graph that waits on the event after the graph's launch waits for that point of the launch.
+    /// A record a capture keeps as an event record node: outside waits after a launch wait for that point of it.
     pub fn recordExternal(self: Event, stream: Stream) Error!void {
         try self.d.check(self.d.api.cuEventRecordWithFlags(self.handle, stream.handle, abi.event_record_external), "cuEventRecordWithFlags");
     }

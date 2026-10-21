@@ -1,6 +1,4 @@
-// Locally owned SWA KV glue. Reference: tensorfold-decode1@78b703d,
-// cuda/rmsnorm.py _rms and cuda/csa2/{compress.py _kv_store,rows.py}.
-// K=512, bf16 input, fp32 RMS weight; one 128-thread CTA per row.
+// Locally owned SWA KV glue, bit-exact with AOT Triton _rms/_kv_store: K=512 bf16, fp32 RMS weight, one CTA a row.
 #include <cuda_runtime.h>
 #include <cuda_bf16.h>
 #include <cuda_fp8.h>
@@ -17,12 +15,7 @@ struct Args {
 static_assert(sizeof(Args) == 112 && offsetof(Args, x_stride) == 64 && offsetof(Args, inv_k) == 96,
               "Zig/CUDA KV glue ABI");
 
-// cap16 d6a6a52... _rms: BK512, four warps, sizePerThread4. SASS0100
-// multiplies TID by4; 0180 converts to a bf16 byte offset; 1cd0 loads
-// four contiguous elements (LDG.64). K512 takes this loop's one-chunk tail.
-// Its register sum is ((A0+A1)+A2)+A3, xor16..1, then(w0+w2)+(w1+w3).
-// This differs from x3seg's _rms_row layout; use this KV producer's AOT tree.
-// Runtime inv_k/eps are fp32 in AOT, widened before the fp64 operations.
+// Matches the AOT _rms tree: 4 contiguous bf16 a thread, ((a0+a1)+a2)+a3, xor 16..1, (w0+w2)+(w1+w3), fp64 tail.
 __device__ __forceinline__ double row_rn(const __nv_bfloat16* xr, float inv_k, float eps) {
     __shared__ double ws[4];
     const int t = threadIdx.x;
@@ -44,8 +37,7 @@ __device__ __forceinline__ double row_rn(const __nv_bfloat16* xr, float inv_k, f
     return rn;
 }
 
-// rows.py:e4m3_rne, operation for operation. The explicit fp32 rounding
-// precedes the hardware conversion, including its behavior on edge inputs.
+// e4m3_rne op for op: explicit fp32 rounding before the hardware conversion, edge inputs included.
 __device__ __forceinline__ uint8_t e4m3_rne(float x) {
     const uint32_t bits = __float_as_uint(x);
     const float near = __uint_as_float((bits + 0x7ffffu + ((bits >> 20) & 1u)) & 0xfff00000u);
@@ -55,10 +47,7 @@ __device__ __forceinline__ uint8_t e4m3_rne(float x) {
     return __nv_cvt_float_to_fp8(abs_x < 0.015625f ? small : near, __NV_SATFINITE, __NV_E4M3);
 }
 
-// cap16 cb414a38... _kv_store cubin: ordinary FMNMX, xor16..1,
-// floor0x38d1b717; e=((bits>>23)&255)-135+(mantissa>0x600000).
-// AOT folds the floor before its final xor1 max; FMNMX's NaN-as-number
-// policy makes that equivalent to this final clamp, including all-NaN tiles.
+// Matches the AOT _kv_store: FMNMX's NaN-as-number max then floor 0x38d1b717, exponent from bits (all-NaN tiles too).
 __device__ __forceinline__ int tile_exponent(float even, float odd) {
     float peak = fmaxf(fabsf(even), fabsf(odd));
 #pragma unroll
@@ -67,9 +56,7 @@ __device__ __forceinline__ int tile_exponent(float even, float odd) {
     return static_cast<int>((bits >> 23) & 255u) - 135 + ((bits & 0x7fffffu) > 0x600000u);
 }
 
-// AOT ring256 uses sign correction, mask0xffffff00, then subtraction:
-// C signed remainder (not an unconditional q&255 for negative positions).
-// The caller validates a positive power-of-two ring; avoid runtime division.
+// C signed remainder like the AOT ring (not q & 255 for negative q); caller ensures a power-of-two ring, no division.
 __device__ __forceinline__ int ring_offset(int q, int ring) {
     const uint32_t mask = static_cast<uint32_t>(ring - 1);
     if (q >= 0) return static_cast<int>(static_cast<uint32_t>(q) & mask);
@@ -77,8 +64,7 @@ __device__ __forceinline__ int ring_offset(int q, int ring) {
 }
 }  // namespace dsv41_kv_glue
 
-// Grid(R,1,1), block128, dynamic shared0. norm_out is optional debug output
-// bf16[R,512]; its rows are written even when SL marks a padding/cache-skip row.
+// Grid (R), block 128, no dynamic shared; optional debug norm_out bf16 [R, 512] is written even for skipped rows.
 extern "C" __global__ void __launch_bounds__(128) kv_norm_store(const dsv41_kv_glue::Args a) {
     using namespace dsv41_kv_glue;
     __shared__ __align__(16) __nv_bfloat16 latent[512];

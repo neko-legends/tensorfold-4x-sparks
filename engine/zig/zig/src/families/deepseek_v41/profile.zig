@@ -1,14 +1,9 @@
-//! TF_DSV41_PROFILE=<file>: each eager window's calls timed on the GPU (a CUDA event pair a call, the glue's
-//! collectives included) and the window's host wall time; summed by call name over every profiled window and written
-//! to <file> as JSON when the runner closes. The decode gap's split (the Spark window's 46.7 vs prod's tok/s):
-//! GPU time by kernel family against Python's (dsv41_m2b_ref.py --profile), and the host's share (wall - GPU busy).
-//! Graphed windows are one launch: their wall time comes from the caller (m2b's M2B_PROF_ROWS timing).
-//! Prefill segments (longpf.window) are timed the same way into their own totals (the JSON's "prefill": segments,
-//! wall, GPU and calls by name), the full prefill's split against dsv41_m2b_ref.py --profile-prefill.
+//! TF_DSV41_PROFILE=<file>: eager windows' calls timed on the GPU plus host wall, summed by name, written as JSON.
 
 const std = @import("std");
 const cuda = @import("cuda");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
+const run = @import("run.zig");
 
 pub const Profile = struct {
     gpa: std.mem.Allocator,
@@ -32,13 +27,59 @@ pub const Profile = struct {
         windows: u64 = 0,
         wall_ns: u64 = 0,
         gpu_ns: u64 = 0,
-        /// prompt rows the encoder / full segments covered, and the CED decoder replays' (forward_prefill: the
-        /// per-1K-row split of gap.py prefill-ab)
+        /// prompt rows the encoder / full segments covered, and the decoder replays'
         rows: u64 = 0,
         tail_rows: u64 = 0,
     };
 
     pub const Total = struct { calls: u64 = 0, ns: u64 = 0 };
+
+    /// The runner's view of `p` (Runner.prof).
+    pub fn timer(p: *Profile) run.Timer {
+        return .{ .ptr = p, .vtable = &timer_vtable };
+    }
+
+    const timer_vtable: run.Timer.VTable = .{
+        .begin = struct {
+            fn f(ptr: *anyopaque) void {
+                self(ptr).begin();
+            }
+        }.f,
+        .beginPrefill = struct {
+            fn f(ptr: *anyopaque) void {
+                self(ptr).beginPrefill();
+            }
+        }.f,
+        .prefillRows = struct {
+            fn f(ptr: *anyopaque, rows: u64, tail: bool) void {
+                self(ptr).prefillRows(rows, tail);
+            }
+        }.f,
+        .before = struct {
+            fn f(ptr: *anyopaque, s: cuda.Stream, c: *const calls.Call) anyerror!void {
+                return self(ptr).before(s, c);
+            }
+        }.f,
+        .after = struct {
+            fn f(ptr: *anyopaque, s: cuda.Stream) anyerror!void {
+                return self(ptr).after(s);
+            }
+        }.f,
+        .end = struct {
+            fn f(ptr: *anyopaque, s: cuda.Stream) anyerror!void {
+                return self(ptr).end(s);
+            }
+        }.f,
+        .close = struct {
+            fn f(ptr: *anyopaque, io: std.Io) void {
+                self(ptr).close(io);
+            }
+        }.f,
+    };
+
+    fn self(ptr: *anyopaque) *Profile {
+        return @ptrCast(@alignCast(ptr));
+    }
 
     pub fn fromEnv(gpa: std.mem.Allocator, d: *const cuda.Driver) !?*Profile {
         const p = std.c.getenv("TF_DSV41_PROFILE") orelse return null;

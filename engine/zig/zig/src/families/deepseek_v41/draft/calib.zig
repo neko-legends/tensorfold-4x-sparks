@@ -1,5 +1,4 @@
-//! The confidence head's correction per draft position, the siblings' per rank, and the acceptance report
-//! (Python depth.Calibration over glm5_next.spark.depth's constants, tree.SibCal, depth.Stats).
+//! The confidence head's correction per draft position, the siblings' per rank, and the acceptance report.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 
@@ -48,7 +47,7 @@ pub const Calibration = struct {
     }
 };
 
-/// Per sibling rank (2nd, 3rd... first token): decayed kept and summed draft probabilities (tree.SibCal).
+/// Per sibling rank (2nd, 3rd... first token): decayed kept and summed draft probabilities.
 pub const SibCal = struct {
     pub const s_prior = 2.0;
     pub const s_min = 0.05;

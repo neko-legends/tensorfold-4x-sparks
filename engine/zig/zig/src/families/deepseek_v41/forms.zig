@@ -1,11 +1,8 @@
-//! The run-time weight forms Python's Block builds at load, from our loaded weights: upstream linears' strips
-//! ("s.<w>.T"), dense3's lanes layout ("s.<w>.lanes"), the mHC weights in bf16 ("s.L<i>.hc_*.fn16"), and the routed
-//! + shared experts' tables ("s.L<i>.ex.*": suh / svh stacks, K2s, trellis addresses; the shared expert last). M1's
-//! forward compares them with Python's (pod 9: 181/181 equal); M2's load writes them into the runner's buffers.
+//! The run-time weight forms built at load from the loaded weights: strips, lanes, bf16 mHC, expert tables.
 
 const std = @import("std");
 const cuda = @import("cuda");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const plan = @import("plan.zig");
 const prepare = @import("prepare.zig");
 const named = @import("named.zig");
@@ -31,9 +28,8 @@ pub const Source = struct {
     }
 };
 
-/// A persistent role's initial bytes when it is one of the weight forms (null: not a weight form: state, scratch,
-/// tables the forward fills).
-pub fn build(a: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const u8 {
+/// A persistent role's initial bytes when it is a weight form (null: state, scratch, tables the forward fills).
+fn buildArena(a: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const u8 {
     if (!std.mem.startsWith(u8, role, "s.")) return null;
     const lanes = std.mem.endsWith(u8, role, ".lanes");
     if (lanes or std.mem.endsWith(u8, role, ".T")) {
@@ -81,9 +77,7 @@ pub fn build(a: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const
         return out;
     }
     if (std.mem.startsWith(u8, what, "tp")) {
-        // each expert's trellis address: the ragged data's base + its offset; the shared expert's own tensor last. A
-        // DSpark block stores its routed experts as one uniform stack ("<w>.trellis", the experts back to back): the
-        // same offsets from its base
+        // trellis address = ragged base + offset, shared expert last; a uniform stack ("<w>.trellis"): same offsets
         const data = s.weights.get(try std.fmt.allocPrint(a, "{s}.moe.{s}.data", .{ layer, w })) orelse uniform: {
             const t = s.weights.get(try std.fmt.allocPrint(a, "{s}.moe.{s}.trellis", .{ layer, w })) orelse return error.MissingWeight;
             if (t.len != lay.trellisBytes()) return error.ExpertStackSize;
@@ -96,4 +90,12 @@ pub fn build(a: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const
         return out;
     }
     return null;
+}
+
+// Intermediates belong to this temporary arena. The caller receives exactly one independently owned result.
+pub fn build(gpa: std.mem.Allocator, s: *const Source, role: []const u8) !?[]const u8 {
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    const result = (try buildArena(arena.allocator(), s, role)) orelse return null;
+    return try gpa.dupe(u8, result);
 }

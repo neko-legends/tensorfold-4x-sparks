@@ -233,7 +233,7 @@ pub const Engine = struct {
 
     fn submit(ctx: *anyopaque, id: api.Id, request: *const api.Request, sink: api.Sink) api.SubmitError!void {
         const e = self(ctx);
-        const h: *const held.Held = @ptrCast(@alignCast(request.images orelse return e.inner.submit(id, request, sink)));
+        const h: *const held.Held = @ptrCast(@alignCast(request.image_handle orelse return e.inner.submit(id, request, sink)));
         e.rows.hold(id, h) catch return error.Busy;
         {
             e.mutex.lockUncancelable(e.rows.io);
@@ -272,9 +272,9 @@ pub const Engine = struct {
 // -- the forward's and the model's hooks ------------------------------------------------------------------------------
 const fwd = @import("forward.zig");
 const run = @import("run.zig");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const pack_mod = @import("pack.zig");
 const mode_mod = @import("dsv41_serve").vision.mode;
 
@@ -358,7 +358,8 @@ fn loadBiasVl(gpa: Allocator, io: std.Io, f: *fwd.Forward, d: *const cuda.Driver
 }
 
 pub fn close(f: *fwd.Forward) void {
-    const r = f.vision orelse return;
+    const ptr = f.vision orelse return;
+    const r: *Rows = @ptrCast(@alignCast(ptr));
     const t = r.tower;
     r.deinit();
     r.gpa.destroy(r);

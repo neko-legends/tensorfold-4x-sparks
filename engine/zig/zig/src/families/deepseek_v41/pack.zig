@@ -1,9 +1,10 @@
-//! A DeepSeek-V4.1 pack folder by its safetensors headers alone, read with pread and no mmap (GB10: the page cache is the GPU's memory), as cuda/weights.py Shards.
+//! A DeepSeek-V4.1 pack folder by its safetensors headers alone, read with pread and no mmap.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const log = std.log.scoped(.dsv41);
 const core = @import("core");
-const exl3 = @import("exl3.zig");
+const exl3 = @import("core").exl3_layout;
 const st = core.safetensors;
 const Io = std.Io;
 
@@ -36,7 +37,7 @@ pub const Pack = struct {
     missing: u32 = 0,
     files: std.ArrayList([]const u8) = .empty,
     names: std.StringArrayHashMapUnmanaged(Info) = .empty,
-    /// the index's weight map (name -> shard); when set, a header's names another shard owns are skipped, as Shards reads them
+    /// the index's weight map (name -> shard); when set, names another shard owns are skipped
     owner: std.StringHashMapUnmanaged([]const u8) = .empty,
 
     pub fn init(gpa: std.mem.Allocator) Pack {
@@ -78,8 +79,7 @@ pub const Pack = struct {
         std.mem.sort([]const u8, shards.items, {}, lessStr);
         for (shards.items) |name| {
             const path = try std.fs.path.join(a, &.{ dir, name });
-            // a shard the index lists but the folder lacks (a partial copy: M2b's layers): its tensors stay unknown, and
-            // a plan that needs one fails on it (MissingTensor)
+            // a shard the index lists but the folder lacks: its tensors stay unknown (a plan needing one fails)
             const file = cwd.openFile(io, path, .{}) catch |e| switch (e) {
                 error.FileNotFound => {
                     p.missing += 1;
@@ -107,6 +107,14 @@ pub const Pack = struct {
         if (parsed != .object) return error.BadIndex;
         const map = (parsed.object.get("weight_map") orelse return error.BadIndex);
         if (map != .object) return error.BadIndex;
+        if (p.files.items.len != 0 or p.owner.count() != 0 or map.object.count() == 0) return error.BadIndex;
+        var check = map.object.iterator();
+        while (check.next()) |entry| {
+            if (entry.value_ptr.* != .string) return error.BadIndex;
+            const file = entry.value_ptr.string;
+            if (file.len == 0 or std.mem.indexOfAny(u8, file, "/\\") != null or
+                std.mem.eql(u8, file, ".") or std.mem.eql(u8, file, "..")) return error.BadIndex;
+        }
         try p.owner.ensureTotalCapacity(a, @intCast(map.object.count()));
         var it = map.object.iterator();
         while (it.next()) |e| {
@@ -115,13 +123,24 @@ pub const Pack = struct {
         }
     }
 
-    /// A shard's header JSON (`data_len` bytes follow it; maxInt(u64) for header dumps); a name already indexed is refused.
+    /// A shard's header JSON (`data_len` bytes follow; maxInt(u64) for dumps); a name already indexed is refused.
     pub fn addHeader(p: *Pack, file_name: []const u8, json: []const u8, data_len: u64) !void {
         const a = p.arena.allocator();
         const id: u32 = @intCast(p.files.items.len);
-        try p.files.append(a, try a.dupe(u8, file_name));
+        const file_copy = try a.dupe(u8, file_name);
         const header = try st.parseHeader(a, json, @intCast(data_len));
+        var check = header.iterator();
+        while (check.next()) |e| {
+            if (p.owner.count() > 0) {
+                const owner = p.owner.get(e.key_ptr.*) orelse continue;
+                if (!std.mem.eql(u8, owner, file_name)) continue;
+            }
+            if (p.names.contains(e.key_ptr.*)) return error.DuplicateTensor;
+            _ = std.math.add(u64, 8 + json.len, e.value_ptr.begin) catch return error.BadSafetensors;
+        }
         try p.names.ensureUnusedCapacity(a, header.count());
+        try p.files.ensureUnusedCapacity(a, 1);
+        p.files.appendAssumeCapacity(file_copy);
         var it = header.iterator();
         while (it.next()) |e| {
             const v = e.value_ptr.*;
@@ -154,38 +173,46 @@ pub const Pack = struct {
     /// A required tensor; a missing name is logged and refused.
     pub fn need(p: *const Pack, name: []const u8) !Info {
         return p.get(name) orelse {
-            log.warn("pack has no tensor {s}", .{name});
+            if (!quiet) log.warn("pack has no tensor {s}", .{name});
             return error.MissingTensor;
         };
     }
 
-    /// The EXL3 group at `prefix` (its trellis entry), checked int16 [K/16, N/16, words] with fp16 suh [K] and svh [N].
+    pub const Projection = @import("projection.zig").Projection;
+    pub fn projection(p: *const Pack, prefix: []const u8) !Projection {
+        return @import("projection.zig").read(p, prefix);
+    }
+    /// Current CUDA rank adapter. Complete dense/packed storage remains available through projection().
     pub fn group(p: *const Pack, prefix: []const u8, buf: []u8) !exl3.Group {
-        const t = try p.need(try std.fmt.bufPrint(buf, "{s}.trellis", .{prefix}));
-        if (t.dtype != .i16) return error.BadTrellis;
-        const g = try exl3.Group.fromShape(t.dims());
-        const suh = try p.need(try std.fmt.bufPrint(buf, "{s}.suh", .{prefix}));
-        const svh = try p.need(try std.fmt.bufPrint(buf, "{s}.svh", .{prefix}));
-        if (!suh.is(.f16, &.{g.k()}) or !svh.is(.f16, &.{g.n()})) {
-            log.warn("{s}: suh/svh do not match trellis K={d} N={d}", .{ prefix, g.k(), g.n() });
-            return error.BadTrellis;
-        }
-        return g;
+        _ = buf;
+        return (try p.projection(prefix)).cudaGroup();
     }
 
     /// The group's marker tensor name (mul1 or mcg) if it has one; its value picks the codebook at load time.
     pub fn marker(p: *const Pack, prefix: []const u8, buf: []u8) !?[]const u8 {
+        var found: ?[]const u8 = null;
         for ([_][]const u8{ "mul1", "mcg" }) |m| {
             const name = try std.fmt.bufPrint(buf, "{s}.{s}", .{ prefix, m });
-            if (p.names.getKey(name)) |k| return k;
+            if (p.names.getKey(name)) |k| {
+                if (found != null) return error.BadMarker;
+                const info = p.get(k).?;
+                if (!info.is(.i32, &.{}) or info.nbytes != 4) return error.BadMarker;
+                found = k;
+            }
         }
-        return null;
+        return found;
     }
 
     /// `span` of tensor `info`'s bytes into `out` (span.bytes() long), run by run.
     pub fn read(p: *const Pack, io: Io, info: Info, span: exl3.Span, out: []u8) !void {
-        if (out.len != span.bytes()) return error.BadSpan;
-        if (span.count > 0 and span.at(span.count - 1) + span.len > info.nbytes) return error.BadSpan;
+        const bytes = std.math.mul(u64, span.len, span.count) catch return error.BadSpan;
+        if (out.len != bytes) return error.BadSpan;
+        const last = std.math.mul(u64, span.count -| 1, span.stride) catch return error.BadSpan;
+        const tail = std.math.add(u64, span.offset, last) catch return error.BadSpan;
+        const end = std.math.add(u64, tail, span.len) catch return error.BadSpan;
+        if (span.count > 0 and end > info.nbytes) return error.BadSpan;
+        _ = std.math.add(u64, info.start, end) catch return error.BadSpan;
+        if (bytes == 0) return;
         if (p.dir.len == 0) return error.HeaderOnlyPack;
         var path_buf: [Io.Dir.max_path_bytes]u8 = undefined;
         const path = try std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ p.dir, p.files.items[info.file] });
@@ -196,8 +223,7 @@ pub const Pack = struct {
             dropCache(file, info.start + span.offset, out.len);
             return;
         }
-        // a strided part (a column split): one read of the range that covers every run, then the runs gathered,
-        // instead of a small read a K-tile row (pod 1: 45 MB/s from the network volume run by run)
+        // a strided part (a column split): one read covering every run, then the runs gathered
         const first = span.at(0);
         const cover: usize = @intCast(span.at(span.count - 1) + span.len - first);
         const tmp = try std.heap.page_allocator.alloc(u8, cover);
@@ -209,8 +235,7 @@ pub const Pack = struct {
         for (0..@intCast(span.count)) |i| @memcpy(out[i * len ..][0..len], tmp[i * stride ..][0..len]);
     }
 
-    /// The page cache of bytes just read let go (POSIX_FADV_DONTNEED): on GB10 the page cache is the GPU's memory, and
-    /// a rank's ~110 GB of weights read through it would compete with the same weights on the device.
+    /// Drops the page cache of bytes just read (POSIX_FADV_DONTNEED): on unified memory it competes with the device.
     fn dropCache(file: Io.File, offset: u64, len: usize) void {
         if (@import("builtin").os.tag != .linux) return;
         const linux = std.os.linux;
@@ -220,12 +245,17 @@ pub const Pack = struct {
     /// The codebook of the group at `prefix`: its marker's value, else the 3-instruction default.
     pub fn codebook(p: *const Pack, io: Io, prefix: []const u8) !exl3.Codebook {
         var buf: [256]u8 = undefined;
-        const name = (try p.marker(prefix, &buf)) orelse return .inst3;
+        const marker_name = try p.marker(prefix, &buf);
+        if (p.get(try std.fmt.bufPrint(&buf, "{s}.trellis", .{prefix}))) |t| {
+            const g = try exl3.Group.fromShape(t.dims());
+            if (g.k2() % 2 != 0 and (marker_name == null or !std.mem.endsWith(u8, marker_name.?, ".mul1"))) return error.BadMarker;
+        }
+        const name = marker_name orelse return .inst3;
         const info = p.get(name).?;
         if (info.nbytes < 4) return error.BadMarker;
         var v: [4]u8 = undefined;
         try p.read(io, info, .{ .offset = 0, .len = 4 }, &v);
-        return exl3.Codebook.fromMarker(std.mem.readInt(u32, &v, .little));
+        return exl3.fromMarker(std.mem.readInt(u32, &v, .little));
     }
 };
 
@@ -283,7 +313,7 @@ test "a folder by its headers: index order, groups checked, strided reads, codeb
     const hl = std.mem.readInt(u64, one[0..8], .little);
     const data = one[8 + hl ..];
     for (0..2) |kt| for (0..16) |nt| @memset(data[(kt * 16 + nt) * 32 ..][0..32], @intCast(16 * kt + nt));
-    std.mem.writeInt(u32, data[2 * 16 * 32 + 64 + 512 ..][0..4], exl3.Codebook.marker_mcg, .little);
+    std.mem.writeInt(u32, data[2 * 16 * 32 + 64 + 512 ..][0..4], exl3.marker_mcg, .little);
     const two = try image(a, &.{.{ .name = "y.weight", .dtype = "BF16", .shape = &.{ 3, 2 }, .fill = 7 }});
     defer a.free(two);
     try tmp.dir.writeFile(io, .{ .sub_path = "b.safetensors", .data = one });

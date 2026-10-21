@@ -1,27 +1,14 @@
-//! A device sub-allocator under DeviceBuffer.alloc: the process's buffers as ranges of a few large chunks instead of
-//! one driver allocation each, the way PyTorch's caching allocator carves tensors from 2 / 20 MiB+ segments.
-//!
-//! - **Small** requests (up to `small_max`) are bumped, 512-byte aligned (PyTorch's block rounding), from shared chunks
-//!   of `small_chunk` bytes, so the many small buffers a forward reads every launch (norm weights, mHC `fn`,
-//!   coefficients, router I/O, tables) sit together on a few large pages. A freed small range goes on a free list by
-//!   its rounded size and is handed out again for the same size.
-//! - **Large** requests get a chunk of their own, rounded up to the backend's granularity, released when freed.
-//! - Backends: `Vmm` (cuMemAddressReserve over one virtual range, cuMemCreate of the device's recommended granularity
-//!   and cuMemMap'd in order: physically 2 MiB-or-larger pages, the chunks contiguous in virtual memory) or `Plain`
-//!   (one cuMemAlloc a chunk). `install` puts the arena under DeviceBuffer.alloc / free (memory.setHook); a request the
-//!   arena cannot serve falls back to cuMemAlloc, and a pointer it does not own is freed by cuMemFree as before.
-//!
-//! Only addresses change: every kernel, argument and launch is the same, so every bit is too.
+//! A device sub-allocator under DeviceBuffer.alloc: buffers carved from a few large chunks, not one cuMemAlloc each.
 
 const std = @import("std");
 const abi = @import("abi.zig");
 const Driver = @import("driver.zig").Driver;
 const memory = @import("memory.zig");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 
 pub const Error = error{ DriverUnavailable, MissingSymbol, Unsupported, CudaFailed, OutOfMemory };
 
-/// Where chunks come from: `chunk` maps `len` bytes (a multiple of `granularity`) and returns their address, `release`
-/// gives a chunk back.
+/// Where chunks come from: `chunk` maps `len` bytes (a multiple of `granularity`), `release` gives a chunk back.
 pub const Backend = struct {
     ctx: *anyopaque,
     granularity: usize,
@@ -31,38 +18,35 @@ pub const Backend = struct {
 };
 
 pub const Options = struct {
-    /// requests up to this many bytes share chunks
-    small_max: usize = 4 << 20,
-    /// a shared chunk's bytes (rounded up to the granularity)
-    small_chunk: usize = 64 << 20,
-    /// every range starts at a multiple of this
-    alignment: usize = 512,
+    small_max: usize = 4 << 20, // requests up to this many bytes share chunks
+    small_chunk: usize = 64 << 20, // a shared chunk's bytes, rounded up to the granularity
+    alignment: usize = 512, // every range starts at a multiple of this
 };
 
 pub const Stats = struct { small: u64 = 0, large: u64 = 0, reused: u64 = 0, fallback: u64 = 0, chunk_bytes: u64 = 0 };
 
+/// Small requests bump 512-byte aligned through shared chunks and are reused by size; large ones get their own chunk.
 pub const Arena = struct {
     gpa: std.mem.Allocator,
     be: Backend,
     o: Options,
     mutex: std.atomic.Mutex = .unlocked,
-    /// shared chunks (base, len) and the current one's next free byte
-    small: std.ArrayList([2]u64) = .empty,
-    cursor: u64 = 0,
+    small: std.ArrayList([2]u64) = .empty, // shared chunks (base, len)
+    cursor: u64 = 0, // the current shared chunk's next free byte
     limit: u64 = 0,
-    /// freed small ranges by rounded size
-    free_small: std.AutoHashMapUnmanaged(u64, std.ArrayList(u64)) = .empty,
-    /// live small ranges (address -> rounded size)
-    live: std.AutoHashMapUnmanaged(u64, u64) = .empty,
-    /// large chunks (address -> mapped size)
-    large: std.AutoHashMapUnmanaged(u64, u64) = .empty,
+    free_small: std.AutoHashMapUnmanaged(u64, std.ArrayList(u64)) = .empty, // freed small ranges by rounded size
+    live: std.AutoHashMapUnmanaged(u64, u64) = .empty, // live small ranges: address to rounded size
+    large: std.AutoHashMapUnmanaged(u64, u64) = .empty, // large chunks: address to mapped size
+    dead: [2]u32 = .{ 0, 0 }, // removals from `live` and `large` since each was last rehashed
     stats: Stats = .{},
+    previous: ?memory.Hook = null,
 
     pub fn init(gpa: std.mem.Allocator, be: Backend, o: Options) Arena {
         return .{ .gpa = gpa, .be = be, .o = o };
     }
 
     pub fn deinit(a: *Arena) void {
+        a.uninstall();
         var it = a.large.iterator();
         while (it.next()) |e| a.be.release(a.be.ctx, e.key_ptr.*, e.value_ptr.*);
         for (a.small.items) |c| a.be.release(a.be.ctx, c[0], c[1]);
@@ -95,7 +79,7 @@ pub const Arena = struct {
         if (len > a.o.small_max) {
             const n = roundUp(len, a.be.granularity);
             const p = a.be.chunk(a.be.ctx, n) orelse {
-                a.stats.fallback += 1;
+                a.fellBack(n);
                 return null;
             };
             errdefer a.be.release(a.be.ctx, p, n);
@@ -105,15 +89,17 @@ pub const Arena = struct {
             return p;
         }
         const n: u64 = roundUp(len, a.o.alignment);
-        if (a.free_small.getPtr(n)) |l| if (l.pop()) |p| {
+        if (a.free_small.getPtr(n)) |l| if (l.items.len > 0) {
+            const p = l.items[l.items.len - 1];
             try a.live.put(a.gpa, p, n);
+            _ = l.pop();
             a.stats.reused += 1;
             return p;
         };
         if (a.limit - a.cursor < n) {
             const cl = roundUp(@max(a.o.small_chunk, n), a.be.granularity);
             const base = a.be.chunk(a.be.ctx, cl) orelse {
-                a.stats.fallback += 1;
+                a.fellBack(cl);
                 return null;
             };
             errdefer a.be.release(a.be.ctx, base, cl);
@@ -129,19 +115,35 @@ pub const Arena = struct {
         return p;
     }
 
+    /// A chunk the backend did not give: the request goes to cuMemAlloc (the first logged: a dead arena shows).
+    fn fellBack(a: *Arena, len: usize) void {
+        if (!quiet and a.stats.fallback == 0) std.log.scoped(.cuda).warn("device arena ({s}): a {d} MiB chunk failed; requests go to cuMemAlloc", .{ a.be.name, len >> 20 });
+        a.stats.fallback += 1;
+    }
+
     /// True when `p` was the arena's (and is now free); false: not ours, the caller frees it as before.
     pub fn free(a: *Arena, p: u64) bool {
         a.lock();
         defer a.mutex.unlock();
         if (a.large.fetchRemove(p)) |e| {
+            removed(&a.large, &a.dead[1]);
             a.be.release(a.be.ctx, p, e.value);
             return true;
         }
         const e = a.live.fetchRemove(p) orelse return false;
+        removed(&a.live, &a.dead[0]);
         const g = a.free_small.getOrPut(a.gpa, e.value) catch return true; // leaked range, still ours
         if (!g.found_existing) g.value_ptr.* = .empty;
         g.value_ptr.append(a.gpa, p) catch {};
         return true;
+    }
+
+    /// std's tombstones never clear and keys fill 80 %: rehash at a tenth, so a tenth of the map always stays free.
+    fn removed(map: *std.AutoHashMapUnmanaged(u64, u64), dead: *u32) void {
+        dead.* += 1;
+        if (@as(u64, dead.*) * 10 < map.capacity()) return;
+        map.rehash(std.hash_map.AutoContext(u64){});
+        dead.* = 0;
     }
 
     // -- memory.zig's hook ----------------------------------------------------------------------------------------
@@ -156,8 +158,14 @@ pub const Arena = struct {
         return a.free(p);
     }
 
-    /// Every DeviceBuffer.alloc after this comes from the arena (which must outlive every buffer it hands out).
+    /// Every later DeviceBuffer.alloc comes from the arena, which must outlive its buffers; only addresses change.
+    pub fn uninstall(a: *Arena) void {
+        if (memory.currentHook()) |hook| if (hook.ctx == @as(*anyopaque, @ptrCast(a))) memory.setHook(a.previous);
+    }
+
     pub fn install(a: *Arena) void {
+        if (memory.currentHook()) |hook| if (hook.ctx == @as(*anyopaque, @ptrCast(a))) return;
+        a.previous = memory.currentHook();
         memory.setHook(.{ .ctx = a, .alloc = hookAlloc, .free = hookFree });
     }
 };
@@ -185,8 +193,7 @@ pub const Plain = struct {
     }
 };
 
-/// CUDA's virtual memory management: one reserved virtual range, physical chunks of the device's recommended
-/// granularity mapped into it in order.
+/// CUDA's virtual memory management: one reserved virtual range, chunks of the recommended granularity mapped in order.
 pub const Vmm = struct {
     lib: std.DynLib,
     device: abi.Device,
@@ -196,6 +203,8 @@ pub const Vmm = struct {
     va_len: usize = 0,
     next: u64 = 0,
     api: Api,
+    /// the first chunk that failed: the driver call and its CUresult (null: none failed)
+    failed: ?struct { call: []const u8, code: c_int } = null,
 
     const Api = struct {
         reserve: *const fn (*u64, usize, usize, u64, c_ulonglong) callconv(.c) abi.Result,
@@ -208,8 +217,7 @@ pub const Vmm = struct {
         granularity: *const fn (*usize, *const Prop, c_int) callconv(.c) abi.Result,
     };
 
-    /// CUmemAllocationProp
-    pub const Prop = extern struct {
+    pub const Prop = extern struct { // CUmemAllocationProp
         type: c_int = 1, // CU_MEM_ALLOCATION_TYPE_PINNED
         handle_types: c_int = 0,
         loc_type: c_int = 1, // CU_MEM_LOCATION_TYPE_DEVICE
@@ -220,8 +228,7 @@ pub const Vmm = struct {
         usage: u16 = 0,
         reserved: [4]u8 = .{ 0, 0, 0, 0 },
     };
-    /// CUmemAccessDesc
-    const AccessDesc = extern struct { loc_type: c_int = 1, loc_id: c_int, flags: c_int = 3 }; // PROT_READWRITE
+    const AccessDesc = extern struct { loc_type: c_int = 1, loc_id: c_int, flags: c_int = 3 }; // CUmemAccessDesc, read-write
 
     comptime {
         std.debug.assert(@sizeOf(Prop) == 32 and @offsetOf(Prop, "compression") == 24 and @sizeOf(AccessDesc) == 12);
@@ -259,19 +266,27 @@ pub const Vmm = struct {
 
     fn chunk(ctx: *anyopaque, len: usize) ?u64 {
         const v: *Vmm = @ptrCast(@alignCast(ctx));
-        if (v.va + v.va_len - v.next < len) return null;
+        if (v.va + v.va_len - v.next < len) return v.fail("the reserved range", 0);
         var h: u64 = 0;
-        if (v.api.create(&h, len, &v.prop, 0) != abi.success) return null;
+        const rc = v.api.create(&h, len, &v.prop, 0);
+        if (rc != abi.success) return v.fail("cuMemCreate", rc);
         defer _ = v.api.release(h); // the mapping holds the memory until it is unmapped
         const at = v.next;
-        if (v.api.map(at, len, 0, h, 0) != abi.success) return null;
+        const rm = v.api.map(at, len, 0, h, 0);
+        if (rm != abi.success) return v.fail("cuMemMap", rm);
         const desc: AccessDesc = .{ .loc_id = v.device };
-        if (v.api.setAccess(at, len, &desc, 1) != abi.success) {
+        const ra = v.api.setAccess(at, len, &desc, 1);
+        if (ra != abi.success) {
             _ = v.api.unmap(at, len);
-            return null;
+            return v.fail("cuMemSetAccess", ra);
         }
         v.next += len;
         return at;
+    }
+
+    fn fail(v: *Vmm, call: []const u8, code: c_int) ?u64 {
+        if (v.failed == null) v.failed = .{ .call = call, .code = code };
+        return null;
     }
 
     fn release(ctx: *anyopaque, base: u64, len: usize) void {
@@ -351,4 +366,110 @@ test "arena: under DeviceBuffer.alloc through memory.setHook" {
     const p = h.alloc(h.ctx, 4096).?;
     try t.expect(h.free(h.ctx, p));
     try t.expect(!h.free(h.ctx, 7));
+}
+
+/// Slots of `m` that hold neither a key nor a tombstone.
+fn freeSlots(m: *const std.AutoHashMapUnmanaged(u64, u64)) usize {
+    const meta = m.metadata orelse return 0;
+    var n: usize = 0;
+    for (meta[0..m.capacity()]) |x| n += @intFromBool(x.isFree());
+    return n;
+}
+
+test "arena: a long run of allocations and frees leaves both address maps free slots" {
+    const t = std.testing;
+    var f: Fake = .{};
+    var a = Arena.init(t.allocator, f.backend(2 << 20), .{ .small_max = 1 << 20, .small_chunk = 4 << 20 });
+    defer a.deinit();
+    var held: std.ArrayList(u64) = .empty;
+    defer held.deinit(t.allocator);
+    var rng = std.Random.DefaultPrng.init(3);
+    for (0..20000) |_| {
+        // a serving process's buffers come and go (prompt workspaces, grown buffers): small and large alike
+        if (held.items.len > 0 and rng.random().boolean()) {
+            const k = rng.random().uintLessThan(usize, held.items.len);
+            try t.expect(a.free(held.swapRemove(k)));
+        } else {
+            const big = rng.random().uintLessThan(u32, 4) == 0;
+            try held.append(t.allocator, a.alloc(if (big) 3 << 20 else 512 * (1 + rng.random().uintLessThan(u64, 64))).?);
+        }
+        for ([_]*const std.AutoHashMapUnmanaged(u64, u64){ &a.live, &a.large }) |m| {
+            if (m.capacity() == 0) continue;
+            try t.expect(freeSlots(m) * 10 >= m.capacity());
+        }
+    }
+}
+
+test "arena: a backend that maps nothing sends every request to cuMemAlloc and counts each fallback" {
+    const t = std.testing;
+    var f: Fake = .{ .fail = true };
+    var a = Arena.init(t.allocator, f.backend(2 << 20), .{ .small_max = 1 << 20, .small_chunk = 4 << 20 });
+    defer a.deinit();
+    try t.expectEqual(@as(?u64, null), a.alloc(8 << 20)); // a large request's own chunk
+    try t.expectEqual(@as(?u64, null), a.alloc(4096)); // a small one's shared chunk
+    try t.expectEqual(@as(u64, 2), a.stats.fallback);
+    try t.expectEqual(@as(u64, 0), a.stats.chunk_bytes);
+    try t.expect(!a.free(0x1000)); // nothing was the arena's: the caller frees as before
+    f.fail = false; // the backend recovers: the next request maps again
+    try t.expect(a.alloc(4096) != null);
+    try t.expectEqual(@as(u64, 2), a.stats.fallback);
+}
+
+test "arena: VMM keeps the first failed driver call and its code, later failures leave it" {
+    const t = std.testing;
+    const Api = struct {
+        var create_rc: abi.Result = 2; // CUDA_ERROR_OUT_OF_MEMORY
+        var unmaps: u32 = 0;
+        fn create(h: *u64, _: usize, _: *const Vmm.Prop, _: c_ulonglong) callconv(.c) abi.Result {
+            h.* = 7;
+            return create_rc;
+        }
+        fn ok1(_: u64) callconv(.c) abi.Result {
+            return abi.success;
+        }
+        fn map(_: u64, _: usize, _: usize, _: u64, _: c_ulonglong) callconv(.c) abi.Result {
+            return abi.success;
+        }
+        fn unmap(_: u64, _: usize) callconv(.c) abi.Result {
+            unmaps += 1;
+            return abi.success;
+        }
+        fn setAccess(_: u64, _: usize, _: *const Vmm.AccessDesc, _: usize) callconv(.c) abi.Result {
+            return 1; // CUDA_ERROR_INVALID_VALUE
+        }
+    };
+    var v: Vmm = .{ .lib = undefined, .device = 0, .prop = .{}, .granularity = 2 << 20, .va = 1 << 40, .va_len = 4 << 20, .next = 1 << 40, .api = undefined };
+    v.api.create = Api.create;
+    v.api.release = Api.ok1;
+    v.api.map = Api.map;
+    v.api.unmap = Api.unmap;
+    v.api.setAccess = Api.setAccess;
+    const be = v.backend();
+    try t.expectEqual(@as(?u64, null), be.chunk(be.ctx, 2 << 20));
+    try t.expectEqualStrings("cuMemCreate", v.failed.?.call);
+    try t.expectEqual(@as(c_int, 2), v.failed.?.code);
+    Api.create_rc = abi.success; // now access fails: the mapping is undone, the first failure stays
+    try t.expectEqual(@as(?u64, null), be.chunk(be.ctx, 2 << 20));
+    try t.expectEqual(@as(u32, 1), Api.unmaps);
+    try t.expectEqualStrings("cuMemCreate", v.failed.?.call);
+    try t.expectEqual(@as(u64, 1 << 40), v.next); // nothing was mapped
+    v.failed = null; // past the reserved range: no driver call at all
+    try t.expectEqual(@as(?u64, null), be.chunk(be.ctx, 8 << 20));
+    try t.expectEqualStrings("the reserved range", v.failed.?.call);
+}
+
+test "Failure boundaries: a free range survives failure inserting its live address" {
+    var fail = std.testing.FailingAllocator.init(std.testing.allocator, .{});
+    var f: Fake = .{};
+    var a = Arena.init(fail.allocator(), f.backend(2 << 20), .{});
+    defer a.deinit();
+    const first = a.alloc(4096).?;
+    try std.testing.expect(a.free(first));
+    a.live.clearAndFree(fail.allocator());
+    fail.fail_index = fail.alloc_index;
+    try std.testing.expectEqual(@as(?u64, null), a.alloc(4096));
+    fail.fail_index = std.math.maxInt(usize);
+    const retried = a.alloc(4096).?;
+    try std.testing.expectEqual(first, retried);
+    try std.testing.expect(a.free(retried));
 }

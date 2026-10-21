@@ -1,23 +1,11 @@
-//! TF_DSV41_L2PF (l2pf.py, prod: 1): the decode windows' L2 prefetch. The emitter always emits l2pf.py's launches at
-//! its sites (`block.prefetchO / F / X`: prod's 12 MiB a site, x / f paced at 150 GB/s on 2 CTAs, o as segments), so
-//! the captures and `check` hold them; without the knob the runner skips them, as before. With it, `install` fills
-//! each site's (address, bytes) table once at boot from the tensors the launches after the site read
-//! (`Emitter.l2pfSources`, l2pf.site_tensors' order and `take`'s budget), every span checked against a live
-//! allocation, and the runner issues the launches on a side stream forked at the site and joined at the window's end
-//! (run.zig `Side`). The prefetch kernels read weights into L2 and write nothing: the bits never change (Python's
-//! test_dsv41_pdl_gpu: replies on == off), only the next dense launch's cold read.
-//!
-//! Knobs read: TF_DSV41_L2PF (0 | 1 | on | bulk; `lines` refused: the emitter's launches are bulk),
-//! TF_DSV41_L2PF_ROWS (16: wider windows skip every site). The emitter's budget, chunk, pace and sites are prod's;
-//! TF_DSV41_L2PF_MB / _CHUNK_KB / _PACE_GBPS / _PACE_CTAS / _SITES / _PACE_SITES / _DELAY_US / _AT set to anything
-//! else are refused by name (the launches would not be Python's).
+//! TF_DSV41_L2PF: the decode windows' L2 prefetch tables, filled at boot; prefetch launches on a side stream.
 
 const std = @import("std");
 const cuda = @import("cuda");
 const block = @import("block.zig");
 const fwd = @import("forward.zig");
 const run = @import("run.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 
 const log = std.log.scoped(.dsv41);
 
@@ -45,12 +33,12 @@ pub fn settings(o: block.Options) !Settings {
     const m = std.ascii.lowerString(&low, raw);
     if (eq(m, "0") or eq(m, "off") or eq(m, "none") or eq(m, "false")) return s;
     if (!(eq(m, "1") or eq(m, "on") or eq(m, "true") or eq(m, "bulk"))) {
-        log.err("TF_DSV41_L2PF={s}: the Zig engine runs prod's bulk prefetch (0 | 1 | bulk)", .{raw});
+        log.err("TF_DSV41_L2PF={s}: the Zig engine runs the reference's bulk prefetch (0 | 1 | bulk)", .{raw});
         return error.BadL2pf;
     }
     s.mode = .bulk;
     if (get("TF_DSV41_L2PF_ROWS")) |v| s.rows = std.fmt.parseInt(u32, v, 10) catch return error.BadL2pf;
-    // the emitter's launches carry these values (block.Options defaults = prod's): another value is not Python's run
+    // the emitter's launches carry these values (block.Options defaults): another value is refused
     const fixed = [_]struct { name: [:0]const u8, want: f64 }{
         .{ .name = "TF_DSV41_L2PF_MB", .want = @as(f64, @floatFromInt(o.l2pf_budget)) / (1 << 20) },
         .{ .name = "TF_DSV41_L2PF_CHUNK_KB", .want = @as(f64, @floatFromInt(o.l2pf_chunk)) / 1024 },
@@ -61,13 +49,13 @@ pub fn settings(o: block.Options) !Settings {
     for (fixed) |k| if (get(k.name)) |v| {
         const x = std.fmt.parseFloat(f64, v) catch return error.BadL2pf;
         if (x != k.want) {
-            log.err("{s}={s}: the Zig emitter's L2 prefetch launches use {d} (prod's)", .{ k.name, v, k.want });
+            log.err("{s}={s}: the Zig emitter's L2 prefetch launches use {d} (the reference's)", .{ k.name, v, k.want });
             return error.BadL2pf;
         }
     };
     for ([_]struct { name: [:0]const u8, want: []const u8 }{ .{ .name = "TF_DSV41_L2PF_SITES", .want = "x,o,f" }, .{ .name = "TF_DSV41_L2PF_PACE_SITES", .want = "x,f" }, .{ .name = "TF_DSV41_L2PF_AT", .want = "before" } }) |k| if (get(k.name)) |v| {
         if (!sameSet(v, k.want)) {
-            log.err("{s}={s}: the Zig emitter's L2 prefetch sites are {s} (prod's)", .{ k.name, v, k.want });
+            log.err("{s}={s}: the Zig emitter's L2 prefetch sites are {s} (the reference's)", .{ k.name, v, k.want });
             return error.BadL2pf;
         }
     };
@@ -99,9 +87,7 @@ pub const Span = struct { addr: u64, bytes: u64 };
 /// Where a source lives: its first byte and the end of the allocation that holds it (the span may not pass it).
 pub const Located = struct { addr: u64, end: u64 };
 
-/// l2pf.take over located sources: each whole, the last one's head, `budget` bytes in all; a source's span starts at
-/// its first 16-byte boundary and ends inside its own bytes (l2pf._span). Sources that resolve to nothing are left
-/// out, as Python's `_span` returning None.
+/// l2pf.take over located sources: each whole, the last one's head, `budget` bytes in all; unresolved sources skipped.
 pub fn take(out: *std.ArrayList(Span), a: std.mem.Allocator, srcs: []const block.Emitter.L2Src, at: []const ?Located, budget: u64) !void {
     var left = budget;
     for (srcs, at) |s, loc| {
@@ -144,9 +130,7 @@ pub const L2pf = struct {
     }
 };
 
-/// Fills every "s.L<i>.pf.{o,f,x}" table the buffer plan holds and turns the runner's side stream on; null when
-/// TF_DSV41_L2PF is off. A bad knob is an error; a table whose spans differ from the emitter's rows, or a source
-/// outside every allocation, leaves the prefetch off with an error logged (never a fault in a window).
+/// Fills every "s.L<i>.pf.{o,f,x}" table and turns the side stream on; null when off; a bad table leaves it off.
 pub fn install(gpa: std.mem.Allocator, f: *fwd.Forward, weights: *const load.Weights) !?*L2pf {
     const s = try settings(f.opts);
     if (s.mode == .off) return null;
@@ -187,7 +171,7 @@ fn fill(gpa: std.mem.Allocator, f: *fwd.Forward, weights: *const load.Weights, s
         for (spans.items, 0..) |sp, i| {
             words[2 * i] = @intCast(sp.addr);
             words[2 * i + 1] = @intCast(sp.bytes);
-            p.bytes[@intFromEnum(site)] += sp.bytes;
+            p.bytes[@backingInt(site)] += sp.bytes;
         }
         try cuda.DeviceBuffer.upload(.{ .d = r.d, .ptr = table, .len = 16 * spans.items.len }, 0, std.mem.sliceAsBytes(words));
         p.tables += 1;
@@ -211,7 +195,8 @@ fn locate(r: *const run.Runner, weights: *const load.Weights, x: block.Emitter.L
         .words => {
             var nb: [160]u8 = undefined;
             const lanes = try std.fmt.bufPrint(&nb, "s.{s}.lanes", .{x.name});
-            if (r.addressOf(lanes)) |p| return .{ .addr = p, .end = ownedEnd(r, p) orelse return error.L2pfSpan };
+            // in place (TF_DSV41_FORMS_INPLACE) the form lives in its trellis weight's buffer
+            if (r.addressOf(lanes)) |p| return .{ .addr = p, .end = ownedEnd(r, p) orelse weightEnd(weights, p) orelse return error.L2pfSpan };
             const tr = try std.fmt.bufPrint(&nb, "{s}.trellis", .{x.name});
             const t = weights.get(tr) orelse return null;
             return .{ .addr = t.ptr, .end = t.ptr + t.len };
@@ -233,6 +218,12 @@ fn locate(r: *const run.Runner, weights: *const load.Weights, x: block.Emitter.L
 /// The end of the runner-owned buffer holding `addr`.
 fn ownedEnd(r: *const run.Runner, addr: u64) ?u64 {
     for (r.owned.items) |b| if (b.ptr <= addr and addr < b.ptr + b.len) return b.ptr + b.len;
+    return null;
+}
+
+fn weightEnd(weights: *const load.Weights, addr: u64) ?u64 {
+    var it = weights.map.valueIterator();
+    while (it.next()) |t| if (t.ptr <= addr and addr < t.ptr + t.len) return t.ptr + t.len;
     return null;
 }
 

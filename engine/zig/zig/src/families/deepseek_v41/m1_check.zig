@@ -4,7 +4,7 @@
 //! (a role is one captured storage for its scope, two roles in one launch are two storages).
 
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const block_prefill = @import("block_prefill.zig");
 const Config = @import("config.zig").Config;

@@ -11,7 +11,7 @@
 //!   state exactly as the TP=4 program of its layers does, and has its own copy of every name whose layout differs.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const buffers = @import("buffers.zig");

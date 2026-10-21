@@ -1,16 +1,12 @@
-//! Host tests of long prompts on the real prefill emitter (`zig build test-dsv41-longpf`): block_prefill's segment on
-//! the release config and the q28-v2 widths at a 1M limit, contiguous and in the pool (paged and split). Past the stream
-//! threshold every full-mode layer without the candidates' scores must select with stream_topk (`_stream` in the row
-//! blocks stream_topk.plan gives, then the merge), everything else as before; a split segment's exchanged attention must
-//! split into row blocks that move every row-indexed tensor and nothing else.
+//! Host tests of long prompts on the prefill emitter (`zig build test-dsv41-longpf`): stream top-k and split blocks.
 
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const block_prefill = @import("block_prefill.zig");
 const buffers = @import("buffers.zig");
-const check = @import("m1_check.zig");
+const check = @import("calls_check.zig");
 const longpf = @import("longpf.zig");
 const Config = @import("config.zig").Config;
 
@@ -19,9 +15,9 @@ const n: i64 = 2048;
 
 fn widths(a: std.mem.Allocator) !block.Widths {
     var w: block.Widths = .{};
-    try check.parseDense(a, &w, @embedFile("fixtures/q28v2-dense-k2.txt"));
-    try check.parseExperts(a, &w, @embedFile("fixtures/q28v2-expert-k2.txt"));
-    // x3gm's K2s present (m2a.widths reads them from the pack): two widths a layer
+    try check.parseDense(a, &w, @embedFile("fixtures/dense-k2.txt"));
+    try check.parseExperts(a, &w, @embedFile("fixtures/expert-k2.txt"));
+    // x3gm's K2s present (the forward gate's widths read them from the pack): two widths a layer
     for (0..40) |L| try w.gm.put(a, @intCast(L), .{ (1 << 3) | (1 << 4), (1 << 3) | (1 << 4) });
     return w;
 }
@@ -182,4 +178,35 @@ test "split KV: an exchanged attention in row blocks moves the row-indexed tenso
     }
     // the compressed layers attend the exchange, the SWA-only layers their ring
     try testing.expect(exchanged > 0 and local > 0);
+}
+
+test "TF_DSV41_STREAM_LAZY: no graphed program names the stream scratch; a long segment does" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const w = try widths(a);
+    const cfg: Config = .{};
+    var layers: [64]u32 = undefined;
+    for (layers[0..cfg.layers], 0..) |*l, i| l.* = @intCast(i);
+    for ([_]bool{ false, true }) |split| {
+        const o: block.Options = .{ .limit = limit, .rope_rows = limit + 2048, .pool = poolOf(split) };
+        // decode windows (one slot, every row bucket) and row windows at the slot's last position: graph-captured
+        var r: i64 = 1;
+        while (r <= 64) : (r += 1) {
+            // (a one-slot window the emitter refuses at this position never runs: block.zig's stream guard)
+            if (r <= 17) if (block.emit(a, &cfg, &w, o, layers[0..cfg.layers], r, limit - r, true)) |cs|
+                try testing.expect(!longpf.names(cs, longpf.lazy_role))
+            else |e|
+                try testing.expectEqual(error.Unsupported, e);
+            var ro = o;
+            ro.rows = true;
+            try testing.expect(!longpf.names(try block.emit(a, &cfg, &w, ro, layers[0..cfg.layers], r, limit - r, true), longpf.lazy_role));
+        }
+        // a prompt segment past the threshold streams
+        const seg = try block_prefill.emitPrefill(a, &cfg, &w, o, layers[0..cfg.layers], n, limit - n, true);
+        try testing.expect(longpf.names(seg, longpf.lazy_role));
+        // and one below it does not (the scratch is never allocated for a short prompt)
+        const short = try block_prefill.emitPrefill(a, &cfg, &w, o, layers[0..cfg.layers], n, 0, true);
+        try testing.expect(!longpf.names(short, longpf.lazy_role));
+    }
 }

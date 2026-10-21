@@ -1,5 +1,4 @@
-//! The DSpark depth as the lane engine's row policy (lanes.trim): a lone window's k (zero depth allowed) or tree,
-//! a shared round's joint depths; every commit feeds the calibration, the rates and the zero-depth counterfactual.
+//! The DSpark depth as the lane engine's row policy (lanes.trim); commits feed calibration, rates, counterfactual.
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const lanes = @import("lanes");
@@ -42,8 +41,7 @@ pub const Policy = struct {
         if (std.c.getenv("TF_DSV41_ACCEPT_LOG") != null) try logRound(self(ptr), windows, arena);
     }
 
-    /// TF_DSV41_ACCEPT_LOG: the round's windows and each drafted slot's raw / calibrated confidences and chosen depth
-    /// (the main chain's drafts this round's window verifies), whichever path chose them.
+    /// TF_DSV41_ACCEPT_LOG: the round's windows, each drafted slot's raw / calibrated confidences and chosen depth.
     fn logRound(p: *Policy, windows: []const lt.Window, arena: Allocator) !void {
         const x = p.owner;
         var total: u64 = 0;

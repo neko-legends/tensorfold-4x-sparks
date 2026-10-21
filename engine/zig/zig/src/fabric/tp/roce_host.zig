@@ -1,4 +1,5 @@
-//! `tf-tp-test roce-host`: the RoCE wire and proxy between 2 to 16 hosts without a GPU (the kernel's side done on the host): gathers checked bit for bit, variable lengths too, then the round trip by size.
+//! `tf-tp-test roce-host`: the RoCE wire and proxy between 2 to 16 hosts without a GPU (the kernel's side done on the
+//! host): gathers checked bit for bit, variable lengths too, then the round trip by size.
 const std = @import("std");
 const tp = @import("tp");
 const roce = tp.roce;
@@ -14,10 +15,14 @@ pub fn run(cfg: tp.Config, gpa: std.mem.Allocator) !u8 {
     const world: usize = cfg.world;
     var specs: [rv.max_hcas]rv.HcaSpec = undefined;
     var n: usize = 0;
-    if (cfg.roce_hca) |text| n = try rv.parseSpecs(text, &specs) else {
-        var v = try tp.Verbs.open(null);
-        defer v.close();
-        n = rv.autoSpecs(&v, &specs, cfg.roce_hcas);
+    if (cfg.roce_wire == .verbs) {
+        n = tp.roce_pick.resolve(cfg, &b, &specs) catch blk: {
+            // no pick: the configured or detected HCAs, as before (a world over the config's own lists)
+            if (cfg.roce_hca) |text| break :blk try rv.parseSpecs(text, &specs);
+            var v = try tp.Verbs.open(null);
+            defer v.close();
+            break :blk rv.autoSpecs(&v, &specs, cfg.roce_hcas);
+        };
     }
     for (specs[0..n]) |s| std.debug.print("INFO rank {d} HCA {s} GID index {?d}\n", .{ cfg.rank, s.name[0..s.name_len], s.gid });
     const r = try roce.Roce.init(null, &b, "", .{ .wire = if (cfg.roce_wire == .shm) .shm else .verbs, .hcas = specs[0..n], .traffic_class = cfg.roce_tc, .cpu = cfg.roce_cpu, .max_bytes = max_bytes, .timeout_ns = 10 * std.time.ns_per_s });

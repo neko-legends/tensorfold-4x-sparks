@@ -1,20 +1,18 @@
-//! The KV side of the priced memory floor (memory.py budget / load_check / prefill_price / Floor.check, with split KV and the
-//! streamed NVMe tier): how big a pool a rank can boot with, what a prompt or an NVMe resume costs while it runs, and whether an
-//! admission fits both ranks' pages and memory. Pure arithmetic: the engine passes measured or planned figures.
+//! The KV side of the priced memory floor: boot pool size, prompt and NVMe resume prices, and admission fit.
 
 const std = @import("std");
 const sessions = @import("sessions");
 
 pub const GiB: f64 = @floatFromInt(@as(u64, 1) << 30);
 
-/// A slot's bounded state outside the pool (state.py: 43 SWA rings x 256 x 584, 3 ratio-2 carries, Engram lookback, DSpark taps).
+/// A slot's bounded state outside the pool: 43 SWA rings x 256 x 584, 3 ratio-2 carries, Engram lookback, DSpark taps.
 pub const slot_bytes: u64 = 43 * 256 * 584 + 3 * 1024 * 4 + 3 * 4 + 3 * 5120 * 2 * 128;
 
 pub const Knobs = struct {
     /// TF_DSV41_PREFILL_ROWS and TF_DSV41_INDEX_BUDGET_MIB
     prefill_rows: u32 = 2048,
     index_budget_mib: u32 = 256,
-    /// G16's fitted terms (memory.py PF_*)
+    /// fitted prefill price terms
     pf_chunk_gib: f64 = 0.533,
     pf_host_gib: f64 = 0.6,
     pf_other_gib: f64 = 0.0,
@@ -28,7 +26,7 @@ pub const Knobs = struct {
     target_gib: f64 = 5.0,
 };
 
-/// A rank's boot budget in GiB (memory.py Budget): what is allocated before the pool, and what must stay free.
+/// A rank's boot budget in GiB: what is allocated before the pool, and what must stay free.
 pub const Boot = struct {
     available: f64 = 112.0,
     weights: f64,
@@ -51,7 +49,7 @@ pub const Boot = struct {
         return b.available - b.fixed(k) - @as(f64, @floatFromInt(pool_bytes)) / GiB;
     }
 
-    /// The most pool tokens that keep the hard floor, in whole pages and a multiple of world pages (a split pool's residues).
+    /// The most pool tokens keeping the hard floor, in whole pages, a multiple of world pages (split residues).
     pub fn poolTokens(b: Boot, k: Knobs, layout: sessions.Layout, world: u32) u64 {
         const spare = b.available - b.fixed(k) - k.hard_gib;
         if (spare <= 0) return 0;
@@ -62,7 +60,7 @@ pub const Boot = struct {
     }
 };
 
-/// A prompt's prefill transient in bytes (memory.py Price): once (the window's buffers) and index (grows to index_positions).
+/// A prompt's prefill transient in bytes: once (the window's buffers) and index (grows to index_positions).
 pub const Price = struct {
     once: u64 = 0,
     index: u64 = 0,
@@ -73,7 +71,7 @@ pub const Price = struct {
         return p.once + p.index;
     }
 
-    /// What has not materialised once the prompt's state holds done tokens (the floor's reservation for a prompt still prefilling).
+    /// What has not materialised at `done` tokens (the floor's reservation for a prompt still prefilling).
     pub fn outstanding(p: Price, done: u64) u64 {
         if (p.total() == 0) return 0;
         const once = if (done <= p.start) p.once else 0;
@@ -83,7 +81,7 @@ pub const Price = struct {
     }
 };
 
-/// Prefilling prompt tokens [cached, n - 1): memory.py prefill_price, plus split KV's union buffers (receive cap + half for the send).
+/// Prefilling prompt tokens [cached, n - 1), plus split KV's union buffers (receive cap + half for the send).
 pub fn prefillPrice(k: Knobs, n: u64, cached: u64) Price {
     const todo = (n -| 1) -| cached;
     if (todo == 0) return .{};
@@ -112,8 +110,7 @@ pub const Ask = struct {
     outstanding: u64 = 0,
 };
 
-/// Whether a request may start: pages any residue can give (Pool.available), and on every rank usable less the transient stays at the hard floor.
-/// usable: each rank's usable bytes (rank 0's own view, the peers' last reports); returns the binding rank too.
+/// May a request start: pages from any residue, and every rank's `usable` less the transient at the hard floor.
 pub fn admit(k: Knobs, pool: *const sessions.Pool, ask: Ask, usable: []const u64) struct { verdict: Verdict, rank: u32 } {
     if (pool.available() < ask.pages) return .{ .verdict = .wait_pages, .rank = 0 };
     const want = ask.price + ask.restore + ask.outstanding + @as(u64, @intFromFloat(k.hard_gib * GiB));
@@ -125,21 +122,19 @@ pub fn admit(k: Knobs, pool: *const sessions.Pool, ask: Ask, usable: []const u64
     return .{ .verdict = .admit, .rank = tight };
 }
 
-// -- the measured boot check (memory.py Serve / SERVE / serve_check, LONG-CONTEXT.md 9.2-9.3) ---------------------------------
+// -- the measured boot check ----------------------------------------------------------------------------------------
 
-/// A rank's measured terms in GiB (memory.py Serve, the Sparks with q28-v2, perf1 8474f31, drafter on): growth is MemAvailable at the
-/// check less MemAvailable idle after the boot, less the pool (graphs, expert scratch, drafter buffers, prefill workspace); dip is the
-/// worst drop below idle while serving (4 x 1M prefills back to back, 4 live, split KV). Split KV adds nothing at idle.
+/// A rank's measured GiB terms: boot growth past the check less the pool, and the worst serving dip below idle.
 pub const Serve = struct {
     growth: f64,
     dip: f64,
 
-    /// memory.SERVE: rank 0 (head) 1.9 / 4.9, every other rank the worker's 1.7 / 4.2.
+    /// Measured: rank 0 (head) 1.9 / 4.9, every other rank 1.7 / 4.2.
     pub fn measured(rank: u32) Serve {
         return if (rank == 0) .{ .growth = 1.9, .dip = 4.9 } else .{ .growth = 1.7, .dip = 4.2 };
     }
 
-    /// The rank's terms with TF_DSV41_BOOT_GROWTH_GIB / TF_DSV41_SERVE_DIP_GIB's raw values over them (null or blank: measured).
+    /// The rank's terms overridden by TF_DSV41_BOOT_GROWTH_GIB / TF_DSV41_SERVE_DIP_GIB (null or blank: measured).
     pub fn withOverrides(rank: u32, growth: ?[]const u8, dip: ?[]const u8) !Serve {
         const m = measured(rank);
         return .{ .growth = try gibEnv(growth, m.growth), .dip = try gibEnv(dip, m.dip) };
@@ -150,6 +145,40 @@ pub const Serve = struct {
     }
 };
 
+/// Zig's dip below idle (TF_DSV41_SERVE_DIP_GIB unset): 2 x 1M then 4 x 740K measured 2.48 (rank 1), 1.1 (rank 0).
+pub const zig_dip_gib: f64 = 3.0;
+
+/// Zig's terms before the pool: TF_DSV41_BOOT_GROWTH_GIB (unset 0: measured at boot's end), TF_DSV41_SERVE_DIP_GIB.
+pub fn zigFromEnv() !Serve {
+    return .{ .growth = try gibEnv(env(growth_env), 0), .dip = try gibEnv(env(dip_env), zig_dip_gib) };
+}
+
+/// The measured check at the end of boot (GiB): whether the worst point keeps the floor, and what the boot took.
+pub const AfterBoot = struct {
+    ok: bool,
+    /// what the boot took after the check besides the pool (plan, forms, rows, drafter, sampler)
+    growth: f64,
+    /// the worst serving point: idle less the dip
+    worst: f64,
+    /// the pool's tokens that would leave the worst point at the hard floor (0: none)
+    largest: u64,
+};
+
+/// The measured check: idle - post-boot reserve - dip >= the hard floor (growth = at the check - pool - now, logged).
+pub fn afterBoot(at_check: f64, pool_gib: f64, idle: f64, reserve: f64, dip: f64, hard: f64, pool_tokens: u64, bytes_a_token: f64) AfterBoot {
+    const worst = idle - reserve - dip;
+    const room_tokens = (worst - hard) * GiB / @max(1.0, bytes_a_token);
+    const largest = @as(f64, @floatFromInt(pool_tokens)) + room_tokens;
+    return .{ .ok = worst >= hard, .growth = at_check - pool_gib - idle, .worst = worst, .largest = if (largest > 0) @intFromFloat(@floor(largest)) else 0 };
+}
+
+/// TF_DSV41_POST_BOOT_GIB (unset 0): post-boot one-time cost (graphs, held sessions; ~1.5 GiB measured), not dip.
+pub const reserve_env = "TF_DSV41_POST_BOOT_GIB";
+
+pub fn reserveFromEnv() !f64 {
+    return gibEnv(env(reserve_env), 0);
+}
+
 pub const growth_env = "TF_DSV41_BOOT_GROWTH_GIB";
 pub const dip_env = "TF_DSV41_SERVE_DIP_GIB";
 pub const measured_env = "TF_DSV41_BOOT_MEASURED";
@@ -158,7 +187,7 @@ fn env(name: [*:0]const u8) ?[]const u8 {
     return if (std.c.getenv(name)) |v| std.mem.span(v) else null;
 }
 
-/// memory.py _gib_env: blank is the default, a negative figure an error.
+/// A GiB knob: blank is the default, a negative figure an error.
 fn gibEnv(raw: ?[]const u8, default: f64) !f64 {
     const s = std.mem.trim(u8, raw orelse "", " \t\r\n");
     if (s.len == 0) return default;
@@ -167,7 +196,7 @@ fn gibEnv(raw: ?[]const u8, default: f64) !f64 {
     return v;
 }
 
-/// TF_DSV41_BOOT_MEASURED (stack.py _avail_gib): 0 / off / no / false, 1 / on / yes / true, anything else auto.
+/// TF_DSV41_BOOT_MEASURED: 0 / off / no / false, 1 / on / yes / true, anything else auto.
 pub const Mode = enum { auto, on, off };
 
 pub fn parseMode(raw: ?[]const u8) Mode {
@@ -186,8 +215,7 @@ pub fn modeFromEnv() Mode {
     return parseMode(env(measured_env));
 }
 
-/// Whether the measured check runs: forced on or off, else where the GPU allocates from the host's memory (it reports itself
-/// integrated, or its memory is within 15 % of the host's MemTotal: GB10).
+/// The measured check runs if forced, else where the GPU is integrated or its memory within 15 % of host MemTotal.
 pub fn measuredApplies(mode: Mode, integrated: bool, device_total: u64, host_total: u64) bool {
     if (mode == .off) return false;
     const d: f64 = @floatFromInt(device_total);
@@ -228,14 +256,14 @@ pub fn memAvailable() !u64 {
     return (try meminfo()).available;
 }
 
-/// A rank's pool bytes for tokens pool tokens (pool.py tokens_bytes: whole rows a family, the split families' rows / W).
+/// A rank's pool bytes for `tokens` (whole rows a family, the split families' rows / W).
 pub fn poolBytes(layout: sessions.Layout, world: u32, tokens: u64) u64 {
     var b: u64 = 0;
     for (layout.families) |f| b += @as(u64, f.row_bytes) * (tokens / f.ratio) / (if (f.split and world > 1) world else 1);
     return b;
 }
 
-/// load_check's bytes a token: a 1M-token pool's bytes / 2^20 (1,790 replicated, 1,060 split over two ranks).
+/// Bytes a token: a 1M-token pool's bytes / 2^20 (1,790 replicated, 1,060 split over two ranks).
 pub fn tokenBytes(layout: sessions.Layout, world: u32) f64 {
     return @as(f64, @floatFromInt(poolBytes(layout, world, 1 << 20))) / @as(f64, 1 << 20);
 }
@@ -260,11 +288,11 @@ pub const Result = struct {
     growth: f64,
     dip: f64,
     hard: f64,
-    /// the largest pool that fits (memory.py's figure: room / bytes a token, floored), and the same in whole pages of every residue
+    /// the largest pool that fits (room / bytes a token, floored), and the same in whole pages of every residue
     largest: u64,
     largest_paged: u64,
 
-    /// memory.py serve_check's refusal (or load_check's report on a pass).
+    /// The refusal (or the report on a pass).
     pub fn message(r: Result, buf: []u8) []const u8 {
         var a: [32]u8 = undefined;
         var b: [32]u8 = undefined;
@@ -278,19 +306,18 @@ pub const Result = struct {
     }
 };
 
-/// The largest pool the measured terms leave room for: max(0, avail - growth - dip - hard) GiB / bytes a token, floored (memory.py).
+/// The largest pool the terms leave room for: max(0, avail - growth - dip - hard) GiB / bytes a token, floored.
 pub fn largestPool(avail_gib: f64, terms: Serve, hard_gib: f64, bytes_a_token: f64) u64 {
     const room = @max(0.0, avail_gib - terms.growth - terms.dip - hard_gib);
     return @intFromFloat(@floor(room * GiB / bytes_a_token));
 }
 
-/// memory.py serve_check's arithmetic: the predicted worst MemAvailable (GiB) with a pool of pool_gib.
+/// The predicted worst MemAvailable (GiB) with a pool of pool_gib.
 pub fn worstAt(avail_gib: f64, pool_gib: f64, terms: Serve) f64 {
     return avail_gib - pool_gib - terms.growth - terms.dip;
 }
 
-/// The measured check at load time: MemAvailable at the check - the pool (split counted: index rows + comp rows / W) - the boot's
-/// growth after the check - the worst serving dip >= the hard floor. Runs after the planned one (Boot), where measuredApplies.
+/// Load-time check: MemAvailable - pool (split-aware) - growth - worst dip >= hard floor; after Boot, if it applies.
 pub fn serveCheck(k: Knobs, m: Measured, layout: sessions.Layout, world: u32, pool_tokens: u64) Result {
     const per = tokenBytes(layout, world);
     const pool_gib = @as(f64, @floatFromInt(poolBytes(layout, world, pool_tokens))) / GiB;
@@ -316,7 +343,7 @@ pub fn serveCheck(k: Knobs, m: Measured, layout: sessions.Layout, world: u32, po
     };
 }
 
-/// n with thousands separators (Python's {:,}).
+/// n with thousands separators.
 fn grouped(buf: *[32]u8, n: u64) []const u8 {
     var tmp: [24]u8 = undefined;
     const d = std.fmt.bufPrint(&tmp, "{d}", .{n}) catch unreachable;
@@ -332,7 +359,7 @@ fn grouped(buf: *[32]u8, n: u64) []const u8 {
     return buf[0..o];
 }
 
-/// A float as Python's str prints it for the hard floor (4.0, 4.5).
+/// A float as the refusal message prints the hard floor (4.0, 4.5).
 fn pyFloat(buf: *[32]u8, v: f64) []const u8 {
     const s = std.fmt.bufPrint(buf, "{d}", .{v}) catch unreachable;
     if (std.mem.indexOfAny(u8, s, ".en") != null) return s;
@@ -343,20 +370,20 @@ fn pyFloat(buf: *[32]u8, v: f64) []const u8 {
 
 const layout_mod = @import("layout.zig");
 
-test "the boot budget: Mia's pool cap of LONG-CONTEXT.md 2, v2's, and split KV's pool from the same memory" {
+test "the boot budget: the reference's pool cap, its second form's, and split KV's pool from the same memory" {
     var l = try layout_mod.Layout.fromConfig(layout_mod.Release{}, .{});
     const k: Knobs = .{ .staging_bytes = 0 };
-    // memory.py load_check with mia29 refuses pools above 3.23 GiB = 1.94M tokens (111.75 - 99.48 - 4 slots - 4.0 - 1.0 - 4)
-    const mia: Boot = .{ .weights = 99.48 };
-    const t = mia.poolTokens(k, l.pool(), 1);
+    // a 99.48 GiB-weights boot refuses pools above 3.23 GiB = 1.94M tokens (111.75 - 99.48 - 4 slots - 4.0 - 1.0 - 4)
+    const boot: Boot = .{ .weights = 99.48 };
+    const t = boot.poolTokens(k, l.pool(), 1);
     try std.testing.expect(t > 1_930_000 and t < 1_945_000);
-    try std.testing.expect(mia.floor(k, t * 1790) >= 4.0);
-    // the same memory with split KV over two ranks holds 1,790 / 1,060 times the tokens (less the union buffers it prices)
+    try std.testing.expect(boot.floor(k, t * 1790) >= 4.0);
+    // split KV over two ranks holds 1,790 / 1,060 times the tokens (less the union buffers it prices)
     var s = try layout_mod.Layout.fromConfig(layout_mod.Release{}, .{ .split = true });
     const ks: Knobs = .{ .staging_bytes = 0, .union_cap = 128 << 20 };
-    const ts = mia.poolTokens(ks, s.pool(), 2);
+    const ts = boot.poolTokens(ks, s.pool(), 2);
     const ratio = @as(f64, @floatFromInt(ts)) / @as(f64, @floatFromInt(t));
-    const spare = mia.available - mia.fixed(k) - k.hard_gib;
+    const spare = boot.available - boot.fixed(k) - k.hard_gib;
     const want = (spare - 0.1875) / spare * 1790.0 / 1060.0; // 1.59: the union's 192 MiB comes off first
     try std.testing.expectApproxEqAbs(want, ratio, 1e-3);
     try std.testing.expectEqual(@as(u64, 0), ts % (2 * 256));
@@ -383,7 +410,7 @@ test "prefill and restore prices, admission against both ranks and residues" {
     try std.testing.expectEqual(Verdict.wait_pages, admit(k, &pool, .{ .pages = 17, .price = 0 }, &.{ 9 * g, 9 * g }).verdict);
 }
 
-test "the measured boot check: test_dsv41_serving_memory.py's prod and middle-profile goldens (LONG-CONTEXT.md 9.3)" {
+test "the measured boot check: the reference's served and middle-profile goldens" {
     var rl = try layout_mod.Layout.fromConfig(layout_mod.Release{}, .{});
     var sl = try layout_mod.Layout.fromConfig(layout_mod.Release{}, .{ .split = true });
     const rep = rl.pool();
@@ -395,10 +422,10 @@ test "the measured boot check: test_dsv41_serving_memory.py's prod and middle-pr
     var buf: [512]u8 = undefined;
     for (0..2) |r| {
         const m: Measured = .{ .rank = @intCast(r), .avail_gib = at_check[r], .terms = Serve.measured(@intCast(r)) };
-        const prod = serveCheck(k, m, rep, 2, 1_400_000); // prod: replicated 1.4M
+        const served = serveCheck(k, m, rep, 2, 1_400_000); // replicated 1.4M
         const mid = serveCheck(k, m, spl, 2, 3_000_000); // the middle profile: split 3.0M
-        try std.testing.expect(prod.ok and mid.ok);
-        try std.testing.expectApproxEqAbs(@as(f64, if (r == 0) 4.86610562801361 else 4.666105628013612), prod.worst, 1e-12);
+        try std.testing.expect(served.ok and mid.ok);
+        try std.testing.expectApproxEqAbs(@as(f64, if (r == 0) 4.86610562801361 else 4.666105628013612), served.worst, 1e-12);
         try std.testing.expectApproxEqAbs(@as(f64, if (r == 0) 4.238394212722778 else 4.038394212722779), mid.worst, 1e-12);
         try std.testing.expect(!serveCheck(k, m, rep, 2, 2_200_000).ok); // replicated 2.2M
         try std.testing.expect(!serveCheck(k, m, spl, 2, 3_500_000).ok); // split 3.5M, which the planned budget accepts
@@ -406,7 +433,7 @@ test "the measured boot check: test_dsv41_serving_memory.py's prod and middle-pr
     const w: Measured = .{ .rank = 1, .avail_gib = 12.9, .terms = Serve.measured(1) };
     const refused = serveCheck(k, w, spl, 2, 3_500_000);
     try std.testing.expectApproxEqAbs(@as(f64, 3.5447932481765747), refused.worst, 1e-12);
-    try std.testing.expectEqual(@as(u64, 3_038_891), refused.largest); // Python: int(3.0 GiB / 1,060)
+    try std.testing.expectEqual(@as(u64, 3_038_891), refused.largest); // int(3.0 GiB / 1,060)
     try std.testing.expectEqual(@as(u64, 3_038_720), refused.largest_paged); // 5,935 x 512
     try std.testing.expect(serveCheck(k, w, spl, 2, refused.largest_paged).ok);
     try std.testing.expect(!serveCheck(k, w, spl, 2, refused.largest_paged + 512).ok);
@@ -431,7 +458,7 @@ test "the measured check's knobs: growth / dip overrides, TF_DSV41_BOOT_MEASURED
     const t = try Serve.withOverrides(1, null, "3.0");
     try std.testing.expectEqual(Serve{ .growth = 1.7, .dip = 3.0 }, t);
     try std.testing.expect(serveCheck(k, .{ .rank = 1, .avail_gib = 12.9, .terms = t }, spl, 2, 3_500_000).ok);
-    // memory.serve_check(12.9, 2.0, rank=1, bytes_a_token=1060, hard=4) == 12.9 - 2.0 - 1.7 - 3.0
+    // worst = 12.9 - 2.0 - 1.7 - 3.0 (rank 1, 1060 bytes a token, hard 4)
     try std.testing.expectApproxEqAbs(@as(f64, 12.9 - 2.0 - 1.7 - 3.0), worstAt(12.9, 2.0, t), 1e-12);
     try std.testing.expectEqual(Serve{ .growth = 2.5, .dip = 4.9 }, try Serve.withOverrides(0, " 2.5 ", ""));
     try std.testing.expectEqual(Serve.measured(7), try Serve.withOverrides(7, null, null)); // any rank past 0: the worker's
@@ -452,4 +479,39 @@ test "the measured check's knobs: growth / dip overrides, TF_DSV41_BOOT_MEASURED
     try std.testing.expectEqual(MemInfo{ .total = 126877032 * 1024, .available = 13526528 * 1024 }, mi);
     try std.testing.expectError(error.BadMeminfo, parseMeminfo("MemTotal: 1 kB\n"));
     if (@import("builtin").os.tag == .linux) try std.testing.expect(try memAvailable() > 0);
+}
+
+test "the Zig check: measured at the end of boot, a measured rank 1 passes, a pool 1 GiB past the largest refuses" {
+    var sl = try layout_mod.Layout.fromConfig(layout_mod.Release{}, .{ .split = true });
+    const spl = sl.pool();
+    const k: Knobs = .{};
+    const per = tokenBytes(spl, 2);
+    const pool = @as(f64, @floatFromInt(poolBytes(spl, 2, 3_000_000))) / GiB;
+    // a rank 1 before the pool: the reference's terms refused it (6.07 - 2.10 workspace < 4); Zig's pass it
+    const terms: Serve = .{ .growth = 0, .dip = zig_dip_gib };
+    const pre = serveCheck(k, .{ .rank = 1, .avail_gib = 14.94, .terms = terms }, spl, 2, 3_000_000);
+    try std.testing.expect(pre.ok);
+    // after the boot: a measured rank 1 idle 8.70 - 3.0 dip = 5.70, over the 4.0 floor
+    const ok = afterBoot(14.94, pool, 8.70, 0, zig_dip_gib, k.hard_gib, 3_000_000, per);
+    try std.testing.expect(ok.ok);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.94 - pool - 8.70), ok.growth, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 5.70), ok.worst, 1e-9);
+    // the largest pool lands the worst point on the floor; 1 GiB more pool (1 GiB less idle) refuses
+    const more = @as(u64, @intFromFloat(GiB / per));
+    try std.testing.expect(ok.largest > 3_000_000);
+    const edge = ok.largest - 3_000_000;
+    const over = afterBoot(14.94, pool + (@as(f64, @floatFromInt(edge)) * per / GiB) + 1.0, 8.70 - (@as(f64, @floatFromInt(edge)) * per / GiB) - 1.0, 0, zig_dip_gib, k.hard_gib, ok.largest + more, per);
+    try std.testing.expect(!over.ok);
+    try std.testing.expectApproxEqAbs(@as(f64, 3.0), over.worst, 1e-6); // the floor less the GiB
+    try std.testing.expect(over.largest < ok.largest + more);
+    // an earlier boot's idle (6.39, before the trims) refuses at the measured dip: 2.48 would have left 3.91
+    try std.testing.expect(!afterBoot(14.94, pool, 6.39, 0, zig_dip_gib, k.hard_gib, 3_000_000, per).ok);
+    try std.testing.expectEqual(Serve{ .growth = 0, .dip = zig_dip_gib }, try zigFromEnv());
+    // the reserve apart: a measured rank 1 keeps the floor (8.76 - 1.5 - 3.0 = 4.26); 7.33 idle (4.2M untrimmed) not
+    const r = afterBoot(14.94, pool, 8.76, 1.5, zig_dip_gib, k.hard_gib, 3_000_000, per);
+    try std.testing.expect(r.ok);
+    try std.testing.expectApproxEqAbs(@as(f64, 4.26), r.worst, 1e-9);
+    try std.testing.expectApproxEqAbs(@as(f64, 14.94 - pool - 8.76), r.growth, 1e-9); // growth from the true idle
+    try std.testing.expect(!afterBoot(14.94, pool, 7.33, 1.5, zig_dip_gib, k.hard_gib, 3_000_000, per).ok);
+    try std.testing.expectEqual(@as(f64, 0), try reserveFromEnv());
 }

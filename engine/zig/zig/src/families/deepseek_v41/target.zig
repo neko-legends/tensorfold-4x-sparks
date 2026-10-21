@@ -1,23 +1,7 @@
-//! M3's GPU target: draft/iface.zig's `Target` over forward.zig, so the lanes backend (draft/lanes.zig) drives the real
-//! model as it drives the CPU twin. This first form is one slot, chain windows (a draft chain under the pending token),
-//! greedy choices and the prefill as consecutive decode windows; trees (`parents`) run as chain windows on the slot
-//! (draft/branches.zig: the main chain, then a winning sibling's path in place of it); several slots are refused by
-//! name until state.zig (per-slot pools) lands. Sampling (`lanes.Sampling`, T > 0, keyed at `draws`) goes through
-//! `sampler` (sampling_gpu.zig: Python's candidates, nucleus statistics and keyed choice); without one it is refused.
-//! M5 (`sessions`, with the paged pool): a request is admitted by the pool pages it may write (`admit`: its reply budget;
-//! prod's batch.py `_admit`), then its prompt resumes the longest saved entry that strictly prefixes it (RAM or NVMe)
-//! and prefills only the rest; a released slot is saved as an entry (its pages shared, its bounded state kept), the
-//! residency budget parking or dropping the least recently used chats. With several slots (`rows`) the same runs on
-//! the activated slot while the other slots' windows wait, as prod's round runs its admissions before its windows.
-//! Prompts in pieces (`begin` / `piece` / `finish`, the served shape only: own prefill, the verify tail; TF_DSV41_
-//! PREFILL_PIECES, serve_engine.zig's rounds over kv/sched.zig): the request admitted as the round planner decided
-//! (`admission`: its pages, the entry it resumes, the round's spills), each piece of rows run between other slots'
-//! decode rounds (its snapshot right after it at the replay point; full mode: its taps to the drafter, decode.py
-//! `prefill`), then the decoder replay and the prompt's last token's window. A released slot's pages wait for the
-//! next round's admissions to be decided (`defer_release`, `settleReleases`: prod's `_finish` at the next round's
-//! start, after its plan).
+//! The GPU target: draft/iface.zig's `Target` over forward.zig, so the lanes backend drives the real model.
 
 const std = @import("std");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const iface = @import("draft/iface.zig");
 const lanes = @import("lanes");
 const fwd = @import("forward.zig");
@@ -25,7 +9,7 @@ const sg = @import("sessions_gpu.zig");
 const batch = @import("batch.zig");
 const samp = @import("sampling_gpu.zig");
 const branches = @import("draft/branches.zig");
-const pk = @import("prod_knobs.zig");
+const pk = @import("serve_knobs.zig");
 const ced = @import("ced.zig");
 const pf = @import("forward_prefill.zig");
 
@@ -35,30 +19,23 @@ pub const GpuTarget = struct {
     f: *fwd.Forward,
     /// rows a prefill window takes (the decode path's buckets; the forward plans buffers for them)
     prefill_rows: u32 = 16,
-    /// a slot that already holds the prompt (a gate resuming the reference's state): prefill returns this choice
-    /// without running the prompt again
+    /// a slot that already holds the prompt: prefill returns this choice without running the prompt again
     resume_first: ?u32 = null,
     /// the most rows a window may take: the forward's buffers are planned for its buckets (run.zig has no bounds)
     max_rows: u32 = 16,
-    /// the prompt through the forward's own prefill (2,048-row segments, Python's chunks; forward.planPrefill sized
-    /// its buffers) instead of `prefill_rows`-row decode windows
+    /// the prompt through the forward's own prefill (2,048-row segments) instead of `prefill_rows`-row decode windows
     own_prefill: bool = false,
-    /// with `own_prefill`: where the prompt's last token runs (prod_knobs.PromptTail; model.zig reads
-    /// TF_DSV41_PROMPT_TAIL). `.verify` is Python's server: the reply's first decode window, left pending as a chain
-    /// window is. `.prefill`: the last prefill segment's last row, as Python's Forward.prompt (the gates' references)
+    /// with `own_prefill`: where the prompt's last token runs (`.verify`: first decode window; `.prefill`: last row)
     prompt_tail: pk.PromptTail = .prefill,
-    /// M5: the session store over the paged pool (null: every prompt from an empty slot, nothing kept)
+    /// the session store over the paged pool (null: every prompt from an empty slot, nothing kept)
     sessions: ?*sg.Sessions = null,
-    /// several live slots (TF_DSV41_SLOTS > 1, batch.zig): windows in row mode over every slot's segment, the prompt on
-    /// the activated slot (greedy chains; trees and sampling refused there by name)
+    /// several live slots (TF_DSV41_SLOTS > 1): windows in row mode over every slot, the prompt on the activated slot
     rows: ?*batch.Batch = null,
     /// the keyed sampler (model.zig makes it on every rank): sampled choices; null refuses them (error.Sampling)
     sampler: ?*samp.GpuSampler = null,
     /// draft trees (`parents`): resolved as chain windows on the slot (draft/branches.zig), the last one kept by path
     tree: branches.Resolver = .{},
-    /// the DSpark pass the lanes drive (model.zig): with `.verify`, the prompt's prefilled tail's taps go to it before
-    /// the reply's first verify window overwrites them (Python: the decoder replay's `replayed`, the last piece's keep);
-    /// `ingest_window`: the drafter's context rows (DSpark's shape window)
+    /// the DSpark pass the lanes drive: with `.verify`, the prefilled tail's taps go to it before the first window
     pass: ?iface.Pass = null,
     ingest_window: u32 = 0,
     /// each slot's next request's reply budget (`admit`, before its prefill): its pool admission's price
@@ -67,13 +44,13 @@ pub const GpuTarget = struct {
     admission: ?Planned = null,
     /// releases wait for `settleReleases` (the rounds: after the next round's admissions are decided)
     defer_release: bool = false,
-    /// TF_DSV41_ENGRAM_WARM=1 (`warm`): Python's commit and draft-end Engram warms (every rank alike)
+    /// TF_DSV41_ENGRAM_WARM=1 (`warm`): commit and draft-end Engram warms (every rank alike)
     engram_warm: bool = false,
     releasing: [16]bool = @splat(false),
+    abandoning: [16]bool = @splat(false),
     /// TF_DSV41_PIECE_RUNS: rounds whose pieces ran as one multi-segment run
     piece_runs: u64 = 0,
-    /// TF_DSV41_REPLAY_RUNS: slots whose decoder replay a batched run did (their `finish` / `tail` skips it), and the
-    /// runs so far
+    /// TF_DSV41_REPLAY_RUNS: slots whose decoder replay a batched run did (`finish` / `tail` skip it), and the runs
     replayed: [16]bool = @splat(false),
     replay_runs: u64 = 0,
 
@@ -84,7 +61,7 @@ pub const GpuTarget = struct {
         return .{ .ptr = t, .vtable = &vtable };
     }
 
-    const vtable: iface.Target.VTable = .{ .prefill = prefill, .window = window, .keep = keep, .taps = taps, .release = release, .admit = admit, .begin = begin, .piece = piece, .finish = finish, .tail = tail, .pieces = pieces, .replays = replays, .warm = warm };
+    const vtable: iface.Target.VTable = .{ .prefill = prefill, .window = window, .keep = keep, .taps = taps, .release = release, .release_checked = releaseChecked, .available = available, .admit = admit, .begin = begin, .piece = piece, .finish = finish, .tail = tail, .pieces = pieces, .replays = replays, .warm = warm };
 
     fn admit(p: *anyopaque, slot: u32, max_new: u64) void {
         const t = self_(p);
@@ -97,40 +74,34 @@ pub const GpuTarget = struct {
 
     fn prefill(p: *anyopaque, slot: u32, ids: []const u32, sampling: ?lanes.Sampling, draw: u64) anyerror!u32 {
         const t = self_(p);
+        if (!available(p, slot)) return error.SlotUnavailable;
         if (t.rows) |b| try b.beginPrefill(slot) else if (slot != 0) return error.Slots;
         _ = t.takeReplayed(slot);
         const keyed = try t.keyedOf(sampling);
         t.tree.clear();
         if (t.resume_first) |first| if (t.f.slot.pos == ids.len and t.f.slot.pending == null) return first;
-        // the request's pool pages (its reply budget from `admit`), then a saved entry that prefixes the prompt: the
-        // slot continues at its position, the rest is prefilled
+        // the request's pool pages, then a saved entry that prefixes the prompt: the slot continues, the rest prefills
         const max_new: ?u64 = if (slot < t.max_new.len) t.max_new[slot] else null;
         if (slot < t.max_new.len) t.max_new[slot] = null;
-        // a failed prompt (a damaged NVMe blob, a pool that ran out) leaves the slot empty on every rank, its pages and
-        // reservation back (prod: the request fails, its slot finishes), not holding them for the next request
+        // a failed prompt leaves the slot empty on every rank, its pages and reservation back
         errdefer if (t.sessions != null) t.abandon(slot);
         const at: usize = if (t.sessions) |ss| @intCast(try ss.resume_(ids, max_new)) else 0;
         const rest = ids[at..];
         if (t.own_prefill and t.prompt_tail == .verify) {
-            // Python's server (batch.py `_pieces` / `finals`): the rows before the last token are prefilled, and the
-            // last token is the pending row of the reply's first verify window: this target's own decode window
-            // (one slot or row mode), its choice greedy or keyed at `draw`, left pending for the next window to keep
-            // (a chain window never kept keeps every row; release keeps it before a session save)
+            // the rows before the last token prefill; the last token is the pending row of the first verify window
             const sp = pk.promptSplit(rest.len, .verify);
-            t.f.prefill_state.taps_rows = 0; // a one-token prompt prefills nothing: no stale taps handed over
-            // sessions: the prompt's snapshot at its replay point (batch.py `save_at`, rounds.py `_save(slot,
-            // "prompt")`): its rows prefilled, an entry (CED: with the stash), then the rest
+            pf.state(t.f).taps_rows = 0; // a one-token prompt prefills nothing: no stale taps handed over
+            // sessions: the prompt's snapshot at its replay point: its rows prefilled, an entry, then the rest
             const save_at: ?u64 = if (t.sessions != null) ced.savePoint(ids.len, at) else null;
             if (save_at) |s_at| {
                 const cut: usize = @intCast(s_at);
                 try t.f.prefill(ids[at..cut]);
-                // full mode: the piece's last rows to the drafter first (decode.py `prefill`), so the snapshot's
-                // drafter rings hold them (drafter.py `snapshot`)
-                if (t.f.prefill_state.mode == .full) try t.handTaps(slot);
+                // full mode: the piece's last rows to the drafter first, so the snapshot's drafter rings hold them
+                if (pf.state(t.f).mode == .full) try t.handTaps(slot);
                 _ = try t.sessions.?.savePrompt();
                 try t.f.prefill(ids[cut .. at + sp.prefill]);
             } else try t.f.prefill(rest[0..sp.prefill]);
-            // the decoder replay over the prompt's tail (rounds.py `finish_prompt`; full mode: nothing)
+            // the decoder replay over the prompt's tail (full mode: nothing)
             try t.f.finishPrompt();
             try t.handTaps(slot);
             var one: [1]u32 = undefined;
@@ -175,6 +146,7 @@ pub const GpuTarget = struct {
 
     fn begin(p: *anyopaque, slot: u32, ids: []const u32) anyerror!iface.Target.Begun {
         const t = self_(p);
+        if (!available(p, slot)) return error.SlotUnavailable;
         if (!(t.own_prefill and t.prompt_tail == .verify)) return error.NoPieces;
         _ = t.takeReplayed(slot); // a batched replay of a request that never finished is not this one's
         const planned = t.admission;
@@ -184,10 +156,10 @@ pub const GpuTarget = struct {
         const max_new: ?u64 = if (slot < t.max_new.len) t.max_new[slot] else null;
         if (slot < t.max_new.len) t.max_new[slot] = null;
         errdefer if (t.sessions != null) t.abandon(slot);
-        t.f.prefill_state.taps_rows = 0;
+        pf.state(t.f).taps_rows = 0;
         const ss = t.sessions orelse return .{};
         if (planned) |a| {
-            const r = try ss.resumePlanned(ids.len, a.need, a.hit, a.spills);
+            const r = try ss.resumePlanned(ids, a.need, a.hit, a.spills);
             return .{ .at = r.at, .damaged = r.damaged };
         }
         const before = ss.stats.damaged;
@@ -198,27 +170,37 @@ pub const GpuTarget = struct {
     fn piece(p: *anyopaque, slot: u32, ids: []const u32, start: u64, end: u64, save: bool) anyerror!void {
         const t = self_(p);
         try t.onSlot(slot);
+        if (start == end and save) {
+            // a leaving prompt's finished rows kept as they stand (the lane host: its client left mid-prompt)
+            if (t.f.slot.pos != start or start < ced.session_min or end + 1 > ids.len) return error.NotAChain;
+            if (t.sessions) |ss| _ = try ss.savePrompt();
+            return;
+        }
         if (t.f.slot.pos != start or start >= end or end + 1 > ids.len) return error.NotAChain;
-        // the next round's piece of this prompt read ahead behind this one (Python's rounds._prefetch(ahead=
-        // prefetch.next_pieces): the rows after it, as many as it holds, up to the prompt's last token)
+        // the next round's piece of this prompt read ahead behind this one, up to the prompt's last token
         const last = ids.len - 1;
         if (end < last) try t.f.prefillAhead(ids[end..@min(last, end + (end - start))]);
         try t.f.prefill(ids[start..end]);
-        // rounds.py `_save`: a history under session_min is not snapshotted (a damaged entry's restart cuts there)
-        if (save and end >= ced.session_min) if (t.sessions) |ss| {
-            _ = try ss.savePrompt();
+        const End = struct {
+            target: *GpuTarget,
+            slot: u32,
+            pub fn snapshot(e: @This()) !void {
+                if (e.target.sessions) |ss| _ = try ss.savePrompt();
+            }
+            pub fn handoff(e: @This()) !void {
+                try e.target.handTaps(e.slot);
+            }
         };
-        // full mode: the drafter reads each piece's last rows (decode.py `prefill`'s ingest of a piece's tail)
-        if (t.f.prefill_state.mode == .full) try t.handTaps(slot);
+        try @import("piece_handoff.zig").finish(End{ .target = t, .slot = slot }, pf.state(t.f).mode == .full, save and end >= ced.session_min);
     }
 
     fn finish(p: *anyopaque, slot: u32, ids: []const u32, sampling: ?lanes.Sampling, draw: u64) anyerror!u32 {
         const t = self_(p);
         try t.onSlot(slot);
         if (ids.len == 0 or t.f.slot.pos != ids.len - 1) return error.NotAChain;
-        if (t.f.prefill_state.mode == .replay and !t.takeReplayed(slot)) {
-            // the decoder replay over the prompt's tail (rounds.py `finish_prompt`), its taps the drafter's context
-            t.f.prefill_state.taps_rows = 0;
+        if (pf.state(t.f).mode == .replay and !t.takeReplayed(slot)) {
+            // the decoder replay over the prompt's tail, its taps the drafter's context
+            pf.state(t.f).taps_rows = 0;
             try t.f.finishPrompt();
             try t.handTaps(slot);
         }
@@ -228,13 +210,10 @@ pub const GpuTarget = struct {
         return one[0];
     }
 
-    /// A round's pieces of several slots (TF_DSV41_PIECE_RUNS, lanes' Config.piece_runs): CED replay's encoder passes
-    /// of all of them in one run (Forward.prefillMulti: Python's prefill over prefill_runs), then each piece's prompt
-    /// snapshot, as `piece` a piece; the run's refusals (a short or image segment, more rows than a prefill segment, split
-    /// KV) and full mode (its drafter taps a piece) run a piece at a time.
+    /// A round's pieces of several slots (TF_DSV41_PIECE_RUNS): their encoder passes in one run, then each snapshot.
     fn pieces(p: *anyopaque, list: []const iface.Target.Piece) anyerror!void {
         const t = self_(p);
-        if (list.len > 1 and list.len <= 16 and t.f.prefill_state.mode == .replay and t.f.pf_switch != null) {
+        if (list.len > 1 and list.len <= 16 and pf.state(t.f).mode == .replay and t.f.pf_switch != null) {
             var segs: [16]pf.MultiSeg = undefined;
             for (list, segs[0..list.len]) |q, *seg| {
                 if (q.start >= q.end or q.end + 1 > q.ids.len) return error.NotAChain;
@@ -245,7 +224,7 @@ pub const GpuTarget = struct {
                 try t.f.prefillMulti(segs[0..list.len]);
                 t.piece_runs += 1;
                 if (t.piece_runs == 1 or t.piece_runs % 256 == 0) std.log.scoped(.dsv41).info("piece runs: {d} (this one {d} segments in one run)", .{ t.piece_runs, list.len });
-                // rounds.py `_save` after the round's prefill, a piece at a time
+                // the session save after the round's prefill, a piece at a time
                 for (list) |q| if (q.save and q.end >= ced.session_min) if (t.sessions) |ss| {
                     try t.onSlot(q.slot);
                     _ = try ss.savePrompt();
@@ -256,13 +235,12 @@ pub const GpuTarget = struct {
         for (list) |q| try piece(p, q.slot, q.ids, q.start, q.end, q.save);
     }
 
-    /// Iface.Target.warm: row mode warms on every rank (Batch.warmEngram, op 56); one slot, this rank's reads of the
-    /// one slot (the followers have R3's row-0 read at op_ds_propose). Off unless TF_DSV41_ENGRAM_WARM=1.
+    /// Iface.Target.warm: row mode warms on every rank; one slot, this rank's reads. Off unless TF_DSV41_ENGRAM_WARM=1.
     fn warm(p: *anyopaque, asks: []const iface.Warm) void {
         const t = self_(p);
         if (!t.engram_warm or asks.len == 0) return;
         if (t.rows) |b| {
-            b.warmEngram(asks) catch |e| std.log.scoped(.dsv41).warn("engram warm: {t} (the windows read their own rows)", .{e});
+            b.warmEngram(asks) catch |e| if (!quiet) std.log.scoped(.dsv41).warn("engram warm: {t} (the windows read their own rows)", .{e});
             return;
         }
         for (asks) |a| if (a.slot == 0) t.f.prefetchEngram(a.start, a.ids);
@@ -276,16 +254,15 @@ pub const GpuTarget = struct {
         return error.BadEngramWarm;
     }
 
-    /// `finish` up to the last token (TF_DSV41_TAIL_JOIN): the decoder replay and its taps; the slot stays at the last
-    /// token's position with no window pending, which the next round's window (one slot or row mode) starts at.
+    /// `finish` up to the last token (TF_DSV41_TAIL_JOIN): the decoder replay and its taps, no window pending.
     fn tail(p: *anyopaque, slot: u32, ids: []const u32, sampling: ?lanes.Sampling, draw: u64) anyerror!?u32 {
         _ = draw;
         const t = self_(p);
         try t.onSlot(slot);
         if (ids.len == 0 or t.f.slot.pos != ids.len - 1) return error.NotAChain;
         _ = try t.keyedOf(sampling); // refused here as `finish` would, not in the round
-        if (t.f.prefill_state.mode == .replay and !t.takeReplayed(slot)) {
-            t.f.prefill_state.taps_rows = 0;
+        if (pf.state(t.f).mode == .replay and !t.takeReplayed(slot)) {
+            pf.state(t.f).taps_rows = 0;
             try t.f.finishPrompt();
             try t.handTaps(slot);
         }
@@ -295,8 +272,9 @@ pub const GpuTarget = struct {
     /// The releases held since the last round (`defer_release`) run now, slot by slot.
     pub fn settleReleases(t: *GpuTarget) void {
         for (&t.releasing, 0..) |*x, s| if (x.*) {
-            x.* = false;
-            t.releaseNow(@intCast(s));
+            t.completeRelease(@intCast(s)) catch |e| {
+                if (!quiet) std.log.err("dsv41 deferred release {d}: {t}", .{ s, e });
+            };
         };
     }
 
@@ -309,8 +287,7 @@ pub const GpuTarget = struct {
         if (s.parents != null) return t.tree.window(.{ .ptr = t, .vtable = &chains }, s, choices[0]);
         t.tree.clear();
         const keyed = try t.keyedOf(s.sampling);
-        // a chain window never kept keeps every row (iface.Target.window): lanes' undrafted step (queue) sends the
-        // next row without a keep
+        // a chain window never kept keeps every row: the lanes' undrafted step sends the next row without a keep
         if (t.f.slot.pending) |w| {
             if (s.start != w.start + w.n) return error.NotAChain;
             try t.f.keep(w.n - 1);
@@ -328,8 +305,7 @@ pub const GpuTarget = struct {
         return slot == 0 and t.f.slot.pending != null;
     }
 
-    /// The slot's pending window dropped on every rank, nothing committed (TF_DSV41_CALIB=measure, calib_gpu.zig:
-    /// Python times `fw.window` without a commit). Row mode: op_rows_drop; one slot: op 20 (Forward.drop).
+    /// The slot's pending window dropped on every rank, nothing committed (calibration timing).
     pub fn dropWindow(t: *GpuTarget, slot: u32) !void {
         if (t.rows) |b| return b.drop(slot);
         if (slot != 0) return error.Slots;
@@ -337,14 +313,13 @@ pub const GpuTarget = struct {
         if (t.f.slot.pending != null) try t.f.drop();
     }
 
-    /// The prompt's prefilled tail's taps into the DSpark pass (ced.handoff): its last `ingest_window` rows, one ingest.
+    /// The prompt's prefilled tail's taps into the DSpark pass: its last `ingest_window` rows, one ingest.
     fn handTaps(t: *GpuTarget, slot: u32) !void {
-        const st = &t.f.prefill_state;
+        const st = pf.state(t.f);
         return t.handTapsAt(slot, st.taps_at, st.taps_rows, 0);
     }
 
-    /// The drafter's context from "w.taps": positions [at, at + rows) at rows [base, base + rows) (a batched replay's
-    /// slot at its rows of the run), the last `ingest_window` of them (ced.handoff).
+    /// The drafter's context from "w.taps": positions [at, at + rows) at rows [base, base + rows), the last window.
     fn handTapsAt(t: *GpuTarget, slot: u32, at: u64, n: u32, base: u32) !void {
         const ps = t.pass orelse return;
         const h = ced.handoff(at, n, t.ingest_window) orelse return;
@@ -363,12 +338,10 @@ pub const GpuTarget = struct {
         return true;
     }
 
-    /// TF_DSV41_REPLAY_RUNS: the round's finished prompts' CED decoder replays in one run (Forward.replayMulti), before
-    /// their `finish` / `tail` (which then skip theirs), each slot's taps to the drafter as `finish` hands them, in the
-    /// finals' order. A tail of 32 rows or fewer (a short prompt) and the run's other refusals replay alone there.
+    /// TF_DSV41_REPLAY_RUNS: the round's finished prompts' decoder replays in one run, before their `finish` / `tail`.
     fn replays(p: *anyopaque, list: []const iface.Target.Final) anyerror!void {
         const t = self_(p);
-        if (list.len < 2 or t.f.prefill_state.mode != .replay or t.f.pf_switch == null) return;
+        if (list.len < 2 or pf.state(t.f).mode != .replay or t.f.pf_switch == null) return;
         var segs: [16]pf.MultiSeg = undefined;
         var n: usize = 0;
         for (list) |q| {
@@ -440,53 +413,61 @@ pub const GpuTarget = struct {
         return self_(p).f.drop();
     }
 
-    /// The slot emptied on every rank without a session save (a prompt that failed part way).
-    fn abandon(t: *GpuTarget, slot: u32) void {
+    fn empty(t: *GpuTarget, slot: u32) !void {
         t.tree.clear();
-        const r = if (t.rows) |b| b.release(slot) else t.f.release();
-        r catch |e| std.log.err("dsv41 target: emptying slot {d} after a failed prompt failed ({t})", .{ slot, e });
+        if (t.rows) |b| return b.release(slot);
+        if (slot != 0) return error.Slots;
+        try t.f.release();
     }
-
-    fn release(p: *anyopaque, slot: u32) void {
+    fn abandon(t: *GpuTarget, slot: u32) void {
+        if (slot >= t.releasing.len) return;
+        t.releasing[slot] = true;
+        t.abandoning[slot] = true;
+        t.completeRelease(slot) catch |e| {
+            if (!quiet) std.log.err("dsv41 abandon {d}: {t}", .{ slot, e });
+        };
+    }
+    fn available(p: *anyopaque, slot: u32) bool {
         const t = self_(p);
-        if (t.defer_release and slot < t.releasing.len) {
-            t.releasing[slot] = true;
-            return;
-        }
-        t.releaseNow(slot);
+        return slot < t.releasing.len and !t.releasing[slot];
     }
-
-    fn releaseNow(t: *GpuTarget, slot: u32) void {
+    fn completeRelease(t: *GpuTarget, slot: u32) !void {
+        if (t.abandoning[slot]) try t.empty(slot) else try t.releaseNow(slot);
+        t.releasing[slot] = false;
+        t.abandoning[slot] = false;
+    }
+    fn releaseChecked(p: *anyopaque, slot: u32) !void {
+        const t = self_(p);
+        if (slot >= t.releasing.len) return error.Slots;
+        t.releasing[slot] = true;
+        if (!t.defer_release) try t.completeRelease(slot);
+    }
+    fn release(p: *anyopaque, slot: u32) void {
+        releaseChecked(p, slot) catch |e| {
+            if (!quiet) std.log.err("dsv41 release {d}: {t}", .{ slot, e });
+        };
+    }
+    fn releaseNow(t: *GpuTarget, slot: u32) !void {
         if (t.rows) |b| {
-            // outside the served shape the turn is kept for the next one, as the one-slot path below (prod's exact
-            // prefill tag in full mode, rounds.py `_finish`); the served shape saved its prompt at its replay point
             if (t.sessions) |ss| if (!(t.own_prefill and t.prompt_tail == .verify)) {
-                b.saveTurn(slot, ss) catch |e| {
-                    std.log.err("sessions: save of slot {d} failed ({t}); the slot is released", .{ slot, e });
-                    b.release(slot) catch |e2| std.log.err("dsv41 target: releasing slot {d} failed ({t})", .{ slot, e2 });
+                b.saveTurn(slot, ss) catch {
+                    try b.release(slot);
                 };
                 return;
             };
-            return b.release(slot) catch |e| std.log.err("dsv41 target: releasing slot {d} failed ({t})", .{ slot, e });
+            return b.release(slot);
         }
-        if (slot != 0) return;
+        if (slot != 0) return error.Slots;
         t.tree.clear();
         if (t.sessions) |ss| {
-            // the served shape keeps no turn snapshots (rounds.py `_finish`: only the exact prefill tag in full mode
-            // does; Zig's prefill is the fast path, and CED replays a turn's decoder rows differently): the prompt
-            // was saved at its replay point
-            if (t.own_prefill and t.prompt_tail == .verify) {
-                t.f.release() catch |e| std.log.err("dsv41 target: releasing the slot on the other ranks failed ({t})", .{e});
+            if (t.own_prefill and t.prompt_tail == .verify) return t.f.release();
+            if (t.f.slot.pending) |w| try t.f.keep(w.n - 1);
+            _ = ss.save() catch {
+                try t.f.release();
                 return;
-            }
-            // the turn kept for the next one (a pending window is the reply's last token: committed first)
-            if (t.f.slot.pending) |w| t.f.keep(w.n - 1) catch |e| std.log.err("sessions: keep before save failed ({t})", .{e});
-            _ = ss.save() catch |e| {
-                std.log.err("sessions: save failed ({t}); the slot is released", .{e});
-                t.f.release() catch |e2| std.log.err("dsv41 target: releasing the slot on the other ranks failed ({t})", .{e2});
             };
             return;
         }
-        t.f.release() catch |e| std.log.err("dsv41 target: releasing the slot on the other ranks failed ({t})", .{e});
+        try t.f.release();
     }
 };

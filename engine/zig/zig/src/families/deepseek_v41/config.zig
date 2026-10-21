@@ -1,4 +1,4 @@
-//! DeepSeek-V4.1-Flash text config (config.json -> text_config) and the per-layer CSA2 topology, as the Python engine's cuda/config.py reads them.
+//! DeepSeek-V4.1-Flash text config (config.json -> text_config) and the per-layer CSA2 topology.
 
 const std = @import("std");
 
@@ -44,7 +44,7 @@ pub const Rope = struct {
     yarn: bool = true,
 };
 
-/// The attention a layer runs (DSV41-BASELINE.md's names): sliding window only, KV source + indexer, own indexer on a source's keys, or reuse of both.
+/// The attention a layer runs: sliding window only, KV source + indexer, own indexer on a source's keys, or reuse.
 pub const Mode = enum { swa, full, reindex, reuse };
 
 pub const Config = struct {
@@ -96,6 +96,7 @@ pub const Config = struct {
     dspark_experts: u32 = 128,
     dspark_topk: u32 = 3,
     rope: Rope = .{},
+    engram_table_dir: List(u8, 4096) = .{},
     bos: u32 = 0,
     eos: u32 = 1,
 
@@ -108,13 +109,15 @@ pub const Config = struct {
         return parse(gpa, bytes);
     }
 
-    /// The checkpoint's JSON (text_config, else the top level); absent keys keep the release's values, unknown routing is refused.
+    /// Checkpoint JSON (text_config, else top level); absent keys keep release values, unknown routing is refused.
     pub fn parse(gpa: std.mem.Allocator, json: []const u8) !Config {
-        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{});
+        const parsed = try std.json.parseFromSlice(std.json.Value, gpa, json, .{ .parse_numbers = false });
         defer parsed.deinit();
         if (parsed.value != .object) return error.BadConfig;
         const top = parsed.value.object;
         const text = if (top.get("text_config")) |t| (if (t == .object) t.object else return error.BadConfig) else top;
+        // The exporter uses only the canonical checked pad field. Legacy aliases are refused at either level.
+        if (top.contains("engram_pad_id") or text.contains("engram_pad_id")) return error.BadConfig;
         var c: Config = .{};
         const ints = .{
             .{ "vocab", "vocab_size" },                         .{ "hidden", "hidden_size" },
@@ -160,12 +163,29 @@ pub const Config = struct {
         c.rope = try rope(text);
         if (top.get("bos_token_id")) |v| c.bos = try intAs(u32, v);
         if (top.get("eos_token_id")) |v| c.eos = try intAs(u32, v);
+        if (top.get("engram_table_dir")) |v| {
+            if (v != .null) {
+                if (v != .string) return error.BadConfig;
+                for (v.string) |byte| try c.engram_table_dir.push(byte);
+            }
+        }
         try c.validate();
+        try requireCheckpoint(top, text);
+        try c.validateRelease();
         return c;
     }
 
     /// Shapes the kernels and the loader assume; a release that breaks one is refused before any allocation.
     pub fn validate(c: *const Config) !void {
+        if (c.o_groups == 0 or c.heads == 0 or c.hidden == 0 or c.vocab == 0 or c.expert_width == 0 or
+            c.layers == 0 or c.layers > 64 or c.mtp_layers > 64 - c.layers or c.engram_max_ngram < 2 or
+            c.engram_max_ngram > 8 or c.engram_heads == 0 or c.engram_heads > 64 / (c.engram_max_ngram - 1) or
+            c.engram_layers.len > 4 or c.engram_pad >= c.vocab or c.bos >= c.vocab or c.eos >= c.vocab or
+            c.topk == 0 or c.experts == 0 or c.head_dim == 0 or c.window == 0) return error.BadConfig;
+        inline for (.{ c.eps, c.hc_eps, c.engram_gate_clamp, c.routed_scale, c.swiglu_limit }) |v|
+            if (!std.math.isFinite(v) or v <= 0) return error.BadConfig;
+        inline for (.{ c.rope.theta, c.rope.compress_theta, c.rope.factor, c.rope.beta_fast, c.rope.beta_slow }) |v|
+            if (!std.math.isFinite(v) or v <= 0) return error.BadConfig;
         if (c.hidden % 128 != 0 or c.expert_width % 128 != 0 or c.vocab % 128 != 0) return error.BadConfig;
         if (c.heads % c.o_groups != 0 or c.rope_dim > c.head_dim or c.topk > c.experts) return error.BadConfig;
         if (c.dspark_topk > c.dspark_experts and c.dspark_experts != 0) return error.BadConfig;
@@ -177,6 +197,23 @@ pub const Config = struct {
         // every compressed layer needs a KV source and an index source at or before it
         var l: u32 = 0;
         while (l < c.layers) : (l += 1) if (c.compressRatio(l) > 0 and (c.kvSource(l) == null or c.indexSource(l) == null)) return error.BadConfig;
+    }
+
+    /// Shared release capability; small logical fixtures are constructed explicitly with tiny().
+    pub fn validateRelease(c: *const Config) !void {
+        try c.validate();
+        const release: Config = .{};
+        inline for (.{ "vocab", "hidden", "layers", "heads", "head_dim", "rope_dim", "q_lora", "o_lora", "o_groups", "window", "experts", "shared_experts", "topk", "expert_width", "routed_scale", "norm_topk", "swiglu_limit", "index_heads", "index_dim", "index_topk", "candidate_source", "candidate_blocks", "candidate_block_size", "hc_mult", "hc_sinkhorn_iters", "hc_post_alpha", "engram_max_ngram", "engram_vocab", "engram_heads", "engram_head_dim", "engram_pad", "engram_compressed_vocab", "mtp_layers", "dspark_block", "dspark_noise_token", "dspark_markov_rank", "dspark_experts", "dspark_topk", "bos", "eos" }) |name| {
+            if (@field(c.*, name) != @field(release, name)) return error.UnsupportedArchitecture;
+        }
+        inline for (.{ "compress_ratios", "kv_sources", "index_sources", "engram_layers", "dspark_targets" }) |name| {
+            if (!std.mem.eql(u32, @field(c.*, name).items(), @field(release, name).items()))
+                return error.UnsupportedCacheLayout;
+        }
+        if (!std.mem.eql(u64, c.engram_rows.items(), release.engram_rows.items())) return error.UnsupportedCacheLayout;
+        if (!c.rope.yarn or c.rope.factor != 16 or c.rope.original_max_positions != 65536 or
+            c.rope.max_positions != 1048576 or c.rope.theta <= 1 or c.rope.compress_theta <= 1)
+            return error.UnsupportedArchitecture;
     }
 
     /// Layers the forward runs: the backbone, then the DSpark blocks (checkpoint mtp.*).
@@ -249,20 +286,73 @@ pub const Config = struct {
     }
 };
 
-fn intAs(comptime T: type, v: std.json.Value) !T {
+fn numberText(v: std.json.Value) ![]const u8 {
     return switch (v) {
-        .integer => |i| std.math.cast(T, i) orelse error.BadConfig,
-        .float => |f| if (@floor(f) == f) std.math.cast(T, @as(i64, @intFromFloat(f))) orelse error.BadConfig else error.BadConfig,
+        .number_string, .string => |s| s,
         else => error.BadConfig,
     };
 }
-
+fn intAs(comptime T: type, v: std.json.Value) !T {
+    const n = unsigned(u64, v) catch return error.BadConfig;
+    return std.math.cast(T, n) orelse error.BadConfig;
+}
 fn float(v: std.json.Value) !f64 {
-    return switch (v) {
-        .integer => |i| @floatFromInt(i),
-        .float => |f| f,
-        else => error.BadConfig,
-    };
+    const n = std.fmt.parseFloat(f64, try numberText(v)) catch return error.BadConfig;
+    if (!std.math.isFinite(n)) return error.BadConfig;
+    return n;
+}
+pub fn unsigned(comptime T: type, value: std.json.Value) !T {
+    const text = try numberText(value);
+    if (text.len == 0) return error.InvalidCharacter;
+    if (std.fmt.parseInt(T, text, 10)) |n| return n else |_| {}
+    var start: usize = 0;
+    const negative = text[0] == '-';
+    if (negative or text[0] == '+') start = 1;
+    const exp_pos = std.mem.indexOfAnyPos(u8, text, start, "eE") orelse text.len;
+    const exponent: i64 = if (exp_pos < text.len)
+        try std.fmt.parseInt(i32, text[exp_pos + 1 ..], 10)
+    else
+        0;
+    var digits: usize = 0;
+    var fractional: usize = 0;
+    var dot = false;
+    var nonzero = false;
+    for (text[start..exp_pos]) |ch| {
+        if (ch == '.' and !dot) {
+            dot = true;
+            continue;
+        }
+        if (ch < '0' or ch > '9') return error.InvalidCharacter;
+        digits += 1;
+        if (dot) fractional += 1;
+        nonzero = nonzero or ch != '0';
+    }
+    if (digits == 0) return error.InvalidCharacter;
+    if (!nonzero) return 0;
+    if (negative) return error.Overflow;
+    const scale = exponent - @as(i64, @intCast(fractional));
+    const discarded: usize = if (scale < 0) @intCast(-scale) else 0;
+    if (discarded >= digits) return error.InvalidNumber;
+    const kept = digits - discarded;
+    var n: T = 0;
+    var index: usize = 0;
+    for (text[start..exp_pos]) |ch| {
+        if (ch == '.') continue;
+        if (index < kept) {
+            const digit: T = @intCast(ch - '0');
+            if (n > (std.math.maxInt(T) - digit) / 10) return error.Overflow;
+            n = n * 10 + digit;
+        } else if (ch != '0') return error.InvalidNumber;
+        index += 1;
+    }
+    // Any nonzero ordinary integer overflows after at most 20 decimal shifts.
+    if (scale > 20) return error.Overflow;
+    var shift: i64 = 0;
+    while (shift < scale) : (shift += 1) {
+        if (n > std.math.maxInt(T) / 10) return error.Overflow;
+        n *= 10;
+    }
+    return n;
 }
 
 fn list(comptime L: type, v: std.json.Value) !L {
@@ -295,7 +385,7 @@ fn rope(text: std.json.ObjectMap) !Rope {
     return r;
 }
 
-/// A small config with every V4.1 mechanism (cuda/config.py tiny_config): SWA layers, a ratio-2 KV source and its readers, a ratio-1 source that is also the candidate source, a Reindex layer, Engram on layer 1, two DSpark blocks; split widths are 256 so TP=2 keeps 128-value blocks.
+/// A small config with every V4.1 mechanism; split widths are 256 so TP=2 keeps 128-value blocks.
 pub fn tiny() Config {
     return .{
         .vocab = 256,
@@ -337,4 +427,55 @@ pub fn tiny() Config {
         .dspark_topk = 2,
         .rope = .{ .factor = 4.0, .original_max_positions = 64, .max_positions = 256 },
     };
+}
+
+fn requireCheckpoint(top: std.json.ObjectMap, text: std.json.ObjectMap) !void {
+    const model = top.get("model_type") orelse return error.MissingField;
+    if (model != .string or !std.mem.eql(u8, model.string, "deepseek_v41")) return error.UnsupportedCheckpoint;
+    const quant = top.get("quantization_config") orelse return error.MissingField;
+    if (quant != .object) return error.BadConfig;
+    const method = quant.object.get("quant_method") orelse return error.MissingField;
+    const version = quant.object.get("version") orelse return error.MissingField;
+    if (method != .string or !std.mem.eql(u8, method.string, "exl3") or version != .string or
+        (!std.mem.eql(u8, version.string, "1") and !std.mem.startsWith(u8, version.string, "1."))) return error.UnsupportedCheckpoint;
+    inline for (.{ "candidate_block_size", "candidate_source_layer_id", "candidate_topk_blocks", "compress_ratios", "compress_rope_theta", "engram_compressed_vocab_size", "engram_head_dim", "engram_layer_ids", "engram_max_ngram_size", "engram_n_heads", "engram_num_embeddings", "engram_pad_token_id", "engram_vocab_size", "hc_eps", "hc_mult", "hc_sinkhorn_iters", "head_dim", "hidden_size", "index_head_dim", "index_n_heads", "index_source_layer_ids", "index_topk", "kv_source_layer_ids", "max_position_embeddings", "moe_intermediate_size", "n_routed_experts", "n_shared_experts", "norm_topk_prob", "num_attention_heads", "num_experts_per_tok", "num_hidden_layers", "num_key_value_heads", "num_nextn_predict_layers", "o_groups", "o_lora_rank", "q_lora_rank", "qk_rope_head_dim", "rms_norm_eps", "rope_theta", "routed_scaling_factor", "scoring_func", "sliding_window", "swiglu_limit", "topk_method", "vocab_size" }) |key| {
+        if (!text.contains(key)) return error.MissingField;
+    }
+    if (try intAs(u32, text.get("num_key_value_heads").?) != 1) return error.UnsupportedArchitecture;
+    const r = text.get("rope_scaling") orelse return error.MissingField;
+    if (r != .object) return error.BadConfig;
+    inline for (.{ "rope_type", "factor", "beta_fast", "beta_slow", "original_max_position_embeddings" }) |key|
+        if (!r.object.contains(key)) return error.MissingField;
+    const kind = r.object.get("rope_type").?;
+    if (kind != .string or !std.mem.eql(u8, kind.string, "yarn")) return error.UnsupportedArchitecture;
+}
+
+test "config integers retain exact unsigned boundaries and integral notation" {
+    try std.testing.expectEqual(@as(u32, 4294967295), try unsigned(u32, .{ .number_string = "4294967295" }));
+    try std.testing.expectEqual(@as(u64, 18446744073709551615), try unsigned(u64, .{ .number_string = "18446744073709551615.0" }));
+    try std.testing.expectEqual(@as(u32, 5120), try unsigned(u32, .{ .number_string = "5.120e3" }));
+    try std.testing.expectEqual(@as(u32, 5120), try unsigned(u32, .{ .string = "5120" }));
+    try std.testing.expectEqual(@as(u32, 0), try unsigned(u32, .{ .number_string = "-0.0" }));
+    try std.testing.expectError(error.Overflow, unsigned(u32, .{ .number_string = "4294967296" }));
+    try std.testing.expectError(error.Overflow, unsigned(u64, .{ .number_string = "18446744073709551616" }));
+    try std.testing.expectError(error.Overflow, unsigned(u64, .{ .number_string = "18446744073709551616.0" }));
+    try std.testing.expectError(error.InvalidNumber, unsigned(u64, .{ .number_string = "18446744073709551615.1" }));
+    try std.testing.expectError(error.InvalidNumber, unsigned(u32, .{ .number_string = "5120.0000000000000000001" }));
+    try std.testing.expectError(error.InvalidNumber, unsigned(u32, .{ .number_string = "1e-100" }));
+    try std.testing.expectError(error.Overflow, unsigned(u32, .{ .number_string = "-1.0" }));
+    try std.testing.expectError(error.Overflow, unsigned(u32, .{ .number_string = "1e100" }));
+}
+
+test "Engram pad alias cannot override the admitted token id" {
+    const a = std.testing.allocator;
+    const good = @embedFile("fixtures/config.json");
+    const bad = try std.fmt.allocPrint(a, "{{\"engram_pad_id\":129280,{s}", .{good[1..]});
+    defer a.free(bad);
+    try std.testing.expectError(error.BadConfig, Config.parse(a, bad));
+    const nested = try std.mem.replaceOwned(u8, a, good, "\"engram_pad_token_id\": 2", "\"engram_pad_token_id\": 2, \"engram_pad_id\": 129280");
+    defer a.free(nested);
+    try std.testing.expectError(error.BadConfig, Config.parse(a, nested));
+    const conflict = try std.fmt.allocPrint(a, "{{\"engram_pad_id\":3,{s}", .{good[1..]});
+    defer a.free(conflict);
+    try std.testing.expectError(error.BadConfig, Config.parse(a, conflict));
 }

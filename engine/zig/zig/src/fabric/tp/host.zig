@@ -1,4 +1,4 @@
-//! In-process ranks over host memory: the `Collective` contract without a GPU (a rendezvous a call, desyncs refused, abort wakes waiters).
+//! In-process ranks over host memory: the `Collective` contract without a GPU (desyncs refused, abort wakes waiters).
 const std = @import("std");
 const collective = @import("collective.zig");
 const reference = @import("reference.zig");
@@ -24,7 +24,7 @@ pub const Group = struct {
     arrived: std.atomic.Value(u32) = .init(0),
     generation: std.atomic.Value(u32) = .init(0),
     aborted: std.atomic.Value(bool) = .init(false),
-    /// Ranks (a bit each) whose transport refuses device lengths: their `all_gather_v` moves whole strides (NCCL's fallback; tests).
+    /// Ranks (a bit each) whose transport refuses device lengths: their `all_gather_v` moves whole strides (tests).
     var_refuse: u32 = 0,
     slots: [max_ranks][max_ranks]Slot = @splat(@splat(.{})),
 
@@ -149,8 +149,7 @@ pub const Rank = struct {
         return @as([*]const i32, @ptrFromInt(p))[0..world];
     }
 
-    /// Copies only each rank's lens[r] bytes (the rest of recv stays as it was, so a reader past a length sees stale bytes);
-    /// a rank in `var_refuse` takes whole strides. Lengths that differ between ranks are refused on every rank.
+    /// Copies only each rank's lens[r] bytes (`var_refuse` ranks take whole strides); unequal lengths are refused.
     fn allGatherV(ptr: *anyopaque, s: DevicePtr, r: DevicePtr, stride: usize, lens: DevicePtr, t: DType, _: collective.Stream) Error!void {
         const self = self_(ptr);
         const g = self.group;

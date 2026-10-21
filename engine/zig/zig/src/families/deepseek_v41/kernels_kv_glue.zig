@@ -4,11 +4,22 @@ const cuda = @import("cuda");
 
 /// Mirrors kv_glue.cu; norm_out is an optional contiguous bf16 debug output, not used in production.
 pub const Args = extern struct {
-    x: u64 = 0, w: u64 = 0, cs: u64 = 0, v: u64 = 0, s: u64 = 0,
-    pos: u64 = 0, sl: u64 = 0, norm_out: u64 = 0,
-    x_stride: i64 = 512, cs_stride: i64 = 64, v_stride: i64 = 576, s_stride: i64 = 8,
-    inv_k: f32 = 1.0 / 512.0, eps: f32 = 1e-20,
-    ring: c_int = 256, rows: c_int = 0,
+    x: u64 = 0,
+    w: u64 = 0,
+    cs: u64 = 0,
+    v: u64 = 0,
+    s: u64 = 0,
+    pos: u64 = 0,
+    sl: u64 = 0,
+    norm_out: u64 = 0,
+    x_stride: i64 = 512,
+    cs_stride: i64 = 64,
+    v_stride: i64 = 576,
+    s_stride: i64 = 8,
+    inv_k: f32 = 1.0 / 512.0,
+    eps: f32 = 1e-20,
+    ring: c_int = 256,
+    rows: c_int = 0,
 };
 comptime {
     std.debug.assert(@sizeOf(Args) == 112 and @offsetOf(Args, "inv_k") == 96 and @offsetOf(Args, "ring") == 104);

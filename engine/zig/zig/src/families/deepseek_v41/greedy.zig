@@ -1,6 +1,4 @@
-//! Greedy's host step (Python forward.greedy's per-rank max): a row's largest logit, the lowest column on ties, by
-//! the scalar rule `x > best` (so -0.0 == +0.0, and a NaN never wins unless it is column 0, which nothing beats).
-//! Vectorized: one pass for the maximum, then the first column holding it; the same column the scalar loop picks.
+//! Greedy's host step: a row's largest logit by `x > best`, the lowest column on ties (vectorized, same pick).
 
 const std = @import("std");
 

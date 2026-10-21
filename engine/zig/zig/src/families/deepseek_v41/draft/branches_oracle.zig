@@ -1,8 +1,4 @@
-//! Tree gates without a trained drafter: `TreeOracle` drafts from a known serial decode as drive.Oracle does, and
-//! hands lanes candidates whose second first token is the serial one exactly when the main chain's first draft is
-//! corrupted, so tree rounds see a sibling lose (most rounds) and win (every fourth), through any `Target` (the GPU
-//! forward on a backbone prefix, where DSpark's own acceptance is 0, or the CPU twin). `generate` runs one stream with
-//! the tree knobs.
+//! Tree gates without a trained drafter: `TreeOracle` drafts the serial decode with a sibling that loses or wins.
 const std = @import("std");
 const lanes = @import("lanes");
 const iface = @import("iface.zig");
@@ -57,8 +53,7 @@ pub const TreeOracle = struct {
         return if (j < x.serial.len) x.serial[@intCast(j)] else x.vocab - 1;
     }
 
-    /// Round r: r % 4 == 3 corrupts draft 0 (the sibling holds the serial token: it wins), r % 4 == 1 corrupts draft
-    /// (r / 4) % block (a partial accept), else none. Row i's candidates: [draft i (2.0), the alternative (1.9)].
+    /// Round r: r % 4 == 3 corrupts draft 0 (sibling wins), r % 4 == 1 draft (r / 4) % block; candidates [draft, alt].
     fn propose(p: *anyopaque, asks: []const iface.Ask, out: []iface.Proposal) anyerror!void {
         const x = self(p);
         for (asks, out) |a, o| {
@@ -94,8 +89,7 @@ pub const TreeOracle = struct {
 
 pub const Result = struct { tokens: []u32, drafted: u64, accepted: u64, trees: u64, sib_wins: u64, rounds: u64 };
 
-/// `max_new` tokens after `prompt` through lanes (one slot, greedy) with the tree knobs `set`; the cost table's
-/// defaults (Python default_costs) price the rounds.
+/// `max_new` tokens after `prompt` through lanes (one slot, greedy) with tree knobs `set`, default cost table.
 pub fn generate(gpa: std.mem.Allocator, target: iface.Target, pass: iface.Pass, shape: dspark.Shape, prompt: []const u32, max_new: u32, set: tree.Settings) !Result {
     var c = try costs_mod.defaults(gpa, 64);
     defer c.deinit(gpa);

@@ -1,4 +1,4 @@
-//! The NVMe tier on real files: whole and delta files written from a host pool and read back onto other pages, bit for bit, split ranks, damage.
+//! The NVMe tier on real files: whole and delta files round-trip bit for bit, split ranks, damage.
 
 const std = @import("std");
 const testing = std.testing;

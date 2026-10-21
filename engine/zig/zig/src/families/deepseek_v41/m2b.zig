@@ -21,7 +21,7 @@ const dspark_gpu = @import("dspark_gpu.zig");
 
 const rows_lanes = [_]u32{ 1, 2, 3, 4, 5, 6, 7, 8 };
 const named = @import("named.zig");
-const load = @import("load.zig");
+const load = @import("cuda_weights.zig");
 const buffers = @import("buffers.zig");
 const forms = @import("forms.zig");
 const run = @import("run.zig");
@@ -116,7 +116,7 @@ pub fn main(gpa: std.mem.Allocator, io: std.Io, pack_dir: []const u8, ref: []con
     var runner: run.Runner = .{ .gpa = gpa, .d = &driver, .stream = stream, .kernels = &kernels, .triton = &aot, .weights = &w };
     defer runner.deinit();
     // TF_DSV41_PROFILE=<file>: every eager decode window's calls timed (profile.zig), written at the end
-    runner.prof = try @import("profile.zig").Profile.fromEnv(gpa, &driver);
+    runner.prof = if (try @import("profile.zig").Profile.fromEnv(gpa, &driver)) |p| p.timer() else null;
     defer if (runner.prof) |p| p.close(io);
     // M2B_TOPP (the reference's TF_DSV41_EXPERT_TOPP): unset = top-p off (no prune; the router's tail folds kit
     // rounding and grouping), else prod's prune at that mass

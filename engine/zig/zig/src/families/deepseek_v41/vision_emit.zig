@@ -6,7 +6,7 @@
 //! prefill_moe.forward at that row count, the same function vision.moe calls. Only the input / output rows and the
 //! bias (gate.bias_vl for the image call) differ by name; the text call's ticket is the layer's second.
 const std = @import("std");
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const block_prefill = @import("block_prefill.zig");
 const check = @import("m1_check.zig");

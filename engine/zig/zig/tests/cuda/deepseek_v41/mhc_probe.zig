@@ -1,29 +1,4 @@
-//! `tf-dsv41-test mhc-probe [windows]`: what makes prod's 16-row mHC boundary slow, one variable at a time (after
-//! mhc-alloc showed allocation and page size are not it). The same launch as mhc-alloc (boundary_kernel with R1's tail,
-//! deferred coefficients, bf16 fn and partials, 2 ranks; 80 sites, each its own fn16 / base / scale / norm), timed with
-//! CUDA events around each launch; each line one variant, the median / p10 / p90 in us:
-//!   overhead     an event pair around a 4-byte memset: the timing's own cost (subtract it from the others)
-//!   cold-write   a 512 MiB memset between launches (mhc-alloc's: L2 full of dirty lines to write back)
-//!   cold-read    256 MiB prefetched into L2 between launches (clean lines, as the weight streaming leaves it)
-//!   engine       cold-read, then the gathered partials written just before (the exchange): the engine's pattern
-//!   warm         the same site over and over, nothing between: every input L2-resident
-//!   aligned2m    engine, the window's buffers each at its own 2 MiB-aligned base (L2 slice aliasing)
-//!   stagger      engine, the buffers 1 MiB + k x 384 B apart
-//!   cross        engine, the partials written on another stream and joined by an event (the exchange's dependency)
-//!   sysmem       engine, then the exchange's host traffic: 160 KiB written to pinned host memory (the send slot)
-//!                and 320 KiB read back from it (the receive slot) by kernels just before the boundary
-//!   devmem       sysmem's two kernels on device memory instead (its control)
-//!   spin-N       engine while N host threads busy-spin (N = 1, half the cores, all of them): GB10's CPU and GPU share
-//!                one power budget; a busy host (an engine spinning in cuEventSynchronize, the RoCE proxy, pollers)
-//!                may cost the SM clock that latency-bound kernels need
-//! Reading: compare lines, not absolutes. engine ~ cold-read: the exchange's fresh lines don't matter. aligned2m or
-//! stagger far from engine: the buffers' relative addresses matter (L2 slices): then match Python's layout. cross
-//! above engine: the dependency costs inside the kernel. engine ~ in-engine nsys (26 us Zig, 16 Python) after the
-//! overhead: the bench reproduces the engine; well below: the engine's slowness comes from outside the launch.
-//! sysmem well above devmem: touching pinned host memory (tp_roce's slots) slows the next kernel: the exchange is
-//! the writer; sysmem ~ devmem: the exchange's host traffic is not it.
-//! spin-N rising with N toward the in-engine 26-31 us: host load slows the GPU's small kernels: TF_CUDA_SCHED=yield /
-//! blocking (and fewer spinning threads) is the lever; flat: host load is not it.
+//! `tf-dsv41-test mhc-probe [windows]`: the 16-row mHC boundary timed under one variable at a time (cold L2, spin...).
 
 const std = @import("std");
 const cuda = @import("cuda");
@@ -78,17 +53,34 @@ const Bench = struct {
         const p = b.win.ptr;
         const cs: u64 = R * 24 * 4;
         return .{
-            .x = p + off.x,                .xs = 4 * D,                 .xout = p + off.xout,
-            .g = p + off.g,                .gr = R * D,                 .world = W,
-            .gbf16 = 1,                    .post = p + off.coef + cur * cs + R * 4 * 4,
-            .comb = p + off.coef + cur * cs + R * 8 * 4,                .pre = p + off.coef + cur * cs,
-            .@"fn" = s.fnw.ptr,            .base = s.base.ptr,          .scale = s.scale.ptr,
-            .part = p + off.part,          .c = p + off.c,              .nw = s.nw.ptr,
-            .out = p + off.out,            .opre = p + off.coef + (1 - cur) * cs,
-            .opost = p + off.coef + (1 - cur) * cs + R * 4 * 4,         .ocomb = p + off.coef + (1 - cur) * cs + R * 8 * 4,
-            .cnt = p + off.cnt,            .R = R,                      .eps = 1e-6,
-            .hc_eps = 1e-6,                .post_alpha = 2.0,           .iters = 20,
-            .spin = 8000,                  .@"defer" = 1,
+            .x = p + off.x,
+            .xs = 4 * D,
+            .xout = p + off.xout,
+            .g = p + off.g,
+            .gr = R * D,
+            .world = W,
+            .gbf16 = 1,
+            .post = p + off.coef + cur * cs + R * 4 * 4,
+            .comb = p + off.coef + cur * cs + R * 8 * 4,
+            .pre = p + off.coef + cur * cs,
+            .@"fn" = s.fnw.ptr,
+            .base = s.base.ptr,
+            .scale = s.scale.ptr,
+            .part = p + off.part,
+            .c = p + off.c,
+            .nw = s.nw.ptr,
+            .out = p + off.out,
+            .opre = p + off.coef + (1 - cur) * cs,
+            .opost = p + off.coef + (1 - cur) * cs + R * 4 * 4,
+            .ocomb = p + off.coef + (1 - cur) * cs + R * 8 * 4,
+            .cnt = p + off.cnt,
+            .R = R,
+            .eps = 1e-6,
+            .hc_eps = 1e-6,
+            .post_alpha = 2.0,
+            .iters = 20,
+            .spin = 8000,
+            .@"defer" = 1,
         };
     }
 

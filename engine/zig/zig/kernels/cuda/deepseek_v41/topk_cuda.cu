@@ -1,25 +1,14 @@
-// Device code of src/tensorfold/families/deepseek_v41/cuda/csa2/topk_cuda.cu (git blob 839ee8a85f0e at 78b703d; the whole file, DSV41_ATTN_NO_TORCH defined),
-// generated and checked by zig/kernels/cuda/deepseek_v41/sync.py. Do not edit: change the Python source.
+// Copy of src/tensorfold/families/deepseek_v41/cuda/csa2/topk_cuda.cu (blob 839ee8a85f0e): sass_check.sh
 #define DSV41_ATTN_NO_TORCH
-// SPDX-License-Identifier: MIT
-// Copyright (c) 2026 Jay Leaton. The DeepSeek-V4.1-Flash family of TensorFold (Apache-2.0): see THIRD_PARTY_NOTICES.md.
-// REWRITE-PLAN e3: the indexer's decode top-k (dtopk's select / blocks / gather_cand) as a radix select over a
-// CLUSTER of CTAs a row (TF_DSV41_ATTN_CUDA=1). attn_cuda.py has the notes; attn_cuda_emu.topk is this in numpy.
-//
-// The selection is dtopk's, exactly: the top K of index.py's unique keys (score image, then the lower position),
-// positions ascending, -1 padded, plus the row's visible count. Scan order IS ascending position in every mode taken
-// here (dense positions, ascending blocks, ascending candidate blocks with -1 last), so the key order is
-// (score image descending, then scan order): a 32-bit radix select of the K-th image T (8-bit digits, <= 4 passes,
-// stopping when a digit prefix holds exactly K), then the entries above T and the first (K - above) entries equal
-// to T in scan order. The image: s == 0 -> 0, NaN -> 0x7FC00000, negative -> bits ^ 0x7FFFFFFF, then ^ 0x80000000
-// (valid images are >= 0x007FFFFF; 0 marks a missing entry).
-//
-// A row is a cluster of CL <= 8 CTAs (co-scheduled: barrier.cluster never deadlocks), CTA q owns entries
-// [q SL, (q + 1) SL) as images in shared memory (one global read). A pass: each CTA's histogram of its matching
-// entries (warp-aggregated shared atomics), cluster.sync, every CTA sums the CL histograms through DSMEM (integers:
-// order-free) and takes the same digit. Then the CTAs exchange (above, equal) counts, each knows its output offset
-// and its quota of equal images, and compacts its entries in scan order (a thread owns SL / 512 consecutive ones).
-// Job z of the grid (z < 2): the candidate source's select and blocks share one launch.
+
+
+
+// Indexer decode top-k (TF_DSV41_ATTN_CUDA=1): top K of unique keys (score image, then lower position), exact.
+
+// Radix select of the K-th 32-bit image over a cluster of <= 8 CTAs a row (DSMEM histograms), then scan-order pick.
+
+// Image: s == 0 -> 0, NaN -> 0x7FC00000, negative -> bits ^ 0x7FFFFFFF, then ^ 0x80000000 (0 marks missing).
+
 #include <cstdint>
 #include <cuda_runtime.h>
 #include <cooperative_groups.h>

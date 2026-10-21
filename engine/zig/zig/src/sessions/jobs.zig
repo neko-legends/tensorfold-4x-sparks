@@ -1,8 +1,4 @@
-//! Parks and restores off the round: a tier thread runs each job's file I/O (disk.writeFile / readFile) while the live slots decode.
-//!
-//! A job owns everything it reads (ids, page lists, blobs): the round thread may change the index meanwhile. Its pool pages stay held
-//! until the plan settles it (Store.settle), so page ids and the index change at the same point on both ranks whatever each rank's
-//! I/O took. Without the thread (async off) `submit` runs the job at once on the caller's thread.
+//! Parks and restores off the round: a tier thread runs each job's file I/O until the plan settles it (Store.settle).
 
 const std = @import("std");
 const Io = std.Io;

@@ -4,7 +4,7 @@
 //! MoE call sharing that plan, `split` a launch a width present on gm2_kernel.
 const std = @import("std");
 const testing = std.testing;
-const calls = @import("calls.zig");
+const calls = @import("block_calls.zig");
 const block = @import("block.zig");
 const bp = @import("block_prefill.zig");
 const check = @import("m1_check.zig");

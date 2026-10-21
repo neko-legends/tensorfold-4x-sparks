@@ -130,7 +130,6 @@ const Wire = struct {
         w.status = status;
         w.payload = payload;
     }
-
     /// Anthropic's own keepalive event.
     fn ping(ctx: *anyopaque) error{Closed}!void {
         const w: *Wire = @ptrCast(@alignCast(ctx));

@@ -1,17 +1,4 @@
-//! A window's keyed choices from the ranks' logits, as the Python engine makes them (``slots.cand_gather``,
-//! ``vsample.merge``, ``nucleus.finish``, ``batch._choose``): every rank runs the same steps, so its collectives pair up,
-//! and every rank decides alike (the decisions read only gathered data and the sampling); rank 0's tokens are used.
-//!
-//! 1. Each rank's best k = min(count, V) of each row (``pick.top``: value descending, ties to the lower id), packed
-//!    fp32 [n, 2k] (values, then global ids as int32 bits), all-gathered in rank order.
-//! 2. Nucleus rows (T > 0, top_k 0, 0 < top_p < 1): each rank's float64 (max, sum exp(v / T - max / T)) a row
-//!    (``nucleus.row_stats``), all-gathered.
-//! 3. ``serve/sampling.zig``'s ``Picker`` on the merged rows: the token, or ``.full_row`` (a nucleus row its candidates
-//!    cannot decide). Those rows, and every row when k exceeds the device top-k's bound, are gathered whole (each rank's
-//!    vocabulary slice) and picked again from all of them (``exact_sampling.choose_rows``).
-//!
-//! The device side sits behind `Device` (sampling_gpu.zig: topk_keys.cu + sampling.cu; `HostDevice`: the reference
-//! the host tests run, addresses being host pointers as in ``tp.host``).
+//! A window's keyed choices from the ranks' logits: every rank runs the same steps alike; rank 0's tokens are used.
 
 const std = @import("std");
 const tp = @import("tp");
@@ -20,8 +7,7 @@ const shard = @import("shard.zig");
 
 pub const Sampling = smp.Sampling;
 
-/// The device top-k's bounds (topk_keys.cu KMAX, pick.COLS): a larger k, or a wider slice (one rank), gathers whole
-/// rows instead (the same tokens: the merged rows are cut to `count` either way).
+/// The device top-k's bounds: a larger k, or a wider slice, gathers whole rows instead (the same tokens).
 pub const max_k: usize = 1024;
 pub const max_cols: usize = 1 << 16;
 
@@ -50,10 +36,7 @@ pub const Device = struct {
 extern "c" fn exp(x: f64) f64;
 extern "c" fn log(x: f64) f64;
 
-/// glue.cu vs_choose on the host (its mirror, step for step; libc's exp / log where the kernel has libdevice's): each
-/// row's token from the gathered candidates `g` [W][n][2 k] (count 0: all W k) under `s`, row r drawn at pos0 + r
-/// (mod 2^64, as the kernel's int64 sum);
-/// -1 for a nucleus row. The test holds it to the pipeline's own picks.
+/// glue.cu vs_choose mirrored on the host: row tokens from gathered candidates `g`, row r at pos0 + r; -1: nucleus.
 pub fn chooseMirror(scratch: []u64, work: []f64, g: []const f32, W: usize, n: usize, k: usize, count: usize, s: Sampling, pos0: u64, out: []i64) void {
     const C = W * k;
     for (0..n) |r| {
@@ -161,8 +144,7 @@ pub const Pipe = struct {
     host: std.array_list.Aligned(u8, .@"16") = .empty,
     full: std.ArrayList(u32) = .empty,
     picks: std.ArrayList(smp.Pick) = .empty,
-    /// the candidates' download taken over (sampling_gpu.zig: an async copy, the device start enqueued behind it, then
-    /// the wait): true when it downloaded `host`; null or false: the device's own download
+    /// the candidates' download taken over: true when it downloaded `host`; null or false: the device's own download
     after_gather: ?AfterGather = null,
     /// rows taken whole in the last call (the nucleus fallback or k > max_k): the tests' and logs' count
     whole_rows: usize = 0,
@@ -193,8 +175,7 @@ pub const Pipe = struct {
         return p.host.items;
     }
 
-    /// The keyed choices of rows [0, n) of `lg` (fp32 [n, V]) under `s` (T > 0), row i keyed at `positions[i]`
-    /// (followers: null, their tokens are dropped). Every rank calls it with the same n and sampling.
+    /// The keyed choices of rows [0, n) of `lg` under `s` (T > 0), row i keyed at `positions[i]` (followers: null).
     pub fn choose(p: *Pipe, dev: Device, lg: u64, n: usize, s: Sampling, positions: ?[]const u64, out: []u32) !void {
         std.debug.assert(out.len >= n and n > 0);
         const W: usize = p.comm.world();
@@ -252,8 +233,7 @@ pub const Pipe = struct {
         if (p.full.items.len > 0) try p.wholeRows(dev, lg, s, 0, positions, out);
     }
 
-    /// The rows in `full`, each gathered whole (every rank's vocabulary slice, rank order) and picked from all of its
-    /// tokens (``count`` = their cut; 0: all of them, the nucleus fallback's ``fw.vocab``).
+    /// The rows in `full`, each gathered whole in rank order and picked from all its tokens (`count` = their cut).
     fn wholeRows(p: *Pipe, dev: Device, lg: u64, s: Sampling, count: usize, positions: ?[]const u64, out: []u32) !void {
         for (p.full.items) |r| out[r] = try p.wholeRow(dev, lg + 4 * @as(u64, r) * p.V, s, count, if (positions) |ps| ps[r] else 0);
     }
@@ -290,12 +270,10 @@ pub const Pipe = struct {
         return p.picker.pick(r, position, s).token; // no statistics: never .full_row
     }
 
-    /// A sampled segment of a forward's rows: rows [row0, row0 + n) of the logits under `s`, row i keyed at
-    /// `positions[i]` (followers: null), its tokens into `out`.
+    /// A sampled segment: logits rows [row0, row0 + n) under `s`, row i keyed at `positions[i]`, tokens into `out`.
     pub const Seg = struct { row0: u32, n: u32, s: Sampling, positions: ?[]const u64 = null, out: []u32 };
 
-    /// Whether `chooseSegments` takes a segment under `s`: a keyed row on the candidates' path (top_k rows, or nucleus
-    /// rows with TF_DSV41_NUCLEUS on), its count within the device top-k and one rank's slice within its columns.
+    /// Whether `chooseSegments` takes a segment under `s`: a keyed candidates-path row within the device bounds.
     pub fn batchable(p: *const Pipe, s: Sampling) bool {
         if (!sampled(s) or p.vs.max > max_cols) return false;
         const count = countOf(s, p.vocab, p.nucleus);
@@ -303,22 +281,10 @@ pub const Pipe = struct {
         return @min(count, p.vs.min) <= max_k;
     }
 
-    /// `chooseSegments`' hook over the gathered candidates [W][n][2 k] (rows from the first segment's row0), before
-    /// their download (sampling_gpu.zig: the device choices of its segments); true when it downloaded `host`.
+    /// `chooseSegments`' hook over the gathered candidates before their download; true when it downloaded `host`.
     pub const SegGather = struct { ctx: *anyopaque, run: *const fn (ctx: *anyopaque, gathered: u64, n: usize, k: usize, segs: []const Seg, host: []u8) anyerror!bool };
 
-    /// Several keyed segments of one forward (`batchable`, ascending, not overlapping) in one call, as Python's one
-    /// ``cand_gather`` (and one statistics exchange) a forward: the top k = the segments' largest count over rows
-    /// [first row0, last end) (rows between them that no segment holds are computed and never read), the nucleus
-    /// segments' statistics each at its own T, one gather of each, one download, then each row picked as `choose`
-    /// picks it, cut to its own count.
-    ///
-    /// Exactness. Each device step is a row's own (topk_keys a CTA a row, pack a row, the statistics a row from its
-    /// row and T alone), so nothing is reduced in another order. A row whose count is below k gets more candidates
-    /// than `choose` would gather (k instead of its count from each rank); its merge (``vsample.merge``) sorts every
-    /// rank's candidates and keeps its count: the global top `count` by (value, then lower id), the keys unique, and
-    /// each of them is within its own rank's top `count` (fewer than `count` keys of the row beat it on any rank), so
-    /// the kept candidates and their order are `choose`'s. Rank 0's tokens are the same; every rank calls it alike.
+    /// Several keyed segments of one forward in one gather; each row's kept candidates and order equal `choose`'s.
     pub fn chooseSegments(p: *Pipe, dev: Device, lg: u64, segs: []const Seg, hook: ?SegGather) !void {
         std.debug.assert(segs.len > 0);
         const W: usize = p.comm.world();

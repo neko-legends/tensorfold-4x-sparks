@@ -1,39 +1,14 @@
-//! TF_DSV41_CALIB=measure (and `zig` without a stored Zig table): the served engine's own draft-cost table, measured
-//! at boot as Python prod's calib.measure measures its engine (tensorfold-decode1 8474f31 deepseek_v41/cuda/calib.py;
-//! draft/calib_measure.zig holds the plan and the arithmetic, host-tested against Python).
-//!
-//! - **The text.** glm5_next.spark.calib.prompt_ids: calib_measure.text in the checkpoint's tokens (tokenizer.json of
-//!   TF_DSV41_GRAMMAR_TOKENIZER, else the pack dir), the ids below the vocabulary, the first 256; under 16 (or no
-//!   tokenizer): fallback_ids. Rank 0 only: the followers get every id on the plan link with the operations.
-//! - **The windows.** `n` slots (calib_measure.Plan: 1 on a one-slot engine; 4 on prod's 4-slot shape, the widest
-//!   bucket's 64 rows over 16-row slots), slot i's text the prompt less its last 7 x i tokens. Each slot prefills its
-//!   text but the last token through the served target (GpuTarget.prefill, the session store detached on rank 0, so no
-//!   entry is saved or resumed; the served verify tail's pending window is kept), decodes its greedy continuation with
-//!   1-row windows (keep 1 each), and is released and prefilled again. Every timed window is then a verify window at
-//!   the text's last token (row 0) over the model's own continuation, through `Target.window` (the greedy pick
-//!   included, as Python's fw.window(count=1)), and is **dropped** after its end mark (GpuTarget.dropWindow: op_rows_drop
-//!   in row mode, op 20 on one slot): nothing is committed, so every timed run sees the same slot state (position,
-//!   Engram tail, ratio-2 carries, session ids); the next window rewrites the dropped rows' positions before any read,
-//!   as a rejected draft's. The DSpark pass is timed as one ask on slot 0 at its text's last token. Then every slot is
-//!   released and its drafter context reset: the pool's pages are back and nothing is pending.
-//! - **Both ranks in step.** The followers run every operation as rank 0 sends it (Forward.follow), so the collectives
-//!   pair up as in served rounds. Around each timed run rank 0 sends op_calib_mark (64): every rank synchronizes its
-//!   device (cuCtxSynchronize, Python's torch.cuda.synchronize) and reads its monotonic clock; at the end op 65
-//!   all-gathers every rank's samples (end - start, ns), and rank 0 takes each entry's statistic on each rank, the
-//!   slower rank's microsecond int (Python's gather_max), and builds the table (calib_measure.Plan.build).
-//! - **Graphs.** The warm-ups capture each window's graph (row graphs, one-slot graphs: first use); the timed runs
-//!   replay them, and the captures stay in the cache for serving.
-//! - **Stored.** calib_env.store: calib-zig-<shape hash>.json in TF_DSV41_CALIB_DIR (or ~/.cache/tensorfold/
-//!   dsv41-calib), Python's keys plus `"engine": "zig"`; TF_DSV41_CALIB=zig reads it at the next boot.
+//! TF_DSV41_CALIB=measure (or `zig` without a stored table): the engine's draft-cost table, measured at boot.
 const std = @import("std");
-const model = @import("model.zig");
+const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
+const model = @import("cuda_model.zig");
 const iface = @import("draft/iface.zig");
 const cm = @import("draft/calib_measure.zig");
 const calib_env = @import("draft/calib_env.zig");
 const costs_mod = @import("draft/costs.zig");
 const dspark = @import("draft/dspark.zig");
 const rowtab = @import("rowtab.zig");
-const m3 = @import("m3.zig");
+const gate_lanes = @import("gate_lanes.zig");
 const ph = @import("phases.zig");
 const tokenizer = @import("tokenizer");
 const Allocator = std.mem.Allocator;
@@ -50,24 +25,24 @@ pub const Measured = struct {
     runs: usize = 0,
 };
 
-/// The calibration prompt (rank 0): glm5_next.spark.calib.prompt_ids over the checkpoint's tokenizer. gpa-owned.
+/// The calibration prompt (rank 0): the calibration text's ids over the checkpoint's tokenizer. gpa-owned.
 pub fn promptOf(gpa: Allocator, io: std.Io, dir: []const u8, vocab: u32) ![]u32 {
     var fb: [64]u32 = undefined;
     const tok_dir = if (std.c.getenv("TF_DSV41_GRAMMAR_TOKENIZER")) |d| std.mem.span(d) else dir;
     var t = tokenizer.loadTokenizer(io, gpa, tok_dir) catch |e| {
-        log.warn("calibration: no tokenizer in {s} ({t}); the fixed fallback ids", .{ tok_dir, e });
+        if (!quiet) log.warn("calibration: no tokenizer in {s} ({t}); the fixed fallback ids", .{ tok_dir, e });
         return gpa.dupe(u32, cm.fallbackIds(vocab, &fb));
     };
     defer t.deinit();
     const ids = t.encode(gpa, cm.text) catch |e| {
-        log.warn("calibration: the text did not encode ({t}); the fixed fallback ids", .{e});
+        if (!quiet) log.warn("calibration: the text did not encode ({t}); the fixed fallback ids", .{e});
         return gpa.dupe(u32, cm.fallbackIds(vocab, &fb));
     };
     defer gpa.free(ids);
     return gpa.dupe(u32, cm.promptIds(ids, vocab, &fb));
 }
 
-/// Rank 0: the measurement (calib.measure) on the loaded engine; the followers run it through the plan link.
+/// Rank 0: the measurement on the loaded engine; the followers run it through the plan link.
 pub fn measure(gpa: Allocator, m: *model.Model, ids: []const u32, how: cm.Method, rows_cap: u64) !Measured {
     const gt = &m.gt;
     const f = &m.f;
@@ -82,12 +57,12 @@ pub fn measure(gpa: Allocator, m: *model.Model, ids: []const u32, how: cm.Method
         l.* = cm.cutOf(ids.len, @intCast(i));
         if (l.* + rows + 2 > f.opts.limit) return error.CalibContext;
     }
-    // rank 0's session store detached: a calibration text is neither resumed nor saved (Python prefills fw directly)
+    // rank 0's session store detached: a calibration text is neither resumed nor saved
     const store = gt.sessions;
     gt.sessions = null;
     defer gt.sessions = store;
     try prefillAll(tgt, gt, pass, ids, lens[0..plan.n], false);
-    // each slot's greedy continuation, 1-row windows kept one by one (calib.measure's `conts`)
+    // each slot's greedy continuation, 1-row windows kept one by one
     var conts: [4][cm.max_rows]u32 = undefined;
     for (lens[0..plan.n], 0..) |l, i| {
         const slot: u32 = @intCast(i);
@@ -111,7 +86,7 @@ pub fn measure(gpa: Allocator, m: *model.Model, ids: []const u32, how: cm.Method
         toks[i][0] = ids[l - 1];
         @memcpy(toks[i][1..rows], conts[i][0 .. rows - 1]);
     }
-    const shape = m3.shapeOf(f);
+    const shape = gate_lanes.shapeOf(f);
     if (shape.block > cm.max_rows) return error.CalibBlock;
     var drafts: [cm.max_rows]u32 = undefined;
     var conf: [cm.max_rows]f32 = undefined;
@@ -144,7 +119,7 @@ pub fn measure(gpa: Allocator, m: *model.Model, ids: []const u32, how: cm.Method
         tgt.release(slot);
         if (pass) |p| p.reset(slot);
     }
-    // every rank's samples; each entry the slower rank's (Python's gather_max)
+    // every rank's samples; each entry the slower rank's
     const w: usize = f.comm.world();
     const all = try gpa.alloc(i64, samples.len * w);
     defer gpa.free(all);
@@ -168,8 +143,7 @@ pub fn measure(gpa: Allocator, m: *model.Model, ids: []const u32, how: cm.Method
     return out;
 }
 
-/// Every text slot released (the second time) and prefilled again: its drafter context reset, the text but its last
-/// token through the served prefill, a pending verify tail kept (the slot at the last token, nothing pending).
+/// Every text slot released and prefilled again (drafter reset, text but its last token, a pending verify tail kept).
 fn prefillAll(tgt: iface.Target, gt: anytype, pass: ?iface.Pass, ids: []const u32, lens: []const usize, again: bool) !void {
     for (lens, 0..) |l, i| {
         const slot: u32 = @intCast(i);
@@ -180,8 +154,7 @@ fn prefillAll(tgt: iface.Target, gt: anytype, pass: ?iface.Pass, ids: []const u3
     }
 }
 
-/// Served.open's TF_DSV41_CALIB=measure / zig: the method (TF_DSV41_CALIB_*), the prompt, the measurement, the
-/// stored entry and the boot lines. Returns the table and the stored file (gpa-owned; null: not stored).
+/// TF_DSV41_CALIB=measure / zig at open: prompt, measurement, stored entry, boot lines; table + stored file (or null).
 pub fn boot(gpa: Allocator, io: std.Io, m: *model.Model, dir: []const u8, k: calib_env.Knobs, want: calib_env.Shape) !struct { costs: costs_mod.Costs, path: ?[]u8 } {
     const how = try cm.method(&calib_env.env);
     const rows_cap = (try calib_env.depthSettings(&calib_env.env)).max_rows;
@@ -196,7 +169,7 @@ pub fn boot(gpa: Allocator, io: std.Io, m: *model.Model, dir: []const u8, k: cal
     var db: [std.fs.max_path_bytes]u8 = undefined;
     if (calib_env.dirOf(k, &db)) |d| {
         path = calib_env.store(gpa, io, d, want, got.costs, .{ .method = how, .seconds = secs, .kept = got.kept[0..got.rows], .tokens = ids.len }, std.Io.Clock.real.now(io).toSeconds()) catch |e| blk: {
-            log.warn("calibration: the table was not stored in {s} ({t})", .{ d, e });
+            if (!quiet) log.warn("calibration: the table was not stored in {s} ({t})", .{ d, e });
             break :blk null;
         };
     }

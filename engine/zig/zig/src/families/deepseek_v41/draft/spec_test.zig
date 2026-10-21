@@ -1,6 +1,4 @@
-//! The speculative pass (spec.zig): its decisions replay Python's spec.py bit for bit (fixtures/spec-golden.json, from
-//! tools/spec_golden.py on prod's 8474f31), and on the CPU twin a speculated run commits the serial decode with the
-//! same drafts, acceptance and kept counts as the run without it, through `propose` and through `begin` / `collect`.
+//! spec.zig replays fixtures/spec-golden.json bit for bit; on the CPU twin a speculated run == the run without it.
 const std = @import("std");
 const Value = std.json.Value;
 const lanes = @import("lanes");
@@ -30,7 +28,7 @@ fn int(v: Value) u64 {
     return @intCast(v.integer);
 }
 
-/// The golden's keyed noise: [] greedy, [seed] sampled (spec.py compares the noise lists; Zig compares the params).
+/// The golden's keyed noise: [] greedy, [seed] sampled (compared as params).
 fn samplingOf(v: Value) ?lanes.Sampling {
     if (v.array.items.len == 0) return null;
     return .{ .seed = int(v.array.items[0]), .temperature = 0.7, .top_k = 20, .top_p = 0.95 };
@@ -130,7 +128,7 @@ fn run(cases: []const Case, mode: Mode, settings: spec.Settings, siblings: u32) 
     defer t.deinit();
     const d = try twin.Drafter.init(gpa, t, slots + 1);
     defer d.deinit();
-    var c = try @import("lanes_test.zig").prodCosts(gpa);
+    var c = try @import("lanes_test.zig").servedCosts(gpa);
     defer c.deinit(gpa);
     const pass = if (mode == .device) d.passAsync() else d.pass();
     var set = settings;
