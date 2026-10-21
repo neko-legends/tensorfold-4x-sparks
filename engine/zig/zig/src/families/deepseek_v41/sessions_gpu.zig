@@ -482,6 +482,11 @@ pub const Sessions = struct {
         const n = prompt.len;
         // out of RAM no tokens are indexed: the leader sends its prompt prefix (the fork's disk path reads the file's ids)
         const ids: ?[]const u32 = if (s.store.entry(h.id).ram) null else prompt[0..@intCast(h.pos)];
+        // every rank restores the entry, not the leader alone: the followers wait for this op (forward.zig
+        // op_sess_restore) and the restore's own cross-rank agreement is a collective, so a leader that restores
+        // without sending it joins a barrier no one else reaches (the 1.1.1 rebase dropped this line while taking
+        // upstream's restore; its agreement then stalls, the entry reads as damaged, and the ranks' slots diverge).
+        try s.f.sendSess(.restore, h.id);
         if (!try s.restore(h.id, ids)) return .{ .damaged = true };
         std.log.scoped(.dsv41).info("sessions: slot {d} resumed {d} of {d} prompt tokens from {s}", .{ s.cur(), h.pos, n, if (h.ram) "RAM" else "NVMe" });
         return .{ .at = h.pos };
