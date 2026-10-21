@@ -47,6 +47,16 @@ pub const Timer = struct {
     }
 };
 
+/// TF_DSV41_WEIGHT_GUARD: the per-weight-call shape overrun check (and its log), read once. Off by default:
+/// tensorAddr runs for every weight tensor of every launch, so the check is a diagnosis switch, not an always-on tax.
+var weight_guard: ?bool = null;
+fn weightGuardOn() bool {
+    if (weight_guard) |v| return v;
+    const v = std.c.getenv("TF_DSV41_WEIGHT_GUARD") != null;
+    weight_guard = v;
+    return v;
+}
+
 /// weight names whose declared call shape overruns the loaded slice (bounded; see tensorAddr)
 var overrun_logs: usize = 0;
 /// TF_DSV41_WEIGHT_LOG: the routed experts' scale tensors as the calls resolve them (bounded; a diagnosis aid)
@@ -212,17 +222,19 @@ pub const Runner = struct {
         return switch (t.role) {
             .weight => |w| blk: {
                 const wt = r.weights.get(w) orelse return error.MissingWeight;
-                // The call's declared shape is the kernel's view of the tensor. A shape that reaches past the bytes
-                // the loader holds (an uneven TP=4 shard taken at the widest rank's width, say) reads whatever
-                // follows in the arena, so name it here instead of at the first illegal address.
-                const want = numel * @as(i64, @intCast(elemSize(t.dt)));
-                if (want > 0 and @as(u64, @intCast(want)) + off > wt.len) {
-                    if (overrun_logs < 32) {
-                        overrun_logs += 1;
-                        std.log.err("weight {s}: the call declares {d} bytes at offset {d}, the loaded slice is {d} bytes", .{ w, want, off, wt.len });
+                if (weightGuardOn()) {
+                    // The call's declared shape is the kernel's view of the tensor. A shape that reaches past the bytes
+                    // the loader holds (an uneven TP=4 shard taken at the widest rank's width, say) reads whatever
+                    // follows in the arena, so name it here instead of at the first illegal address.
+                    const want = numel * @as(i64, @intCast(elemSize(t.dt)));
+                    if (want > 0 and @as(u64, @intCast(want)) + off > wt.len) {
+                        if (overrun_logs < 32) {
+                            overrun_logs += 1;
+                            std.log.err("weight {s}: the call declares {d} bytes at offset {d}, the loaded slice is {d} bytes", .{ w, want, off, wt.len });
+                        }
                     }
+                    weightLog(w, t, wt.ptr, wt.len);
                 }
-                weightLog(w, t, wt.ptr, wt.len);
                 break :blk wt.ptr + off;
             },
             .buf => |b| (r.addrs.get(b) orelse {
