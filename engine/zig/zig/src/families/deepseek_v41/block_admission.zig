@@ -1,8 +1,14 @@
 //! Decode admission bounds every scratch dimension before emitting a view or launch.
 const std = @import("std");
 const Config = @import("config.zig").Config;
+const shard = @import("shard.zig");
 pub fn options(c: *const Config, o: anytype, layers: []const u32, n: i64) !void {
-    if (c.expert_width % o.world != 0 or (c.expert_width / o.world) % 128 != 0) return error.InvalidBlock;
+    // This rank's expert columns are its whole-block shard of expert_width (shard.zig: TP=4's 18 blocks are
+    // 640 / 640 / 512 / 512), not expert_width / world, which falls on whole blocks only where the width divides
+    // evenly (every TP=2 shape). The plan already takes this split (plan.build: shard.of), so a rank the plan
+    // admitted must pass here too: the uniform rule refused every TP=4 boot of a 2,304-column expert (576 is not
+    // 128-aligned) with InvalidBlock, after the weights and the KV check.
+    const ex = shard.of(c.expert_width, o.world, o.rank) catch return error.InvalidBlock;
     if (o.expert_rows < 0 or o.dspark_rows < 0 or o.branch_rows < 0 or o.prefill_rows < 0 or o.image_rows < -1) return error.InvalidBlock;
     for (layers) |l| {
         if (l >= c.allLayers()) return error.InvalidBlock;
@@ -10,7 +16,7 @@ pub fn options(c: *const Config, o: anytype, layers: []const u32, n: i64) !void 
     }
     inline for (.{ .{ o.expert_rows, @as(i64, c.topk) + 1 }, .{ o.dspark_rows, @as(i64, c.dspark_topk) + 1 } }) |cap| {
         const slots = std.math.mul(i64, cap[0], cap[1]) catch return error.InvalidBlock;
-        const width = @max(8 * @as(i64, c.expert_width / o.world), @as(i64, c.hidden));
+        const width = @max(8 * @as(i64, ex.max), @as(i64, c.hidden));
         const items = std.math.mul(i64, slots, width) catch return error.InvalidBlock;
         _ = std.math.mul(i64, items, 4) catch return error.InvalidBlock;
     }
