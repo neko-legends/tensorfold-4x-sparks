@@ -30,7 +30,9 @@ pub const Driver = struct {
                 return error.MissingSymbol;
             };
         }
-        const d: Driver = .{ .lib = lib, .api = api, .func_name = lib.lookup(FuncGetName, "cuFuncGetName") };
+        // cuFuncGetName is exported versioned (the plain name is not a dlsym-able symbol), so a failed launch can
+        // name its kernel instead of "?".
+        const d: Driver = .{ .lib = lib, .api = api, .func_name = lib.lookup(FuncGetName, "cuFuncGetName_v2") orelse lib.lookup(FuncGetName, "cuFuncGetName") };
         try d.check(api.cuInit(0), "cuInit");
         return d;
     }

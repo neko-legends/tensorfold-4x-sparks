@@ -47,6 +47,31 @@ pub const Timer = struct {
     }
 };
 
+/// weight names whose declared call shape overruns the loaded slice (bounded; see tensorAddr)
+var overrun_logs: usize = 0;
+/// TF_DSV41_WEIGHT_LOG: the routed experts' scale tensors as the calls resolve them (bounded; a diagnosis aid)
+var weight_logs: usize = 0;
+fn weightLog(name: []const u8, t: calls.Tensor, ptr: u64, len: u64) void {
+    if (weight_logs >= 240) return;
+    const moe = std.mem.indexOf(u8, name, ".moe.") != null;
+    const scale = std.mem.endsWith(u8, name, ".suh") or std.mem.endsWith(u8, name, ".svh");
+    if (!moe or !scale) return;
+    if (std.c.getenv("TF_DSV41_WEIGHT_LOG") == null) return;
+    weight_logs += 1;
+    var numel: i64 = 1;
+    for (t.shape) |n| numel *= n;
+    std.log.info("weight {s}: ptr 0x{x} len {d}, call shape {any} ({d} bytes)", .{ name, ptr, len, t.shape, numel * @as(i64, @intCast(elemSize(t.dt))) });
+}
+
+fn elemSize(dt: calls.Dt) usize {
+    return switch (dt) {
+        .bf16, .f16, .i16 => 2,
+        .f32, .i32 => 4,
+        .f64, .i64 => 8,
+        .i8, .u8, .bool => 1,
+    };
+}
+
 pub const Runner = struct {
     gpa: std.mem.Allocator,
     d: *const cuda.Driver,
@@ -185,7 +210,21 @@ pub const Runner = struct {
         if (numel == 0) return 0;
         const off: u64 = @intCast(t.offset);
         return switch (t.role) {
-            .weight => |w| (r.weights.get(w) orelse return error.MissingWeight).ptr + off,
+            .weight => |w| blk: {
+                const wt = r.weights.get(w) orelse return error.MissingWeight;
+                // The call's declared shape is the kernel's view of the tensor. A shape that reaches past the bytes
+                // the loader holds (an uneven TP=4 shard taken at the widest rank's width, say) reads whatever
+                // follows in the arena, so name it here instead of at the first illegal address.
+                const want = numel * @as(i64, @intCast(elemSize(t.dt)));
+                if (want > 0 and @as(u64, @intCast(want)) + off > wt.len) {
+                    if (overrun_logs < 32) {
+                        overrun_logs += 1;
+                        std.log.err("weight {s}: the call declares {d} bytes at offset {d}, the loaded slice is {d} bytes", .{ w, want, off, wt.len });
+                    }
+                }
+                weightLog(w, t, wt.ptr, wt.len);
+                break :blk wt.ptr + off;
+            },
             .buf => |b| (r.addrs.get(b) orelse {
                 var mb: [256]u8 = undefined;
                 std.log.scoped(.dsv41).warn("{s}", .{buffers.unboundMessage(&mb, t)});
