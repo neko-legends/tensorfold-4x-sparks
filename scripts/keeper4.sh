@@ -21,13 +21,16 @@ if [[ -e $STATE_DIR/maintenance ]]; then
     if [[ -x $maint_helper ]]; then
         maint_reason=$("$maint_helper" "$STATE_DIR/maintenance"); maint_rc=$?
     elif [[ $(( $(date +%s) - $(stat -c %Y "$STATE_DIR/maintenance") )) -lt 3600 ]]; then
-        maint_rc=0; maint_reason='stand down: legacy inline maintenance check (helper missing), flag younger than 3600s'
+        maint_rc=0; maint_reason='stand down: legacy inline maintenance check (helper missing)'
     else
-        maint_rc=1; maint_reason='armed: legacy inline maintenance check (helper missing), flag older than 3600s'
+        maint_rc=1; maint_reason='armed: legacy inline maintenance check (helper missing)'
     fi
-    if [[ "$(cat "$maint_state" 2>/dev/null)" != "$maint_reason" ]]; then
+    # Dedupe on the stable part of the reason: the age inside the trailing
+    # "(age Ns…)" changes every tick and must not re-log the same decision.
+    maint_key="${maint_reason% (age *}"
+    if [[ "$(cat "$maint_state" 2>/dev/null)" != "$maint_key" ]]; then
         log "maintenance: $maint_reason"
-        printf '%s\n' "$maint_reason" > "$maint_state"
+        printf '%s\n' "$maint_key" > "$maint_state"
     fi
     (( maint_rc == 0 )) && exit 0
 else

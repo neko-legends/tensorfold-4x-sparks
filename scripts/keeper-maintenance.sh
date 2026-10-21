@@ -31,10 +31,10 @@ now="${KEEPER_NOW:-$(date +%s)}"
 
 legacy_reason() {   # $1 = age, $2 = optional qualifier
   if (( $1 < legacy_ttl )); then
-    echo "stand down: ${2}maintenance flag is $1s old (< ${legacy_ttl}s legacy window)"
+    echo "stand down: ${2}maintenance flag (age ${1}s, legacy ${legacy_ttl}s window)"
     exit 0
   fi
-  echo "armed: ${2}maintenance flag is $1s old (>= ${legacy_ttl}s legacy window)"
+  echo "armed: ${2}maintenance flag (age ${1}s, legacy ${legacy_ttl}s window)"
   exit 1
 }
 
@@ -57,12 +57,12 @@ if [[ -z "$owner" || ! "$ttl" =~ ^[0-9]+$ || "${ttl:-0}" -eq 0 ]]; then
 fi
 state=$(systemctl --user is-active "$owner" 2>/dev/null | head -n 1)
 if [[ "$state" == active ]]; then
-  echo "stand down: maintenance owner $owner is active (flag ${age}s old, ttl ${ttl}s)"
+  echo "stand down: maintenance owner $owner is active (age ${age}s, ttl ${ttl}s)"
   exit 0
 fi
 if (( age < ttl )); then
-  echo "stand down: maintenance owner $owner is ${state:-unknown}, ttl ${ttl}s not elapsed (flag ${age}s old)"
+  echo "stand down: maintenance owner $owner is ${state:-unknown}, ttl ${ttl}s not elapsed (age ${age}s)"
   exit 0
 fi
-echo "armed: maintenance owner $owner is ${state:-unknown} and ttl ${ttl}s elapsed (flag ${age}s old)"
+echo "armed: maintenance owner $owner is ${state:-unknown}, ttl ${ttl}s elapsed (age ${age}s)"
 exit 1

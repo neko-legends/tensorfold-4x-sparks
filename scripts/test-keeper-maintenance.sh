@@ -64,9 +64,10 @@ if [[ "$rc" == 0 && -s "$STATE_DIR/keeper.log" ]] && grep -q 'maintenance: stand
 else
   printf 'FAIL keeper4.sh did not stand down on a fresh flag (rc=%s)\n' "$rc"; fail=$((fail+1))
 fi
-# The reason is logged once per change, not on every 2-minute tick.
+# The reason is logged once per change, not on every 2-minute tick: a later tick
+# has a larger age in the reason but the same decision, and must not re-log.
 before=$(wc -l < "$STATE_DIR/keeper.log")
-STATE_DIR="$STATE_DIR" bash "$keeper" >/dev/null 2>&1
+KEEPER_NOW=$(( $(date +%s) + 120 )) STATE_DIR="$STATE_DIR" bash "$keeper" >/dev/null 2>&1
 after=$(wc -l < "$STATE_DIR/keeper.log")
 if [[ "$before" == "$after" ]]; then
   passed=$((passed+1)); printf 'ok   %-48s lines %s -> %s\n' 'repeat tick does not duplicate the reason' "$before" "$after"
