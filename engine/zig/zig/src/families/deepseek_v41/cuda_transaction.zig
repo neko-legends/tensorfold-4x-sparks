@@ -8,10 +8,13 @@ pub const Transaction = struct {
     regions: std.ArrayList(logical.Region) = .empty,
     owned: std.ArrayList(cuda.DeviceBuffer) = .empty,
     runner: ?*@import("run.zig").Runner = null,
+    // regions point into the slot set's stacked backups (slots.zig beginWindow), not into `owned`
+    shared: bool = false,
     // Refreshed for every selected slot. Backups remain owned until Forward.close drains the stream.
     pub fn begin(t: *Transaction, f: *Forward, n: u32) !void {
         if (t.state.pending != null) return error.CacheTransactionActive;
         t.runner = f.runner;
+        t.shared = false;
         t.regions.clearRetainingCapacity();
         var nb: [64]u8 = undefined;
         var la = std.heap.ArenaAllocator.init(f.gpa);
@@ -35,7 +38,7 @@ pub const Transaction = struct {
         t.state.position = f.slot.pos;
         try t.state.begin(t.regions.items, t.copier(), n);
     }
-    fn copy(ctx: *anyopaque, dst: u64, src: u64, bytes: usize) !void {
+    pub fn copy(ctx: *anyopaque, dst: u64, src: u64, bytes: usize) !void {
         const t: *Transaction = @ptrCast(@alignCast(ctx));
         const r = t.runner.?;
         try r.d.check(r.d.api.cuMemcpyDtoDAsync_v2(dst, src, bytes, r.stream.handle), "cuMemcpyDtoDAsync");

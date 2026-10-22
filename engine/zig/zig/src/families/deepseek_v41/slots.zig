@@ -30,6 +30,8 @@ pub const SlotSet = struct {
     n: u32,
     states: []fwd.Slot,
     transactions: []@import("cuda_transaction.zig").Transaction,
+    /// each cache-transaction region once for every slot: the stacked backup (slot s at s x stride), see beginWindow
+    stack: std.ArrayList(Stack) = .empty,
     /// the slot whose views are bound (its state lives in f.slot meanwhile); null: the stacked bases
     active: ?u32 = null,
     roles: std.StringArrayHashMapUnmanaged(Stacked) = .empty,
@@ -38,6 +40,7 @@ pub const SlotSet = struct {
     owner: ?u32 = null,
 
     const Swapped = struct { addr: u64, len: u64, aside: cuda.DeviceBuffer };
+    const Stack = struct { live: u64, stride: u64, bytes: usize, backup: cuda.DeviceBuffer, row_bytes: usize, rows: u32, carry: bool };
 
     pub fn init(gpa: std.mem.Allocator, f: *fwd.Forward, n: u32) !*SlotSet {
         if (f.kv == null) return error.RowsNeedPool;
@@ -56,6 +59,8 @@ pub const SlotSet = struct {
     }
 
     pub fn deinit(ss: *SlotSet) void {
+        for (ss.stack.items) |*x| x.backup.free();
+        ss.stack.deinit(ss.gpa);
         for (ss.transactions) |*x| x.deinit(ss.gpa);
         ss.gpa.free(ss.transactions);
         for (ss.swapped.items) |*x| x.aside.free();
@@ -171,6 +176,96 @@ pub const SlotSet = struct {
         ss.active = null;
         ss.f.slot = .{};
         for (ss.roles.keys(), ss.roles.values()) |role, st| try ss.f.runner.external(role, st.base);
+    }
+
+    /// Every slot of a window opens its cache transaction in one pass over the stacked rings: the backup of a role is
+    /// one buffer for all slots (slot s at s x stride), so the slots' copies of a role are one memcpy per run of slots
+    /// (not one per slot and region: ~130 driver calls a slot, ~1,300 an 8-slot window, 3-4 ms ahead of every
+    /// window). Same bytes in the same places as Transaction.begin; keep/rollback use the same regions. Call with no
+    /// slot active (after deactivate).
+    pub fn beginWindow(ss: *SlotSet, mix: anytype) !void {
+        const f = ss.f;
+        if (ss.active != null) return error.SlotRange;
+        if (ss.stack.items.len == 0) try ss.buildStack();
+        var mask: u64 = 0;
+        var lo: u32 = ss.n;
+        var hi: u32 = 0;
+        for (mix) |m| {
+            if (m.slot >= ss.n or ss.n > 64) return error.SlotRange;
+            const t = &ss.transactions[m.slot];
+            if (t.state.pending != null) return error.CacheTransactionActive;
+            if (m.rows == 0 or m.rows > 64) return error.BadWindow;
+            mask |= @as(u64, 1) << @intCast(m.slot);
+            lo = @min(lo, m.slot);
+            hi = @max(hi, m.slot);
+        }
+        if (mask == 0) return;
+        // one span lo..hi when no slot inside it keeps a pending window of its own backup (an idle slot's backup is free)
+        var span = true;
+        var s: u32 = lo;
+        while (s <= hi) : (s += 1) {
+            if (mask & (@as(u64, 1) << @intCast(s)) == 0 and ss.transactions[s].state.pending != null) span = false;
+        }
+        const r = f.runner;
+        for (ss.stack.items) |x| {
+            var a: u32 = lo;
+            while (a <= hi) {
+                if (!span and mask & (@as(u64, 1) << @intCast(a)) == 0) {
+                    a += 1;
+                    continue;
+                }
+                var b: u32 = a;
+                while (b + 1 <= hi and (span or mask & (@as(u64, 1) << @intCast(b + 1)) != 0)) b += 1;
+                const off = @as(u64, a) * x.stride;
+                const len = @as(usize, b - a) * x.stride + x.bytes;
+                try r.d.check(r.d.api.cuMemcpyDtoDAsync_v2(x.backup.ptr + off, x.live + off, len, r.stream.handle), "cuMemcpyDtoDAsync");
+                a = b + 1;
+            }
+        }
+        for (mix) |m| {
+            const t = &ss.transactions[m.slot];
+            if (!t.shared) try ss.bindTransaction(m.slot);
+            t.state.position = ss.states[m.slot].pos;
+            t.state.pending = m.rows;
+        }
+    }
+
+    fn buildStack(ss: *SlotSet) !void {
+        const f = ss.f;
+        var nb: [64]u8 = undefined;
+        var la = std.heap.ArenaAllocator.init(ss.gpa);
+        defer la.deinit();
+        for (try f.backbone(la.allocator())) |L| {
+            for ([_][]const u8{ "swa.v", "swa.s", "carry" }) |part| {
+                const role = try std.fmt.bufPrint(&nb, "s.L{d}.{s}", .{ L, part });
+                const st = ss.roles.get(role) orelse continue;
+                const carry = std.mem.eql(u8, part, "carry");
+                const row: usize = if (carry) 8 * @as(usize, f.cfg.head_dim) else if (std.mem.endsWith(u8, part, ".v")) 576 else 8;
+                const rows: u32 = if (carry) 1 else 2 * f.cfg.window;
+                if (row * rows > st.bytes) return error.TransactionShapeChanged;
+                var buf = try cuda.DeviceBuffer.alloc(f.runner.d, @as(usize, @intCast(st.bytes)) * ss.n);
+                errdefer buf.free();
+                try ss.stack.append(ss.gpa, .{ .live = st.base, .stride = st.bytes, .bytes = row * rows, .backup = buf, .row_bytes = row, .rows = rows, .carry = carry });
+            }
+        }
+    }
+
+    /// Slot s's transaction regions over the stacked live rings and backups (what Transaction.begin builds per call).
+    fn bindTransaction(ss: *SlotSet, s: u32) !void {
+        const t = &ss.transactions[s];
+        t.runner = ss.f.runner;
+        t.regions.clearRetainingCapacity();
+        for (ss.stack.items) |x| {
+            try t.regions.append(ss.gpa, .{
+                .live = x.live + @as(u64, s) * x.stride,
+                .backup = x.backup.ptr + @as(u64, s) * x.stride,
+                .row_bytes = x.row_bytes,
+                .rows = x.rows,
+                .kind = if (x.carry) .carry else .ring,
+                .encoding = if (x.carry) .f32 else .cuda_fp8_584,
+            });
+        }
+        t.shared = true;
     }
 
     /// A slot's state: the forward's own while it is active, else the stored one.

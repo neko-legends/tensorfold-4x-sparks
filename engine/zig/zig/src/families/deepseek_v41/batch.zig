@@ -82,6 +82,8 @@ pub const Batch = struct {
         launch_ns: u64 = 0, // the graph's launch or the eager window
         keep_ns: u64 = 0,
     } = .{},
+    /// TF_DSV41_TXN_STACK (default on; 0: one backup pass a slot, the 1.1.1 shape): the window's slots back up together
+    txn_stack: bool = true,
     prof: ?*WinProf = null, // TF_DSV41_WIN_PROF=1: host ns per runRows step, logged at deinit; null: no clock reads
     /// the session store (model.zig): each slot's kept rows are its committed ids
     sess: ?*sessions_gpu.Sessions = null,
@@ -100,6 +102,7 @@ pub const Batch = struct {
         errdefer if (!assembled) gpa.free(pend);
         b.* = .{ .gpa = gpa, .f = f, .ss = ss, .cap = cap, .settings = s, .tab = tab, .pend = pend, .rg = try round_graph.current() };
         assembled = true;
+        if (std.c.getenv("TF_DSV41_TXN_STACK")) |v| b.txn_stack = !std.mem.eql(u8, std.mem.span(v), "0");
         if (WinProf.fromEnv()) b.prof = try gpa.create(WinProf);
         if (b.prof) |p| p.* = .{};
         @memset(b.pend, null);
@@ -244,11 +247,16 @@ pub const Batch = struct {
         defer b.lap(&tp, &b.stats.launch_ns);
         pt.mark(.engram);
         // Each slot owns its backup before any batched kernel writes its mutable state.
-        for (mix) |m| {
-            try b.ss.view(m.slot);
-            try f.transaction.begin(f, m.rows);
+        if (b.txn_stack) {
+            try b.ss.deactivate();
+            try b.ss.beginWindow(mix);
+        } else {
+            for (mix) |m| {
+                try b.ss.view(m.slot);
+                try f.transaction.begin(f, m.rows);
+            }
+            try b.ss.deactivate();
         }
-        try b.ss.deactivate();
         var a: u32 = 0;
         for (mix) |m| {
             b.pend[m.slot] = .{ .a = a, .start = m.start, .n = m.rows };
