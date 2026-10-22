@@ -753,7 +753,13 @@ pub const GrammarEngine = struct {
                 return error.Busy;
             };
         }
-        e.inner.submit(id, request, .{ .ctx = r, .event = event }) catch |err| {
+        // The target enforces the request's grammar itself (bind/masks at the prefill and every window): the inner
+        // engine must not also open a stream grammar. 1.1.1's lane_stream turns a request structure into a stream
+        // grammar and draws its first token through Backend.first_masked, which the CUDA families do not implement
+        // (the first structured request died StructuresUnsupported after the grammar had compiled).
+        var plain = request.*;
+        plain.structure = null;
+        e.inner.submit(id, &plain, .{ .ctx = r, .event = event }) catch |err| {
             e.forget(r);
             return err;
         };
