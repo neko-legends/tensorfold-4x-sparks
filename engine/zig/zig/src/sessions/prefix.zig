@@ -298,7 +298,11 @@ pub fn Index(comptime Extra: type) type {
 
         /// The entry's tail matches the prompt there and the entry is shorter (its full pages matched by digest).
         fn tailOf(e: *const Entry, prompt: []const i32) bool {
+            // a restored entry is trusted only as far as its own length: a tail longer than the entry (an older
+            // build's parked blob, a damaged index) has no place in the prompt and must not cast a wrapped offset
+            if (e.tail.len > e.pos) return false;
             const at: usize = @intCast(e.pos - e.tail.len);
+            if (at + e.tail.len > prompt.len) return false;
             return e.pos < prompt.len and std.mem.eql(i32, e.tail, prompt[at..][0..e.tail.len]);
         }
 
