@@ -92,3 +92,23 @@ see the README).
 The kit's cells come from the GLM recipe's HTTP clients against the kit's server: `bench/glmbench.py` (suites tf,
 tweet, kit, edit), `bench/multiturn.py concurrent --streams 1,2,4`, `bench/quality.py` (MMLU-200) and a long-prefill
 client (an exact token-id prompt of a repeated filler document, 8K-256K). Raw files: `results/kit-baseline/`.
+
+## 4. Zig engine rebases on four Sparks: 1.1.0 -> 1.1.1 -> 1.1.2
+
+The DeepSeek V4.1 Flash 1017 lane on the Zig engine at TP=4 (four GB10s), measured 2026-10-22 on clean boots with the
+same cells for every version. 8-busy / 4-busy = steady aggregate tok/s with 8 / 4 streams on identical prompts; boot =
+seconds from start to `ready after` (wall time in brackets where it was recorded). The 1.1.2 rebase is branch
+[`tf112-rebase-20261022`](https://github.com/neko-legends/tensorfold-4x-sparks/tree/tf112-rebase-20261022) (upstream
+TensorFold 1.1.2 `4ff78441` plus this repo's TP-4 delta).
+
+| engine | 8-busy (tok/s) | 4-busy (tok/s) | boot (s) | notes |
+| --- | --- | --- | --- | --- |
+| 1.1.0 (the previous live engine) | 315.9 / 316.1 / 317.0 | | 166-174 | the control |
+| 1.1.1 rebase, as first booted | 277.8 | | 713-721 | -12%; the pack digest hashed three times at boot |
+| 1.1.1 after fixes (boot 9) | 310.58 / 313.27 | 209-212 | 162-167 (ready 161) | 86.5 GB read at boot (`rchar`) |
+| **1.1.2 rebase (serving)** | **313.48** | 209.43 / 211.61 | **161** (wall 166) | 86.55 GB read; digest record accepted (0 built, 44 read) |
+
+1.1.2 against 1.1.1 (fixed), same boot protocol: prefill 32K -0.6%, 8K -0.6%; all 15 determinism hashes identical;
+JSON request 200 and parsed; the picture check answered "Blue and red"; 0 panics on all four ranks; 0 `BadBlob`.
+
+![TensorFold 1.1.0 -> 1.1.1 -> 1.1.2 on four Sparks: 8-stream throughput and boot time](img/tf-versions-112-20261022.png)
