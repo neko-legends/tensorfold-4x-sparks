@@ -33,7 +33,7 @@ RUN set -eu; \
         gpu="-Dnvcc=/usr/local/cuda/bin/nvcc -Dtp-fatbin=/tp_mailbox.fatbin"; \
     fi; \
     zig build -Dtarget="$ZIG_TARGET" -Dcpu="$ZIG_CPU" $gpu -Dsm=121 -Doptimize=ReleaseSafe -j4 --prefix /out install; \
-    test -x /out/bin/tensorfold-dsv41 && test -x /out/bin/tf-dsv41-m1 && test -x /out/bin/tf-tp-test
+    test -x /out/bin/tensorfold-dsv41 && test -x /out/bin/tf-dsv41-m1 && test -x /out/bin/tf-tp-test && test -f /out/lib/libtfgrammar.so
 
 FROM ${CUDA_RUNTIME}
 ARG ZIG_COMMIT=unknown
@@ -45,6 +45,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends libnccl2 libibv
     && rm -rf /var/lib/apt/lists/*
 # tf-tp-test: the transport's own gate on the nodes (scripts/zig-tp4-roce-check.sh), no model needed
 COPY --from=build /out/bin/tensorfold-dsv41 /out/bin/tf-dsv41-m1 /out/bin/tf-tp-test /opt/tensorfold/bin/
+# Structured output: the server loads libtfgrammar.so from its ../lib at the first structured request.
+COPY --from=build /out/lib/libtfgrammar.so /opt/tensorfold/lib/libtfgrammar.so
 COPY --from=build /tp_mailbox.fatbin /opt/tensorfold/share/tp_mailbox.fatbin
 ENV PATH=/opt/tensorfold/bin:$PATH \
     TF_TP_KERNEL_IMAGE=/opt/tensorfold/share/tp_mailbox.fatbin

@@ -182,6 +182,8 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&warning_run.step);
     b.step("test-learn-warning", "CPU production-log refusal, backoff and recovery test").dependOn(&warning_run.step);
     grammar_build.add(b, test_step);
+    // the server loads libtfgrammar.so at its first structured request: install it beside the binaries
+    if (target.result.os.tag == .linux or target.result.os.tag == .windows) b.installArtifact(grammar_build.shared(b, target));
     contract_build.hostTests(b, gemma4_contract_host);
     sys_build.wire(b);
     @import("zig/build/checkpoint_config.zig").wire(b);

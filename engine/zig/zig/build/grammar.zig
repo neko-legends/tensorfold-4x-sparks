@@ -60,6 +60,22 @@ pub fn add(b: *std.Build, test_step: *std.Build.Step) void {
     test_step.dependOn(&run.step);
 }
 
+
+/// libtfgrammar.so: `zig/src/grammar/tf_grammar.cc` (the C ABI the native server loads at its first structured
+/// request) over the same vendored xgrammar the mask path links. The fork does not take an upstream release
+/// archive, so the build installs the library beside the binary (packaging/RUNTIME.md) instead of expecting it.
+pub fn shared(b: *std.Build, target: std.Build.ResolvedTarget) *std.Build.Step.Compile {
+    const root = "zig/third_party/xgrammar/";
+    const m = b.createModule(.{ .target = target, .optimize = .ReleaseFast, .link_libc = true, .link_libcpp = true });
+    m.addIncludePath(b.path(root ++ "include"));
+    m.addIncludePath(b.path(root ++ "cpp"));
+    m.addSystemIncludePath(b.path(root ++ "3rdparty/picojson"));
+    m.addSystemIncludePath(b.path(root ++ "3rdparty/dlpack/include"));
+    m.addCSourceFile(.{ .file = b.path("zig/src/grammar/tf_grammar.cc"), .flags = &.{ "-std=c++17", "-fexceptions", "-Wno-everything" } });
+    m.linkLibrary(library(b, target));
+    return b.addLibrary(.{ .name = "tfgrammar", .root_module = m, .linkage = .dynamic });
+}
+
 /// The mask kernel (zig/src/core/grammar/mask_kernel.zig) as PTX text, for `@embedFile` through an anonymous import
 /// named `grammar_mask_ptx` (sm_80 PTX: the driver JIT-compiles it for the GPU it runs on).
 pub fn maskPtx(b: *std.Build) std.Build.LazyPath {
