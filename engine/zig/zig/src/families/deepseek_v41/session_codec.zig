@@ -45,7 +45,13 @@ pub fn validate(s: *const sg.Sessions, bs: []const Blob) !Metadata {
     if (s.measure.replay) {
         m.stash.from = std.mem.readInt(u64, c[0..8], .little);
         m.stash.hi = std.mem.readInt(u64, c[8..16], .little);
-        if (m.stash.from > m.stash.hi or m.stash.hi > pos or m.stash.hi - m.stash.from > ced.ring) return bad("stash {d}..{d} at pos {d}, ring {d} (replay)", .{ m.stash.from, m.stash.hi, pos, ced.ring });
+        if (m.stash.from > m.stash.hi or m.stash.hi > pos) return bad("stash {d}..{d} at pos {d} (replay)", .{ m.stash.from, m.stash.hi, pos });
+        // The stash is a ring and `from` only ever marks where the current chain of contiguous segments started
+        // (Stash.extend leaves it alone while `hi` advances). A long prefill therefore writes from = 0 with
+        // hi = pos, and the held window is [max(from, hi - keep), hi) — the whole span is not supposed to fit the
+        // ring, so the record is clamped to the window instead of being rejected (every NVMe resume of an entry
+        // written by a multi-slot or long run used to fail here and prefill from zero).
+        if (m.stash.hi - m.stash.from > ced.keep) m.stash.from = m.stash.hi - ced.keep;
         for (&m.stash.ids, 0..) |*t, i| t.* = std.mem.readInt(u32, c[16 + 4 * i ..][0..4], .little);
         var at = m.stash.from;
         while (at < m.stash.hi) : (at += 1) if (m.stash.ids[@intCast(at % ced.ring)] >= s.f.cfg.vocab) return bad("stash id at {d} = {d} >= vocab {d} (replay)", .{ at, m.stash.ids[@intCast(at % ced.ring)], s.f.cfg.vocab });
