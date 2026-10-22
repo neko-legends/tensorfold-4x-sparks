@@ -308,17 +308,20 @@ pub const DeepSeek = struct {
     }
 
     /// The generic path's render (template probes, /tokenize without the family): the encoding with its options.
-    fn renderTextFn(ctx: *anyopaque, a: Allocator, messages: Value, o: model_text.RenderOptions, problem: *[]const u8) model_text.Error![]u8 {
+    fn renderTextFn(ctx: *anyopaque, a: Allocator, messages: Value, o: model_text.RenderOptions, problem: *[]const u8) model_text.Error!model_text.Rendered {
         const d = self(ctx);
         var p: template.Problem = .{};
         const offered: []const Value = if (o.tools) |t| (if (t == .array) t.array else &.{}) else &.{};
-        return template.render(a, messages, d.templateOptions(offered, o.enable_thinking, o.reasoning_effort orelse d.options.default_effort, o.add_generation_prompt), &p) catch |e| switch (e) {
+        // The template's own provenance spans are not carried by this fork's renderer: the whole
+        // rendering is real text, so Rendered.text is everything and spans stays empty.
+        const rendered = template.render(a, messages, d.templateOptions(offered, o.enable_thinking, o.reasoning_effort orelse d.options.default_effort, o.add_generation_prompt), &p) catch |e| switch (e) {
             error.OutOfMemory => error.OutOfMemory,
             error.Refused => {
                 problem.* = p.message;
                 return error.Template;
             },
         };
+        return .{ .text = try rendered };
     }
 
     // -- family.Family -------------------------------------------------------------------------------------------------
