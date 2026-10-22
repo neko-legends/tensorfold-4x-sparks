@@ -664,6 +664,10 @@ pub const GrammarTarget = struct {
 const Registration = struct {
     id: api.Id,
     prompt: []const u32,
+    /// The request handed to the inner engine, owned here: LaneHost keeps the pointer for the reply's whole life, so
+    /// a stack copy in submit would dangle the moment submit returned (the lane round then read freed bytes: the
+    /// prefix.find panic was a garbage prompt read through it).
+    plain: api.Request = undefined,
     spec: grammar.Spec,
     compiled: ?grammar.engine.Compiled,
     claimed: bool = false,
@@ -757,9 +761,9 @@ pub const GrammarEngine = struct {
         // engine must not also open a stream grammar. 1.1.1's lane_stream turns a request structure into a stream
         // grammar and draws its first token through Backend.first_masked, which the CUDA families do not implement
         // (the first structured request died StructuresUnsupported after the grammar had compiled).
-        var plain = request.*;
-        plain.structure = null;
-        e.inner.submit(id, &plain, .{ .ctx = r, .event = event }) catch |err| {
+        r.plain = request.*;
+        r.plain.structure = null;
+        e.inner.submit(id, &r.plain, .{ .ctx = r, .event = event }) catch |err| {
             e.forget(r);
             return err;
         };
