@@ -33,6 +33,8 @@ const samp = @import("sampling_gpu.zig");
 const dspark_rows = @import("dspark_rows.zig");
 const dspark_slots = @import("dspark_slots.zig");
 const l2pf_mod = @import("l2pf.zig");
+const vision_rows = @import("vision_rows.zig");
+const grammar_gpu = @import("grammar_gpu.zig");
 const iface = @import("draft/iface.zig");
 // TF_DSV41_PREFILL_PIPE: the serviced model is this file (serve_cli.zig), so the line is wired here — the 1.1.1
 // rebase left our pipe wiring in model.zig, which serve_cli no longer imports (upstream renamed the served model to
@@ -119,6 +121,8 @@ pub const Model = struct {
     sampler: ?*samp.GpuSampler = null,
     /// TF_DSV41_L2PF (l2pf.zig): the filled prefetch tables and the runner's side stream
     l2pf: ?*l2pf_mod.L2pf = null,
+    /// structured output, every rank with TF_DSV41_GRAMMAR=1 (grammar_gpu.zig: the masks and the followers' matchers)
+    grammar: ?*grammar_gpu.Masks = null,
     /// TF_DSV41_PREFILL_PIPE (pipe_load.zig): the plan of this rank's stage copies (the line itself is the forward's)
     pipe_copies: ?plan.Plan = null,
 
@@ -288,6 +292,9 @@ pub const Model = struct {
             m.f.opts.rope_rows = c + 2048;
         }
         try @import("serve_knobs_apply.zig").apply(&m.f, a, io, m.tcfg.rank);
+        // TF_DSV41_IMAGES=native's flags before the KV pricing and the buffer plan size the image rows' roles (the
+        // tower and gate.bias_vl load at vision_rows.boot, below)
+        _ = try vision_rows.flags(&m.f);
         // the line (pipe_run.zig) on every rank: its stage options are the forward's at world 1 (refreshed once the
         // pool is up), its buffers bound after the forms
         if (pipe_s) |ps| (try pipe_run.Line.create(gpa, &m.f, ps)).install(&m.f);
@@ -391,7 +398,7 @@ pub const Model = struct {
             // the drafter's blocks (the snapshot carries their rows: the RAM tier's measure)
             var dsb: [8]u32 = undefined;
             const ds_blocks: u32 = if (o.drafts) @intCast(dspark_emit.blocks(&m.cfg, &dsb).len) else 0;
-            m.sessions = try sg.Sessions.init(gpa, io, &m.f, &bp, so, .{ .slots = m.slots, .ds_blocks = ds_blocks, .checkpoint = if (so.disk != null) try prepared.packDigest(io, &m.pack) else null });
+            m.sessions = try sg.Sessions.init(gpa, io, &m.f, &bp, so, .{ .slots = m.slots, .ds_blocks = ds_blocks, .checkpoint = if (so.disk != null) try prepared.packDigestForBoot(io, &m.pack) else null });
         }
         tr.step("engram host and sessions", cuda.usage(false));
         m.gt = .{ .f = &m.f, .prefill_rows = o.prefill_rows, .max_rows = nb, .own_prefill = o.own_prefill, .sessions = m.sessions };
@@ -421,6 +428,14 @@ pub const Model = struct {
         // TF_DSV41_SAMPLING=1: keyed sampling (T > 0) on every rank; off: such requests are refused (error.Sampling)
         m.sampler = if (samp.enabled()) try samp.GpuSampler.init(gpa, &m.f) else null;
         m.gt.sampler = m.sampler;
+        // TF_DSV41_IMAGES=native (vision_rows.zig): Engram's keep at image positions on every rank, the tower on rank 0
+        try vision_rows.boot(gpa, io, &m.f, &m.pack, &m.driver, m.tcfg.rank, &m.weights);
+        // TF_DSV41_GRAMMAR=1: the checkpoint's grammar compilers on every rank (tokenizer.json from the pack, or
+        // TF_DSV41_GRAMMAR_TOKENIZER's dir); masks for up to 64 rows a pick (Python's row cap)
+        if (try grammar_gpu.enabled()) {
+            const tok_dir = if (std.c.getenv("TF_DSV41_GRAMMAR_TOKENIZER")) |d| std.mem.span(d) else pack_dir;
+            m.grammar = try grammar_gpu.Masks.init(gpa, io, &m.f, tok_dir, m.slots, 64);
+        }
         try m.driver.synchronize();
         tr.step("end", cuda.usage(false));
         tr.trim();

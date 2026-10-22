@@ -312,7 +312,7 @@ pub const Sessions = struct {
         errdefer s.gpa.destroy(p);
         const sl = &s.f.slot;
         const ds = if (s.measure.ds_blocks > 0) kv.sess.dsRows(sl.pos, s.ds_valid[s.cur()], s.measure.window) else 0;
-        p.* = .{ .owner = s, .bytes = try s.gpa.alloc(u8, s.bounded_bytes), .pos = sl.pos, .tail = sl.tail, .tail_len = sl.tail_len, .stash = sl.ced, .ds_rows = ds, .measure = s.measureNow() };
+        p.* = .{ .owner = s, .bytes = try s.gpa.alloc(u8, s.bounded_bytes), .pos = sl.pos, .tail = sl.tail, .tail_len = sl.tail_len, .stash = if (s.measure.replay) sl.ced else .{}, .ds_rows = ds, .measure = s.measureNow() };
         errdefer s.gpa.free(p.bytes);
         var at: usize = 0;
         for (s.pieces) |pc| {

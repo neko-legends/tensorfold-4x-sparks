@@ -428,7 +428,7 @@ pub const GrammarTarget = struct {
         return .{ .ptr = t, .vtable = &vtable };
     }
 
-    const vtable: iface.Target.VTable = .{ .prefill = prefill, .window = window, .keep = keep, .taps = taps, .release = release, .admit = admit, .begin = begin, .piece = piece, .finish = finish, .tail = tail, .pieces = pieces, .replays = replays, .warm = warm };
+    const vtable: iface.Target.VTable = .{ .prefill = prefill, .window = window, .keep = keep, .taps = taps, .release = release, .release_checked = releaseChecked, .available = available, .admit = admit, .begin = begin, .piece = piece, .finish = finish, .tail = tail, .pieces = pieces, .replays = replays, .warm = warm };
 
     fn admit(p: *anyopaque, slot: u32, max_new: u64) void {
         self(p).inner.admit(slot, max_new);
@@ -643,6 +643,18 @@ pub const GrammarTarget = struct {
         const t = self(p);
         t.inner.release(slot);
         t.masks.release(slot) catch |e| std.log.scoped(.dsv41).err("grammar: releasing slot {d} on the other ranks failed ({t})", .{ slot, e });
+    }
+
+    /// The pool's checked release: the same slot teardown, its error kept for the caller.
+    fn releaseChecked(p: *anyopaque, slot: u32) anyerror!void {
+        const t = self(p);
+        defer t.masks.release(slot) catch |e| std.log.scoped(.dsv41).err("grammar: releasing slot {d} on the other ranks failed ({t})", .{ slot, e });
+        return t.inner.releaseChecked(slot);
+    }
+
+    /// The inner target's answer: the wrapper holds no pool state of its own.
+    fn available(p: *anyopaque, slot: u32) bool {
+        return self(p).inner.available(slot);
     }
 };
 

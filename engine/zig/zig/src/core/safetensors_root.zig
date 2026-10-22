@@ -6,3 +6,5 @@ pub const safetensors = @import("safetensors.zig");
 pub const exl3_layout = @import("exl3_layout.zig");
 /// The codebook the pack markers pick (exl3_layout.Codebook lives here).
 pub const exl3_load = @import("exl3_load.zig");
+/// The per-file SHA-256 record cache (descriptor identity), as `core.digest_cache` beside the server's tokenizer.
+pub const digest_cache = @import("digest_cache.zig");

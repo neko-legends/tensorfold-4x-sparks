@@ -14,6 +14,7 @@ const calib_gpu = @import("calib_gpu.zig");
 const spec = @import("draft/spec.zig");
 const lookup = @import("draft/lookup.zig");
 const gate_lanes = @import("gate_lanes.zig");
+const grammar_gpu = @import("grammar_gpu.zig");
 const ph = @import("phases.zig");
 const timed = @import("phases_timed.zig");
 const Allocator = std.mem.Allocator;
@@ -64,6 +65,9 @@ pub const Served = struct {
     phases: ?*ph.Phases = null,
     tt: timed.TimedTarget = undefined,
     tpass: timed.TimedPass = undefined,
+    /// TF_DSV41_GRAMMAR=1 (grammar_gpu.zig): the request grammars and the target that enforces them
+    gengine: ?*grammar_gpu.GrammarEngine = null,
+    gtarget: ?*grammar_gpu.GrammarTarget = null,
     /// TF_DSV41_PREFILL_PIECES=1 (sched_host.zig): the batcher plans the host's rounds
     sched: ?*sched_host.SchedHost = null,
     /// TF_DSV41_LOOKUP_PLAN=1 (draft/lookup.zig): priced lookup drafts for each request's copies
@@ -107,6 +111,18 @@ pub const Served = struct {
             s.tpass = .{ .inner = pass, .p = x };
             tgt = s.tt.target();
             pass = s.tpass.pass();
+        }
+        // structured output (TF_DSV41_GRAMMAR=1): the target cuts drafts and stages masks, the engine compiles requests
+        s.gengine = null;
+        s.gtarget = null;
+        if (m.grammar) |mk| {
+            const ge = try gpa.create(grammar_gpu.GrammarEngine);
+            ge.* = grammar_gpu.GrammarEngine.init(gpa, io, undefined, mk.g);
+            s.gengine = ge;
+            const gt = try gpa.create(grammar_gpu.GrammarTarget);
+            gt.* = try grammar_gpu.GrammarTarget.init(gpa, tgt, mk, ge);
+            s.gtarget = gt;
+            tgt = gt.target();
         }
         // draft trees (TF_DSV41_TREE / _DUP_MS / _ROWS; off by default): first-position siblings
         const trees = if (m.pass != null) try tree.Settings.fromEnv() else tree.Settings{};
@@ -153,7 +169,8 @@ pub const Served = struct {
             std.log.info("dsv41 lookup: Python's priced plan (min match {d}, up to {d} rows{s})", .{ ls.min_match, ls.max_rows, if (ls.lookup) "" else ", lookup off" });
         }
         try s.host.start();
-        s.rec = Recorder.init(gpa, io, s.host.engine());
+        if (s.gengine) |ge| ge.inner = s.host.engine(); // the requests' compiler over the started host's engine
+        s.rec = Recorder.init(gpa, io, if (s.gengine) |ge| ge.engine() else s.host.engine());
         return s;
     }
 
@@ -231,6 +248,14 @@ pub const Served = struct {
             gpa.destroy(x);
         }
         s.rec.deinit();
+        if (s.gengine) |ge| {
+            ge.deinit();
+            gpa.destroy(ge);
+        }
+        if (s.gtarget) |gt| {
+            gt.deinit();
+            gpa.destroy(gt);
+        }
         s.core.deinit();
         s.cfg.deinit(gpa);
         s.arena.deinit();

@@ -4,6 +4,7 @@ const sg = @import("sessions_gpu.zig");
 const ced = @import("ced.zig");
 const eh = @import("engram_host.zig");
 const Blob = @import("kv").sessions.disk.Blob;
+const quiet = @import("builtin").is_test;
 pub const Metadata = struct { pos: u64, tail_len: usize, tail: [eh.max_ngram]u32, stash: ced.Stash, ds: u64 };
 pub fn validate(s: *const sg.Sessions, bs: []const Blob) !Metadata {
     if (bs.len != s.pieces.len + 1) return error.BadBlob;
@@ -30,13 +31,21 @@ pub fn validate(s: *const sg.Sessions, bs: []const Blob) !Metadata {
         if (i < tail_len and t.* >= s.f.cfg.vocab) return error.BadBlob;
     }
     const c = bytes[sg.Sessions.ced_at..];
-    m.stash.from = std.mem.readInt(u64, c[0..8], .little);
-    m.stash.hi = std.mem.readInt(u64, c[8..16], .little);
-    if (m.stash.from > m.stash.hi or m.stash.hi > pos or m.stash.hi - m.stash.from > ced.ring) return error.BadBlob;
-    if (!s.measure.replay and (m.stash.from != 0 or m.stash.hi != 0)) return error.BadBlob;
-    for (&m.stash.ids, 0..) |*t, i| t.* = std.mem.readInt(u32, c[16 + 4 * i ..][0..4], .little);
-    var at = m.stash.from;
-    while (at < m.stash.hi) : (at += 1) if (m.stash.ids[@intCast(at % ced.ring)] >= s.f.cfg.vocab) return error.BadBlob;
+    // The CED stash is replay mode's ring. Full mode plans no such ring (and no such pieces), so a slot blob's
+    // positions there are stale rather than wrong: an entry written before the full-mode stash stopped being
+    // tracked still resumes on its pages, with the stash read as empty.
+    if (s.measure.replay) {
+        m.stash.from = std.mem.readInt(u64, c[0..8], .little);
+        m.stash.hi = std.mem.readInt(u64, c[8..16], .little);
+        if (m.stash.from > m.stash.hi or m.stash.hi > pos or m.stash.hi - m.stash.from > ced.ring) return error.BadBlob;
+        for (&m.stash.ids, 0..) |*t, i| t.* = std.mem.readInt(u32, c[16 + 4 * i ..][0..4], .little);
+        var at = m.stash.from;
+        while (at < m.stash.hi) : (at += 1) if (m.stash.ids[@intCast(at % ced.ring)] >= s.f.cfg.vocab) return error.BadBlob;
+    } else {
+        const from = std.mem.readInt(u64, c[0..8], .little);
+        const hi = std.mem.readInt(u64, c[8..16], .little);
+        if ((from != 0 or hi != 0) and !quiet) std.log.scoped(.dsv41).info("sessions: a {d}-token entry carries a replay-mode stash in a full-mode engine; its pages resume and the stash is dropped", .{pos});
+    }
     if (m.ds > pos or m.ds > s.measure.window or (!s.ds_rings and m.ds != 0)) return error.BadBlob;
     return m;
 }

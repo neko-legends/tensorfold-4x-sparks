@@ -35,10 +35,16 @@ test "Completion ownership: bounded restore rejects missing duplicate and imposs
     std.mem.writeInt(u64, bytes[sg.Sessions.ds_at..][0..8], 9, .little);
     try t.expectError(error.BadBlob, s.uploadBlobs(&.{blob}));
     std.mem.writeInt(u64, bytes[sg.Sessions.ds_at..][0..8], 0, .little);
+    // the CED stash is replay mode's ring: a full-mode snapshot ignores it, a replay one checks it
     std.mem.writeInt(u64, bytes[sg.Sessions.ced_at..][0..8], 9, .little);
     std.mem.writeInt(u64, bytes[sg.Sessions.ced_at + 8 ..][0..8], 8, .little);
     try t.expectError(error.BadBlob, s.uploadBlobs(&.{blob}));
-    try t.expectEqual(@as(u64, 0), f.slot.pos);
+    s.measure.replay = true;
+    try t.expectError(error.BadBlob, s.uploadBlobs(&.{blob}));
+    s.measure.replay = false;
+    _ = try s.uploadBlobs(&.{blob});
+    try t.expectEqual(@as(u64, 8), f.slot.pos);
+    try t.expectEqual(@as(u64, 0), f.slot.ced.hi);
 }
 test "Completion ownership: physical snapshot policy counts its complete payload and metadata" {
     var bytes: [5992448]u8 = undefined;

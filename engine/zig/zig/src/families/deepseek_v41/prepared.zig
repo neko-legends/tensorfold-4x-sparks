@@ -3,6 +3,7 @@ const std = @import("std");
 const quiet = @import("builtin").is_test; // a test's stderr is the build runner's channel
 const named = @import("named.zig");
 const pack_mod = @import("pack.zig");
+const digest_key = @import("core").digest_cache.Key;
 const Io = std.Io;
 const Allocator = std.mem.Allocator;
 
@@ -46,7 +47,7 @@ pub const Cache = struct {
                 return std.mem.eql(u8, std.mem.span(v), "1");
             }
         }.on;
-        return try open(gpa, io, dir, try packDigest(io, p), key, flag("TF_DSV41_PREPARED_WRITE"), flag("TF_DSV41_PREPARED_VERIFY"));
+        return try open(gpa, io, dir, try packDigestShared(io, p, dir), key, flag("TF_DSV41_PREPARED_WRITE"), flag("TF_DSV41_PREPARED_VERIFY"));
     }
 
     pub fn open(gpa: Allocator, io: Io, dir: []const u8, pack_digest: [32]u8, key: Key, write: bool, verify: bool) !Cache {
@@ -127,6 +128,154 @@ pub const Cache = struct {
         c.stats.write_ns += @intCast(Io.Clock.awake.now(c.io).toNanoseconds() - t0);
     }
 };
+
+/// A boot's pack digest: `packDigest` runs at most once per process even though the prepared cache, the pipe's
+/// stage copies and the session store's checkpoint all need it, and a warm boot takes it from a record under the
+/// prepared dir keyed by every shard's descriptor (device, inode, size, mtime, ctime). A cold start, a changed
+/// shard or an unreadable record still runs one full pass and writes/refreshes the record.
+var boot_digest: ?[32]u8 = null;
+var boot_dir: [std.fs.max_path_bytes]u8 = undefined;
+var boot_dir_len: usize = 0;
+var boot_files: usize = 0;
+
+pub fn packDigestForBoot(io: Io, p: *const pack_mod.Pack) ![32]u8 {
+    const dir = std.mem.span(std.c.getenv("TF_DSV41_PREPARED") orelse "");
+    return packDigestShared(io, p, dir);
+}
+
+/// `packDigestForBoot` for a caller that already knows the prepared dir.
+pub fn packDigestShared(io: Io, p: *const pack_mod.Pack, cache_dir: []const u8) ![32]u8 {
+    if (boot_digest) |d| if (boot_files == p.files.items.len and boot_dir_len == cache_dir.len and
+        std.mem.eql(u8, boot_dir[0..boot_dir_len], cache_dir)) return d;
+    const digest = packDigestRemembered(io, p, cache_dir) catch |e| blk: {
+        if (e == error.OutOfMemory) return e;
+        if (!quiet) std.log.warn("dsv41 prepared: the pack digest record beside the prepared cache is unusable ({t}); hashing the pack", .{e});
+        break :blk try packDigest(io, p);
+    };
+    boot_digest = digest;
+    boot_files = p.files.items.len;
+    boot_dir_len = @min(cache_dir.len, boot_dir.len);
+    @memcpy(boot_dir[0..boot_dir_len], cache_dir[0..boot_dir_len]);
+    return digest;
+}
+
+const record_magic = "TFDSVPD1";
+const record_header = 12;
+
+fn recordPath(buf: []u8, dir: []const u8) ![]const u8 {
+    var n = dir.len;
+    while (n > 0 and dir[n - 1] == '/') n -= 1;
+    return std.fmt.bufPrint(buf, "{s}/pack-digest.v1", .{dir[0..n]});
+}
+
+fn shardPath(buf: []u8, p: *const pack_mod.Pack, name: []const u8) ![]const u8 {
+    return std.fmt.bufPrint(buf, "{s}/{s}", .{ p.dir, name });
+}
+
+fn packDigestRemembered(io: Io, p: *const pack_mod.Pack, cache_dir: []const u8) ![32]u8 {
+    if (cache_dir.len == 0 or p.files.items.len == 0) return packDigest(io, p);
+    const a = @constCast(&p.arena).allocator(); // keys live by the pack's arena, freed with it
+    var keys = try a.alloc(digest_key, p.files.items.len);
+    defer a.free(keys);
+    var path: [std.fs.max_path_bytes]u8 = undefined;
+    for (p.files.items, 0..) |name, i| {
+        const file = try Io.Dir.cwd().openFile(io, try shardPath(&path, p, name), .{});
+        const got = digest_key.of(file, io) catch |e| {
+            file.close(io);
+            return e;
+        };
+        file.close(io);
+        keys[i] = got;
+    }
+    var rbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const rpath = recordPath(&rbuf, cache_dir) catch return packDigest(io, p);
+    if (try readRecord(io, a, rpath, p, keys)) |d| return d;
+    const d = try packDigest(io, p);
+    // a record nobody could write is a slow boot, never a failed one
+    writeRecord(io, a, rpath, p, keys, d) catch |e| if (!quiet) std.log.warn("dsv41 prepared: the pack digest record was not written ({t})", .{e});
+    return d;
+}
+
+fn stale(path: []const u8, why: []const u8) ?[32]u8 {
+    if (!quiet) std.log.info("dsv41 prepared: the pack digest record {s} is stale ({s}); hashing the pack once", .{ path, why });
+    return null;
+}
+
+fn readRecord(io: Io, a: Allocator, path: []const u8, p: *const pack_mod.Pack, keys: []const digest_key) !?[32]u8 {
+    const file = Io.Dir.cwd().openFile(io, path, .{}) catch |e| switch (e) {
+        error.FileNotFound => return null,
+        else => return e,
+    };
+    defer file.close(io);
+    const len = try file.length(io);
+    var want: u64 = record_header + 64;
+    for (p.files.items) |name| want += 4 + @as(u64, @intCast(name.len)) + 64;
+    if (len != want) return stale(path, "its length does not match this pack's shard list");
+    const bytes = try a.alloc(u8, @intCast(len));
+    defer a.free(bytes);
+    if (try file.readPositionalAll(io, bytes, 0) != bytes.len) return stale(path, "a short read");
+    if (!std.mem.eql(u8, bytes[0..8], record_magic)) return stale(path, "not a pack digest record");
+    if (std.mem.readInt(u32, bytes[8..12], .little) != @as(u32, @intCast(p.files.items.len))) return stale(path, "a different shard count");
+    var sum: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(bytes[0 .. bytes.len - 32], &sum, .{});
+    if (!std.mem.eql(u8, &sum, bytes[bytes.len - 32 ..])) return stale(path, "its checksum does not hold");
+    var off: usize = record_header;
+    for (p.files.items, 0..) |name, i| {
+        const nlen = std.mem.readInt(u32, bytes[off..][0..4], .little);
+        off += 4;
+        const nl: usize = nlen;
+        if (nl != name.len or off + nl + 64 > bytes.len) return stale(path, "a shard name does not match");
+        if (!std.mem.eql(u8, bytes[off .. off + nl], name)) return stale(path, "a shard name does not match");
+        off += nl;
+        const k: digest_key = .{
+            .device = std.mem.readInt(u64, bytes[off..][0..8], .little),
+            .inode = std.mem.readInt(u128, bytes[off + 8 ..][0..16], .little),
+            .size = std.mem.readInt(u64, bytes[off + 24 ..][0..8], .little),
+            .mtime = std.mem.readInt(i128, bytes[off + 32 ..][0..16], .little),
+            .ctime = std.mem.readInt(i128, bytes[off + 48 ..][0..16], .little),
+        };
+        if (!k.equal(keys[i])) return stale(path, "a shard's size or timestamp changed");
+        off += 64;
+    }
+    var d: [32]u8 = undefined;
+    @memcpy(&d, bytes[off..][0..32]);
+    return d;
+}
+
+fn writeRecord(io: Io, a: Allocator, path: []const u8, p: *const pack_mod.Pack, keys: []const digest_key, digest: [32]u8) !void {
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(a);
+    try out.appendSlice(a, record_magic);
+    var n: [4]u8 = undefined;
+    std.mem.writeInt(u32, &n, @intCast(p.files.items.len), .little);
+    try out.appendSlice(a, &n);
+    for (p.files.items, keys) |name, k| {
+        std.mem.writeInt(u32, &n, @intCast(name.len), .little);
+        try out.appendSlice(a, &n);
+        try out.appendSlice(a, name);
+        var kbuf: [64]u8 = undefined;
+        std.mem.writeInt(u64, kbuf[0..8], k.device, .little);
+        std.mem.writeInt(u128, kbuf[8..24], k.inode, .little);
+        std.mem.writeInt(u64, kbuf[24..32], k.size, .little);
+        std.mem.writeInt(i128, kbuf[32..48], k.mtime, .little);
+        std.mem.writeInt(i128, kbuf[48..64], k.ctime, .little);
+        try out.appendSlice(a, &kbuf);
+    }
+    try out.appendSlice(a, &digest);
+    var sum: [32]u8 = undefined;
+    std.crypto.hash.sha2.Sha256.hash(out.items, &sum, .{});
+    try out.appendSlice(a, &sum);
+    var tbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp = try std.fmt.bufPrint(&tbuf, "{s}.tmp", .{path});
+    const dir = Io.Dir.cwd();
+    {
+        const file = try dir.createFile(io, tmp, .{ .truncate = true });
+        defer file.close(io);
+        try file.writePositionalAll(io, out.items, 0);
+        try file.setLength(io, @intCast(out.items.len));
+    }
+    try dir.rename(tmp, dir, path, io);
+}
 
 /// Content identity includes shard names, lengths, headers and all tensor bytes. Stat equality is insufficient.
 pub fn packDigest(io: Io, p: *const pack_mod.Pack) ![32]u8 {

@@ -791,14 +791,16 @@ fn commitRoles(f: *Forward, n: u32, row0: usize, comptime pre: []const u8, adv: 
 }
 
 /// TF_DSV41_PREFILL_PIPE: a segment's host commit at its entry into the line (pipe_run.zig), every rank alike: the Engram
-/// tail, the position, the session's committed ids, the stash's ids. Its carries are its stage's own commit and its
-/// rows the stages' exchanges; the slot's device state is whole once the line drains (`settle`).
+/// tail, the position, the session's committed ids, and in replay mode the stash's ids. Its carries are its stage's own
+/// commit and its rows the stages' exchanges; the slot's device state is whole once the line drains (`settle`).
 pub fn advanceHost(f: *Forward, start: u64, ids: []const u32) !void {
     if (f.slot.pending != null or f.slot.pos != start) return error.BadWindow;
     if (f.engram) |h| tailOf(&f.slot, ids, h.max_ngram - 1);
     f.slot.pos = start + ids.len;
     if (f.sess) |x| try x.commit(x.ptr, ids);
-    f.slot.ced.extend(start, ids);
+    // the stash is CED replay's ring: full mode keeps none, and a parked entry's slot blob must not claim rows it
+    // cannot carry (the session codec refuses a non-replay snapshot with a non-empty stash)
+    if (f.prefill_state.mode == .replay) f.slot.ced.extend(start, ids);
 }
 
 /// TF_DSV41_PREFILL_PIPE: the active slot's line drained before its state is read (the CED finish, a snapshot), on every
