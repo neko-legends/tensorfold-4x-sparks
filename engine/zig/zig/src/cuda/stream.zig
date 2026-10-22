@@ -36,7 +36,6 @@ pub const Stream = struct {
         return .{ .d = d, .handle = handle };
     }
 
-
     pub fn deinit(self: *Stream) void {
         @import("copy_source.zig").synchronizeStream(self.d, self.handle) catch {};
         _ = self.d.api.cuStreamDestroy_v2(self.handle);

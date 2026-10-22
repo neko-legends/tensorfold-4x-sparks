@@ -472,7 +472,6 @@ pub const Emitter = struct {
         return rows;
     }
 
-
     /// Site "o" (after wq_b): wo_a's groups, then wo_b; l2pf segments.
     pub fn prefetchO(e: *Emitter, L: u32) !void {
         const sizes = try e.srcSizes(try e.l2pfSources(L, .o));

@@ -78,7 +78,9 @@ fn ringOf(cs: []const calls.Call) i64 {
         for (c.args) |x| {
             if (!std.mem.eql(u8, x.name, "RING")) continue;
             switch (x.arg) {
-                .i => |v| if (v > ring) { ring = v; },
+                .i => |v| if (v > ring) {
+                    ring = v;
+                },
                 else => {},
             }
         }
@@ -102,7 +104,7 @@ test "TP=4: under 4K the boot's f.opts (pf4k off, default 2,048 rows) stage at r
         var k4 = boot;
         k4.pf4k = true;
         k4.prefill_rows = 4096;
-        for ([_]i64{ 1500, 17 }) |n| for ([_]i64{0, 300000}) |start| {
+        for ([_]i64{ 1500, 17 }) |n| for ([_]i64{ 0, 300000 }) |start| {
             const a = try bp.emitReplay(aa, &cfg, &w, boot, &enc, n, start, .encoder);
             const b = try bp.emitReplay(aa, &cfg, &w, k4, &enc, n, start, .encoder);
             // a staged segment (past 2 x window rows) stages at ceilPow2(prefill_rows + window - 1)

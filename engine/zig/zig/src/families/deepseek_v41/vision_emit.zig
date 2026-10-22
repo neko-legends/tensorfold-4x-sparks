@@ -40,7 +40,7 @@ fn sameRole(x: calls.Role, y: calls.Role) bool {
         .buf => |b| y == .buf and std.mem.eql(u8, canon(b), canon(y.buf)),
         .weight => |w| y == .weight and (std.mem.eql(u8, w, y.weight) or
             (std.mem.endsWith(u8, w, ".moe.bias_vl") and std.mem.endsWith(u8, y.weight, ".moe.bias") and
-            std.mem.eql(u8, w[0 .. w.len - 3], y.weight))),
+                std.mem.eql(u8, w[0 .. w.len - 3], y.weight))),
     };
 }
 

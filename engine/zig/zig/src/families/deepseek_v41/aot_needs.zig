@@ -51,7 +51,7 @@ const ced = @import("ced.zig");
 const kvs = @import("cuda_kv.zig");
 const pipe = @import("pipe.zig");
 
-pub const Param =struct { name: []const u8, constexpr: bool, nospec: bool, noalign: bool };
+pub const Param = struct { name: []const u8, constexpr: bool, nospec: bool, noalign: bool };
 pub const Fn = struct { function: []const u8, params: []Param };
 pub const Sigs = std.json.ArrayHashMap([]Fn);
 const SigsJson = struct { kernels: Sigs };

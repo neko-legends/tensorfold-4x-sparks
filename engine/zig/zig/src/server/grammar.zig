@@ -220,4 +220,5 @@ test "grammar vocabulary preserves nested text and root precedence" {
     for (cases) |c| {
         const cfg = (try json.parse(a, c[0])).ok;
         try std.testing.expectEqual(c[1], vocabSize(cfg));
-    }}
+    }
+}

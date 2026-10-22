@@ -187,11 +187,6 @@ pub const Fake = struct {
         try h.append(x.gpa, s.prompt()[s.prompt_len - 1]);
     }
 
-
-
-
-
-
     fn self(ptr: *anyopaque) *Fake {
         return @ptrCast(@alignCast(ptr));
     }

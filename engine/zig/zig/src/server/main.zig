@@ -227,4 +227,3 @@ fn sampling(a: std.mem.Allocator, io: std.Io, dir: []const u8, args: cli.Args, p
     if (args.min_p) |t| try out.put(a, "min_p", .{ .float = t });
     return if (out.count() > 0) json.Value{ .object = out } else null;
 }
-

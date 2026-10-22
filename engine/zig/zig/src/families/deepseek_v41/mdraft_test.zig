@@ -56,7 +56,7 @@ fn roleOf(t: calls.Tensor) []const u8 {
 /// an int's (== 1, multiple of 16); anything else its tag.
 fn class(x: calls.Arg) [3]i64 {
     return switch (x) {
-        .t => |t| .{ 1, @mod(t.offset, 16), @intFromEnum(t.dt) },
+        .t => |t| .{ 1, @mod(t.offset, 16), @backingInt(t.dt) },
         .i => |v| .{ 2, @intFromBool(v == 1), @intFromBool(@mod(v, 16) == 0) },
         .f => .{ 3, 0, 0 },
         .b => |v| .{ 4, @intFromBool(v), 0 },

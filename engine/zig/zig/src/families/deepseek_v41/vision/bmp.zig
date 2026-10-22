@@ -95,8 +95,8 @@ pub fn decode(gpa: Allocator, raw: []const u8, max_pixels: u64) Error!pixels.Ima
             const m = masks;
             if (bits == 32) {
                 const known = [_]struct { m: [4]u32, r: Raw }{
-                    .{ .m = .{ 0xFF0000, 0xFF00, 0xFF, 0 }, .r = .bgrx },        .{ .m = .{ 0xFF000000, 0xFF0000, 0xFF00, 0 }, .r = .xbgr },
-                    .{ .m = .{ 0xFF000000, 0xFF00, 0xFF, 0 }, .r = .bgxr },      .{ .m = .{ 0xFF000000, 0xFF0000, 0xFF00, 0xFF }, .r = .abgr },
+                    .{ .m = .{ 0xFF0000, 0xFF00, 0xFF, 0 }, .r = .bgrx },          .{ .m = .{ 0xFF000000, 0xFF0000, 0xFF00, 0 }, .r = .xbgr },
+                    .{ .m = .{ 0xFF000000, 0xFF00, 0xFF, 0 }, .r = .bgxr },        .{ .m = .{ 0xFF000000, 0xFF0000, 0xFF00, 0xFF }, .r = .abgr },
                     .{ .m = .{ 0xFF, 0xFF00, 0xFF0000, 0xFF000000 }, .r = .rgba }, .{ .m = .{ 0xFF0000, 0xFF00, 0xFF, 0xFF000000 }, .r = .bgra },
                     .{ .m = .{ 0xFF000000, 0xFF00, 0xFF, 0xFF0000 }, .r = .bgar }, .{ .m = .{ 0, 0, 0, 0 }, .r = .bgra },
                 };

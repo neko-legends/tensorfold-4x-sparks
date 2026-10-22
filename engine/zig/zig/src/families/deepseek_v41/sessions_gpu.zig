@@ -292,7 +292,6 @@ pub const Sessions = struct {
 
     pub const Snap = @import("session_snapshot.zig").Snap;
 
-
     /// The "slot" blob: position, tail length, the tail; then (CED) the stash's from / hi and its ids; then the drafter's
     /// rows of the measure. Older parks have the shorter forms (their stash empty, no drafter rows).
     pub const ced_at: usize = 16 + 4 * eh.max_ngram;

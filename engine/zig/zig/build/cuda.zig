@@ -43,7 +43,6 @@ const dsv41_kernels = [_]Kernel{
     .{ .name = "dsv41_l2pf", .src = "deepseek_v41/l2pf", .flags = &.{"-O3"} }, // tf_dsv41_l2pf_v1 (glm5_next/spark/l2pf.cu)
 };
 
-
 /// The sampler's kernel (sampling.cu, ours: the keyed sampler's device steps), from -Dfatbins when that dir holds
 /// dsv41_sampling.fatbin, else built by -Dnvcc.
 const dsv41_sampling: Kernel = .{ .name = "dsv41_sampling", .src = "deepseek_v41/sampling", .flags = &.{ "-O3", "--fmad=false" } };
@@ -76,7 +75,6 @@ pub fn dsv41Kernels(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     m.addAnonymousImport("dsv41_fatbin_dsv41_lin2", .{ .root_source_file = lin2 orelse b.addWriteFiles().add("empty.fatbin", "") });
     return m;
 }
-
 
 fn stagger(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return b.createModule(.{ .root_source_file = b.path("zig/src/core/stagger.zig"), .target = target, .optimize = optimize });
@@ -338,10 +336,7 @@ fn flashnextModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: st
     m.addImport("qwen_vision", qwen_vision);
     m.addImport("living", core.import_table.get("living").?);
     return m;
-
 }
-
-
 
 /// The checkpoint commands' module over a build's engines (no serving engine of its own).
 fn checkpointCli(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, strip: ?bool, engines_mod: *std.Build.Module, core: *std.Build.Module) *std.Build.Module {

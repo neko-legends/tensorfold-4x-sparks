@@ -311,8 +311,7 @@ test "a spill park that fails on one rank is the fleet-fatal ParkFailed (the rev
     defer gpa.free(tier1);
     try chmod(tier1, 0o555);
     defer chmod(tier1, 0o755) catch {};
-    if (r1.store.evict(hit1.id)) |_| return error.TestUnexpectedResult else |err|
-        try testing.expect(err != error.ParkFailed);
+    if (r1.store.evict(hit1.id)) |_| return error.TestUnexpectedResult else |err| try testing.expect(err != error.ParkFailed);
     try testing.expect(r1.store.entry(hit1.id).ram);
 }
 

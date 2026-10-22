@@ -533,7 +533,7 @@ pub const Ops = struct {
         var a: cuda.Args = .{};
         g.add(&a);
         a.add(epi);
-        try go(o.f.epi[@intFromEnum(kind)][c.pd][c.range], o.s, .{ g.nexp, g.N / 128, g.mats * g.SK * mt }, 128, 0, false, &a);
+        try go(o.f.epi[@backingInt(kind)][c.pd][c.range], o.s, .{ g.nexp, g.N / 128, g.mats * g.SK * mt }, 128, 0, false, &a);
     }
 
     /// x3pf (expert_prefill.grouped): the same Z, MTL member tiles a program.
@@ -573,7 +573,7 @@ pub const Ops = struct {
         a.add(int(x_stride));
         for ([_]u64{ pick, suh0, suh1, out0, out1 }) |v| a.add(v);
         for ([_]usize{ K, slots, E }) |v| a.add(int(v));
-        try go(o.f.rot_in[@intFromEnum(input)], o.s, .{ rows * slots, K / 128, 2 }, 32, 0, false, &a);
+        try go(o.f.rot_in[@backingInt(input)], o.s, .{ rows * slots, K / 128, 2 }, 32, 0, false, &a);
     }
 
     /// Independent grouping/rotation CTAs share a launch, with no inter-CTA handoff. Invalid picks leave Xh untouched.
@@ -644,7 +644,7 @@ pub const Ops = struct {
         a.add(int(x_stride));
         for ([_]u64{ pick, suh0, suh1, out0, out1 }) |v| a.add(v);
         for ([_]usize{ K, slots, items }) |v| a.add(int(v));
-        try go(o.f.gm_rot[@intFromEnum(input)][mats - 1], o.s, .{ (items + 7) / 8, 1, 1 }, 256, 0, false, &a);
+        try go(o.f.gm_rot[@backingInt(input)][mats - 1], o.s, .{ (items + 7) / 8, 1, 1 }, 256, 0, false, &a);
     }
 
     fn gmLaunch(o: Ops, g: Gm, args: GmArgs, ticket: bool) !void {

@@ -110,10 +110,26 @@ fn expectTicket(t: Arg, ld: Call, kind: dk.exl3.EpiKind) !void {
     try testing.expectEqual(@as(i64, 0), t.t.offset);
     const a = ld.args;
     const g: dk.exl3.Grouped = .{
-        .x0 = 0, .x1 = 0, .tp0 = 0, .tp1 = 0, .k2_0 = 0, .k2_1 = 0, .uids = 0, .ucount = 0, .members = 0, .z = 0,
-        .mats = @intCast(a[10].arg.i), .K = @intCast(a[11].arg.i), .N = @intCast(a[12].arg.i), .P = @intCast(a[13].arg.i),
-        .SK = @intCast(a[14].arg.i), .slots = @intCast(a[15].arg.i), .maxm = @intCast(a[8].arg.t.shape[1]),
-        .nexp = @intCast(numel(a[6].arg)), .lo = @intCast(a[20].arg.i), .hi = @intCast(a[21].arg.i),
+        .x0 = 0,
+        .x1 = 0,
+        .tp0 = 0,
+        .tp1 = 0,
+        .k2_0 = 0,
+        .k2_1 = 0,
+        .uids = 0,
+        .ucount = 0,
+        .members = 0,
+        .z = 0,
+        .mats = @intCast(a[10].arg.i),
+        .K = @intCast(a[11].arg.i),
+        .N = @intCast(a[12].arg.i),
+        .P = @intCast(a[13].arg.i),
+        .SK = @intCast(a[14].arg.i),
+        .slots = @intCast(a[15].arg.i),
+        .maxm = @intCast(a[8].arg.t.shape[1]),
+        .nexp = @intCast(numel(a[6].arg)),
+        .lo = @intCast(a[20].arg.i),
+        .hi = @intCast(a[21].arg.i),
     };
     _ = try dk.exl3.x3ldEpiCheck(g, kind, @intCast(a[18].arg.i));
     try testing.expect(numel(t) >= @as(i64, @intCast(dk.exl3.epiTicketWords(g, kind))));

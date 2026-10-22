@@ -60,7 +60,6 @@ pub fn add(b: *std.Build, test_step: *std.Build.Step) void {
     test_step.dependOn(&run.step);
 }
 
-
 /// libtfgrammar.so: `zig/src/grammar/tf_grammar.cc` (the C ABI the native server loads at its first structured
 /// request) over the same vendored xgrammar the mask path links. The fork does not take an upstream release
 /// archive, so the build installs the library beside the binary (packaging/RUNTIME.md) instead of expecting it.

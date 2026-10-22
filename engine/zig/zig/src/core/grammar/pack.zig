@@ -11,7 +11,7 @@ pub fn len(text_len: usize) usize {
 
 /// [kind, active, n, bytes 7 a word...] into `out` (len(spec.text.len) words).
 pub fn encode(spec: grammars.Spec, active: bool, out: []i64) void {
-    out[0] = @intFromEnum(spec.kind);
+    out[0] = @backingInt(spec.kind);
     out[1] = @intFromBool(active);
     out[2] = @intCast(spec.text.len);
     var i: usize = 0;

@@ -630,7 +630,6 @@ pub const Forward = struct {
         reset: *const fn (ptr: *anyopaque) void,
     };
 
-
     /// Rank 0: a drafter operation to the followers (before running it).
     pub fn sendDrafter(f: *Forward, ints: []const i64) !void {
         if (f.leads()) try f.link.?.send(ints);
@@ -1127,7 +1126,6 @@ pub const Forward = struct {
 
 pub const Graphed = fwd_graph.Graphed;
 
-
 /// M2a's peer: world 2, rank 0 alone on one GPU, the peer's half of every all-gather zeros (dsv41_m1_capture.py's
 /// ZeroPeer, the Python reference's). Only the all-gather the forward uses is implemented.
 pub const ZeroPeer = struct {
@@ -1177,4 +1175,3 @@ pub const ZeroPeer = struct {
         return .{ .ptr = z, .vtable = &vtable };
     }
 };
-

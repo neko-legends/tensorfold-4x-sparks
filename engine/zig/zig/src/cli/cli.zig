@@ -12,7 +12,13 @@ const pull_exlr8 = if (exlr8_on) @import("pull_exlr8.zig") else struct {
         return null;
     }
     pub fn run(a: std.mem.Allocator, io: std.Io, out: anytype, err: anytype, env: anytype, repo: []const u8, o: Flags) !u8 {
-        _ = a; _ = io; _ = out; _ = err; _ = env; _ = repo; _ = o;
+        _ = a;
+        _ = io;
+        _ = out;
+        _ = err;
+        _ = env;
+        _ = repo;
+        _ = o;
         return 2;
     }
 };
@@ -25,7 +31,14 @@ const lora_merge = if (lora_on) @import("core").lora_merge else struct {
         return null;
     }
     pub fn run(gpa: std.mem.Allocator, io: std.Io, out: anytype, err: anytype, dense: []const u8, adapter: []const u8, dest: []const u8, shipped: bool) anyerror!u8 {
-        _ = gpa; _ = io; _ = out; _ = err; _ = dense; _ = adapter; _ = dest; _ = shipped;
+        _ = gpa;
+        _ = io;
+        _ = out;
+        _ = err;
+        _ = dense;
+        _ = adapter;
+        _ = dest;
+        _ = shipped;
         return 2;
     }
 };

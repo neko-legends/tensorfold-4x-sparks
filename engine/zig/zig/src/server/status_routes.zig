@@ -5,7 +5,8 @@ const json = @import("json");
 const live = @import("live.zig");
 const routes = @import("routes.zig");
 const spark = @import("spark.zig");
-const manifest = @import("benchmark_manifest.zig");const Server = @import("server.zig").Server;
+const manifest = @import("benchmark_manifest.zig");
+const Server = @import("server.zig").Server;
 const Conn = @import("http_conn.zig").Conn;
 const Value = json.Value;
 const Allocator = std.mem.Allocator;
@@ -140,7 +141,8 @@ fn reasoningValue(
         if (switchable) named[levels.len] = .{ .string = "none" };
         try r.put(a, "supported_efforts", .{ .array = named });
     }
-    return .{ .object = r };}
+    return .{ .object = r };
+}
 
 /// Prometheus text, version 0.0.4.
 pub fn metrics(srv: *Server, conn: *Conn, a: Allocator) void {

@@ -54,7 +54,8 @@ pub const Metrics = struct {
         m.requests.deinit(m.gpa);
     }
 
-    pub fn note(m: *Metrics, io: std.Io, prompt: usize, cached: usize, generation: usize, drafted: u64, accepted: u64, rounds: u64, latency: f64, ttft: ?f64, decode: ?f64, prefill: ?f64, tpot: ?f64) void {        m.mutex.lockUncancelable(io);
+    pub fn note(m: *Metrics, io: std.Io, prompt: usize, cached: usize, generation: usize, drafted: u64, accepted: u64, rounds: u64, latency: f64, ttft: ?f64, decode: ?f64, prefill: ?f64, tpot: ?f64) void {
+        m.mutex.lockUncancelable(io);
         defer m.mutex.unlock(io);
         m.prompt += prompt;
         m.cached += cached;

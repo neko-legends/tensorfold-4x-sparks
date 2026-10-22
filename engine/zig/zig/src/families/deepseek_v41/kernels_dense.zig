@@ -188,10 +188,10 @@ pub fn rotTable(lay: Layout, segs: []const Seg, ins: []const RotIn, first: usize
     const end = @min(segs.len, first + max_seg);
     t.n = @intCast(end - first);
     for (first..end, 0..) |i, j| {
-        t.s[j] = .{ .x = ins[i].x, .suh = ins[i].suh, .xh = xh + 2 * lay.xh_off[i], .ld = @intCast(ins[i].ld), .K = @intCast(segs[i].k), .x_dtype = @intFromEnum(ins[i].dtype) };
+        t.s[j] = .{ .x = ins[i].x, .suh = ins[i].suh, .xh = xh + 2 * lay.xh_off[i], .ld = @intCast(ins[i].ld), .K = @intCast(segs[i].k), .x_dtype = @backingInt(ins[i].dtype) };
         if (ins[i].nw != 0) {
             t.s[j].nw = ins[i].nw;
-            t.s[j].nw_dtype = @intFromEnum(ins[i].nw_dtype);
+            t.s[j].nw_dtype = @backingInt(ins[i].nw_dtype);
             t.s[j].inv_k = invK(segs[i].k);
             t.s[j].eps = eps;
         }
@@ -421,7 +421,7 @@ pub const Ops = struct {
     pub fn rotIn(o: Ops, x: u64, x_dtype: DType, suh: u64, xh: u64, M: usize, K: usize) !void {
         var a: cuda.Args = .{};
         a.add(x);
-        a.add(@intFromEnum(x_dtype));
+        a.add(@backingInt(x_dtype));
         a.add(suh);
         a.add(xh);
         a.add(int(K));
@@ -446,7 +446,7 @@ pub const Ops = struct {
         a.add(stride_k);
         a.add(stride_nb);
         for ([_]u64{ svh, bias, y }) |v| a.add(v);
-        a.add(@intFromEnum(y_dtype));
+        a.add(@backingInt(y_dtype));
         for ([_]u64{ z, counters }) |v| a.add(v);
         for ([_]usize{ M, K, N, SK }) |v| a.add(int(v));
         a.add(skip);
@@ -473,7 +473,7 @@ pub const Ops = struct {
     pub fn segRotIn(o: Ops, tab: RotTable, M: usize, pdl: bool) !void {
         if (tab.n < 1 or tab.n > max_seg) return error.Shape;
         for (tab.s[0..@intCast(tab.n)]) |s| {
-            if (s.nw != 0 and s.x_dtype != @intFromEnum(DType.bf16)) return error.Shape; // the fold takes bf16 rows
+            if (s.nw != 0 and s.x_dtype != @backingInt(DType.bf16)) return error.Shape; // the fold takes bf16 rows
         }
         var kmax: usize = 0;
         for (tab.s[0..@intCast(tab.n)]) |s| kmax = @max(kmax, @as(usize, @intCast(s.K)));
@@ -524,7 +524,7 @@ pub const Ops = struct {
                 if (tab.n < 1 or tab.n > max_seg) return error.Shape;
                 var a: cuda.Args = .{};
                 a.add(tab);
-                a.add(@intFromEnum(y_dtype));
+                a.add(@backingInt(y_dtype));
                 a.add(int(M));
                 const shared = redSmem(wk, M) + 16 * t * 128 * 4;
                 return cuda.launch.launch(l2.lanesc[ki][j], .{ .grid = .{ .x = dim(programs), .y = 1, .z = 1 }, .block = .{ .x = dim(wk * 32) }, .shared = dim(shared), .cluster = .{ .x = sk, .y = 1, .z = 1 }, .pdl = pdl }, o.s, &a);
@@ -540,7 +540,7 @@ pub const Ops = struct {
         if (M < 1 or M > rows_max or tab.n < 1 or tab.n > max_seg) return error.Shape;
         var a: cuda.Args = .{};
         a.add(tab);
-        a.add(@intFromEnum(y_dtype));
+        a.add(@backingInt(y_dtype));
         a.add(int(M));
         try go(f, o.s, .{ programs, 1, 1 }, wk * 32, redSmem(wk, M), pdl, &a);
     }
@@ -589,7 +589,7 @@ test "rot_in tables: one launch a group of 8, xh offsets from the layout" {
     try std.testing.expectEqual(@as(c_int, 8), t0.n);
     try std.testing.expectEqual(@as(c_int, 2), t1.n);
     try std.testing.expectEqual(@as(u64, 0x10000 + 2 * 8 * 2 * 1024), t1.s[0].xh);
-    try std.testing.expectEqual(@as(c_int, @intFromEnum(DType.bf16)), t1.s[1].x_dtype);
+    try std.testing.expectEqual(@as(c_int, @backingInt(DType.bf16)), t1.s[1].x_dtype);
 }
 
 test "fused_proj.layout: offsets, one launch a width, 8 segments a launch" {

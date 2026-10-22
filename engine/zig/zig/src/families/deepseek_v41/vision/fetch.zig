@@ -63,9 +63,9 @@ pub fn publicIp(addr: net.IpAddress) bool {
             const a = a4.bytes;
             // is_private (3.12's table); is_global: not private and not the shared-address range
             const private = [_]struct { [4]u8, u5 }{
-                .{ .{ 0, 0, 0, 0 }, 8 },      .{ .{ 10, 0, 0, 0 }, 8 },     .{ .{ 127, 0, 0, 0 }, 8 },     .{ .{ 169, 254, 0, 0 }, 16 },
-                .{ .{ 172, 16, 0, 0 }, 12 },  .{ .{ 192, 0, 0, 0 }, 29 },   .{ .{ 192, 0, 0, 170 }, 31 },  .{ .{ 192, 0, 2, 0 }, 24 },
-                .{ .{ 192, 168, 0, 0 }, 16 }, .{ .{ 198, 18, 0, 0 }, 15 },  .{ .{ 198, 51, 100, 0 }, 24 }, .{ .{ 203, 0, 113, 0 }, 24 },
+                .{ .{ 0, 0, 0, 0 }, 8 },      .{ .{ 10, 0, 0, 0 }, 8 },        .{ .{ 127, 0, 0, 0 }, 8 },     .{ .{ 169, 254, 0, 0 }, 16 },
+                .{ .{ 172, 16, 0, 0 }, 12 },  .{ .{ 192, 0, 0, 0 }, 29 },      .{ .{ 192, 0, 0, 170 }, 31 },  .{ .{ 192, 0, 2, 0 }, 24 },
+                .{ .{ 192, 168, 0, 0 }, 16 }, .{ .{ 198, 18, 0, 0 }, 15 },     .{ .{ 198, 51, 100, 0 }, 24 }, .{ .{ 203, 0, 113, 0 }, 24 },
                 .{ .{ 240, 0, 0, 0 }, 4 },    .{ .{ 255, 255, 255, 255 }, 0 },
             };
             for (private) |p| if (p[1] == 0) {
@@ -83,8 +83,8 @@ pub fn publicIp(addr: net.IpAddress) bool {
             const loop = std.mem.allEqual(u8, a[0..15], 0) and a[15] == 1;
             if (zero or loop) return false;
             const private = [_]struct { u128, u8 }{
-                .{ (0xffff << 32), 96 }, .{ v6(&.{ 0x64, 0xff9b, 1 }), 48 }, .{ v6(&.{0x100}), 64 }, .{ v6(&.{ 0x2001, 0xdb8 }), 32 },
-                .{ v6(&.{ 0x2001, 0x10 }), 28 },  .{ v6(&.{0xfc00}), 7 },        .{ v6(&.{0xfe80}), 10 },
+                .{ (0xffff << 32), 96 },         .{ v6(&.{ 0x64, 0xff9b, 1 }), 48 }, .{ v6(&.{0x100}), 64 },  .{ v6(&.{ 0x2001, 0xdb8 }), 32 },
+                .{ v6(&.{ 0x2001, 0x10 }), 28 }, .{ v6(&.{0xfc00}), 7 },             .{ v6(&.{0xfe80}), 10 },
             };
             for (private) |p| if (in6(a, p[0], p[1])) return false;
             // 2001::/23 is private except these (3.12)
@@ -98,7 +98,7 @@ pub fn publicIp(addr: net.IpAddress) bool {
             if (a[0] == 0xff) return false; // multicast
             // is_reserved: ::/8 (but not ::/128 / ::1 handled above) and the unassigned blocks
             const reserved = [_]struct { u128, u8 }{
-                .{ 0, 8 },     .{ v6(&.{0x100}), 8 },  .{ v6(&.{0x200}), 7 },  .{ v6(&.{0x400}), 6 },  .{ v6(&.{0x800}), 5 },
+                .{ 0, 8 },              .{ v6(&.{0x100}), 8 },  .{ v6(&.{0x200}), 7 },  .{ v6(&.{0x400}), 6 },  .{ v6(&.{0x800}), 5 },
                 .{ v6(&.{0x1000}), 4 }, .{ v6(&.{0x4000}), 3 }, .{ v6(&.{0x6000}), 3 }, .{ v6(&.{0x8000}), 3 }, .{ v6(&.{0xa000}), 3 },
                 .{ v6(&.{0xc000}), 3 }, .{ v6(&.{0xe000}), 4 }, .{ v6(&.{0xf000}), 5 }, .{ v6(&.{0xf800}), 6 }, .{ v6(&.{0xfe00}), 9 },
             };
@@ -299,7 +299,7 @@ pub const Fetcher = struct {
             else => refuse(problem, if (dog.fired.load(.acquire)) "image download timed out" else "could not fetch the image URL: no valid HTTP reply"),
         };
         _ = try f.remaining(deadline, problem);
-        const st = @intFromEnum(resp.head.status);
+        const st = @backingInt(resp.head.status);
         if (st == 301 or st == 302 or st == 303 or st == 307 or st == 308) {
             const loc = resp.head.location orelse return refuse(problem, "image redirect has no destination");
             return .{ .location = try a.dupe(u8, loc) };

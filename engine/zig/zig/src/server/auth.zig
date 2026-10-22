@@ -37,7 +37,8 @@ pub const Store = struct {
     /// ``keys`` from --api-key, ``environment`` from TENSORFOLD_API_KEY; errors carry Python's message.
     pub fn init(gpa: Allocator, keys: []const []const u8, environment: []const u8, path: ?[]const u8, metrics_open: bool, problem: *[]const u8) !Store {
         var store: Store = .{ .gpa = gpa, .path = path, .metrics_open = metrics_open };
-        errdefer store.deinit();        for (keys, 1..) |key, i| {
+        errdefer store.deinit();
+        for (keys, 1..) |key, i| {
             const d = digest(key) orelse return fail(problem, "API keys must be nonempty text without whitespace");
             try store.static.ensureUnusedCapacity(gpa, 1);
             store.static.appendAssumeCapacity(.{ .digest = d, .label = try std.fmt.allocPrint(gpa, "cli-{d}", .{i}) });
@@ -68,7 +69,8 @@ pub const Store = struct {
     pub fn deinit(s: *Store) void {
         for (s.static.items) |key| s.gpa.free(key.label);
         s.static.deinit(s.gpa);
-        if (s.file_arena) |*arena| arena.deinit();    }
+        if (s.file_arena) |*arena| arena.deinit();
+    }
 
     fn fail(problem: *[]const u8, message: []const u8) error{KeyFile} {
         problem.* = message;

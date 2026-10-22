@@ -228,7 +228,6 @@ pub const Seg = struct {
         return s.matmul(w, form, x, k, n, .{ .role = y.t.role, .dt = y.t.dt, .stride = n, .offset = y.t.offset });
     }
 
-
     fn coefs(e: *E, set: u1) ![3]Arg {
         return .{
             try e.buf("w.c{d}.pre", .{set}, .f32, &.{ e.n, 4 }),
@@ -287,12 +286,12 @@ pub const Seg = struct {
         const xout = if (spare) try e.spare() else x;
         if (n >= pf_rows) {
             try e.ext("tf_dsv41_mhc_pf_v1.run", &.{
-                x,                            if (post) xout else b0,
+                x,                                        if (post) xout else b0,
                 if (post) try gathered(e, which) else b0, if (post) prev[1] else f0,
-                if (post) prev[2] else f0,    if (mode != .site1) prev[0] else f0,
-                fnw,                          part,
-                c,                            tap orelse b0,
-                .{ .i = n },                  .{ .i = @intFromEnum(mode) },
+                if (post) prev[2] else f0,                if (mode != .site1) prev[0] else f0,
+                fnw,                                      part,
+                c,                                        tap orelse b0,
+                .{ .i = n },                              .{ .i = @backingInt(mode) },
             });
         } else try s.siteTriton(x, if (post) xout else null, if (post) try gathered(e, which) else null, prev, if (mode != .site1) prev[0] else null, fnw, part, c, tap, if (mode == .site1) 1 else 2, true);
         try s.finish(.{ L, which }, next, try e.weight("L{d}.{s}", .{ L, if (std.mem.eql(u8, which, "hc_attn")) "attn_norm" else "ffn_norm" }, .f32, &.{D}), part, c, 0);
@@ -336,12 +335,12 @@ pub const Seg = struct {
             const pr = try e.view(part.t.role, .f32, &.{ m, 4, 40, 32 }, &.{ 4 * 40 * 32, 40 * 32, 32, 1 }, r[0] * 4 * 40 * 32 * 4);
             const cr = try rowsOf(e, c, .bf16, r[0], m, D);
             try e.ext("tf_dsv41_mhc_pf_v1.run", &.{
-                xr,                                                                                   xr,
-                try e.view(g.t.role, .bf16, &.{ W, m, D }, &.{ n * D, D, 1 }, r[0] * D * 2),          try rowsOf(e, prev[1], .f32, r[0], m, 4),
-                try rowsOf(e, prev[2], .f32, r[0], m, 16),                                            try rowsOf(e, prev[0], .f32, r[0], m, 4),
-                fnw,                                                                                  pr,
-                cr,                                                                                   if (tap) |t| try e.view(t.t.role, .bf16, &.{ m, D }, t.t.stride, t.t.offset + r[0] * t.t.stride[0] * 2) else b0,
-                .{ .i = m },                                                                          .{ .i = @intFromEnum(moe.Mode.boundary) },
+                xr,                                                                          xr,
+                try e.view(g.t.role, .bf16, &.{ W, m, D }, &.{ n * D, D, 1 }, r[0] * D * 2), try rowsOf(e, prev[1], .f32, r[0], m, 4),
+                try rowsOf(e, prev[2], .f32, r[0], m, 16),                                   try rowsOf(e, prev[0], .f32, r[0], m, 4),
+                fnw,                                                                         pr,
+                cr,                                                                          if (tap) |t| try e.view(t.t.role, .bf16, &.{ m, D }, t.t.stride, t.t.offset + r[0] * t.t.stride[0] * 2) else b0,
+                .{ .i = m },                                                                 .{ .i = @backingInt(moe.Mode.boundary) },
             });
             try s.finish(.{ L, which }, nx, nw, pr, cr, r[0]);
         }
@@ -358,18 +357,18 @@ pub const Seg = struct {
         // a program a stream for small mixing windows, never in place with a post
         const split = mix and n <= split_rows and !(post and std.mem.eql(u8, xout.?.t.role.buf, x.t.role.buf));
         try e.triton("_site", .{ cdiv(n, bm), 40, if (split) 4 else 1 }, &.{
-            .{ .name = "X", .arg = x },                                    .{ .name = "x_stride", .arg = .{ .i = 4 * D } },
-            .{ .name = "XOUT", .arg = xout orelse x },                     .{ .name = "G", .arg = g orelse x },
-            .{ .name = "g_rank", .arg = .{ .i = if (post) n * D else 0 } }, .{ .name = "POST", .arg = if (post) prev[1] else x },
-            .{ .name = "COMB", .arg = if (post) prev[2] else x },          .{ .name = "PRE", .arg = pre orelse x },
-            .{ .name = "FN", .arg = fnw orelse x },                        .{ .name = "PART", .arg = part },
-            .{ .name = "C", .arg = c },                                    .{ .name = "TAP", .arg = tap orelse x },
+            .{ .name = "X", .arg = x },                                                    .{ .name = "x_stride", .arg = .{ .i = 4 * D } },
+            .{ .name = "XOUT", .arg = xout orelse x },                                     .{ .name = "G", .arg = g orelse x },
+            .{ .name = "g_rank", .arg = .{ .i = if (post) n * D else 0 } },                .{ .name = "POST", .arg = if (post) prev[1] else x },
+            .{ .name = "COMB", .arg = if (post) prev[2] else x },                          .{ .name = "PRE", .arg = pre orelse x },
+            .{ .name = "FN", .arg = fnw orelse x },                                        .{ .name = "PART", .arg = part },
+            .{ .name = "C", .arg = c },                                                    .{ .name = "TAP", .arg = tap orelse x },
             .{ .name = "tap_stride", .arg = .{ .i = if (tap) |t| t.t.stride[0] else 0 } }, .{ .name = "R", .arg = .{ .i = n } },
-            .{ .name = "D", .arg = .{ .i = D } },                          .{ .name = "NB", .arg = .{ .i = 40 } },
-            .{ .name = "BM", .arg = .{ .i = bm } },                        .{ .name = "BK", .arg = .{ .i = 16 } },
-            .{ .name = "WORLD", .arg = .{ .i = if (post) e.o.world else 1 } }, .{ .name = "POST_ON", .arg = .{ .b = post } },
-            .{ .name = "COLLAPSE", .arg = .{ .i = collapse } },           .{ .name = "MIX", .arg = .{ .b = mix } },
-            .{ .name = "TAP_ON", .arg = .{ .b = tap != null } },           .{ .name = "SPLIT", .arg = .{ .b = split } },
+            .{ .name = "D", .arg = .{ .i = D } },                                          .{ .name = "NB", .arg = .{ .i = 40 } },
+            .{ .name = "BM", .arg = .{ .i = bm } },                                        .{ .name = "BK", .arg = .{ .i = 16 } },
+            .{ .name = "WORLD", .arg = .{ .i = if (post) e.o.world else 1 } },             .{ .name = "POST_ON", .arg = .{ .b = post } },
+            .{ .name = "COLLAPSE", .arg = .{ .i = collapse } },                            .{ .name = "MIX", .arg = .{ .b = mix } },
+            .{ .name = "TAP_ON", .arg = .{ .b = tap != null } },                           .{ .name = "SPLIT", .arg = .{ .b = split } },
         });
     }
 
@@ -382,15 +381,15 @@ pub const Seg = struct {
         const base = if (hc) |h| try e.weight("L{d}.{s}.base", .{ h[0], h[1] }, .f32, &.{6 * @as(i64, e.cfg.hc_mult)}) else part;
         const scale = if (hc) |h| try e.weight("L{d}.{s}.scale", .{ h[0], h[1] }, .f32, &.{3}) else part;
         try e.triton("_finish_k", .{ e.n, 1, 1 }, &.{
-            .{ .name = "PART", .arg = part },                              .{ .name = "BASE", .arg = base },
-            .{ .name = "SCALE", .arg = scale },                            .{ .name = "PRE", .arg = if (coef) next[0] else part },
-            .{ .name = "POST", .arg = if (coef) next[1] else part },       .{ .name = "COMB", .arg = if (coef) next[2] else part },
-            .{ .name = "C", .arg = c },                                    .{ .name = "NW", .arg = nw },
+            .{ .name = "PART", .arg = part },                                                                          .{ .name = "BASE", .arg = base },
+            .{ .name = "SCALE", .arg = scale },                                                                        .{ .name = "PRE", .arg = if (coef) next[0] else part },
+            .{ .name = "POST", .arg = if (coef) next[1] else part },                                                   .{ .name = "COMB", .arg = if (coef) next[2] else part },
+            .{ .name = "C", .arg = c },                                                                                .{ .name = "NW", .arg = nw },
             .{ .name = "OUT", .arg = try rowsOf(e, try e.buf("w.out", .{}, .bf16, &.{ e.n, D }), .bf16, r0, e.n, D) }, .{ .name = "eps", .arg = .{ .f = E.dec(e.cfg.eps) } },
-            .{ .name = "hc_eps", .arg = .{ .f = E.dec(e.cfg.hc_eps) } },  .{ .name = "post_alpha", .arg = .{ .f = E.dec(e.cfg.hc_post_alpha) } },
-            .{ .name = "D", .arg = .{ .i = D } },                          .{ .name = "NB", .arg = .{ .i = 40 } },
-            .{ .name = "ITERS", .arg = .{ .i = e.cfg.hc_sinkhorn_iters } }, .{ .name = "COEF", .arg = .{ .b = coef } },
-            .{ .name = "BLOCK", .arg = .{ .i = @intCast(std.math.gcd(@as(u64, 1024), @as(u64, @intCast(D)))) } }, .{ .name = "UNROLL", .arg = .{ .b = true } },
+            .{ .name = "hc_eps", .arg = .{ .f = E.dec(e.cfg.hc_eps) } },                                               .{ .name = "post_alpha", .arg = .{ .f = E.dec(e.cfg.hc_post_alpha) } },
+            .{ .name = "D", .arg = .{ .i = D } },                                                                      .{ .name = "NB", .arg = .{ .i = 40 } },
+            .{ .name = "ITERS", .arg = .{ .i = e.cfg.hc_sinkhorn_iters } },                                            .{ .name = "COEF", .arg = .{ .b = coef } },
+            .{ .name = "BLOCK", .arg = .{ .i = @intCast(std.math.gcd(@as(u64, 1024), @as(u64, @intCast(D)))) } },      .{ .name = "UNROLL", .arg = .{ .b = true } },
             .{ .name = "NORM_FIRST", .arg = .{ .b = true } },
         });
     }
@@ -446,14 +445,14 @@ pub const Seg = struct {
         const n = e.n;
         const xv = try e.view(x.t.role, .bf16, &.{ n, heads, dim }, &.{ heads * dim, dim, 1 }, 0);
         try e.triton("_rope", .{ n, @divExact(heads, 4), 1 }, &.{
-            .{ .name = "X", .arg = xv },                               .{ .name = "x_rs", .arg = .{ .i = heads * dim } },
-            .{ .name = "x_hs", .arg = .{ .i = dim } },                 .{ .name = "OUT", .arg = xv },
-            .{ .name = "o_rs", .arg = .{ .i = heads * dim } },         .{ .name = "o_hs", .arg = .{ .i = dim } },
-            .{ .name = "CS", .arg = try e.ropeTable() },              .{ .name = "cs_rs", .arg = .{ .i = 64 } },
+            .{ .name = "X", .arg = xv },                                            .{ .name = "x_rs", .arg = .{ .i = heads * dim } },
+            .{ .name = "x_hs", .arg = .{ .i = dim } },                              .{ .name = "OUT", .arg = xv },
+            .{ .name = "o_rs", .arg = .{ .i = heads * dim } },                      .{ .name = "o_hs", .arg = .{ .i = dim } },
+            .{ .name = "CS", .arg = try e.ropeTable() },                            .{ .name = "cs_rs", .arg = .{ .i = 64 } },
             .{ .name = "POS", .arg = try e.t(.{ .buf = positions }, .i64, &.{n}) }, .{ .name = "H", .arg = .{ .i = heads } },
-            .{ .name = "NOPE", .arg = .{ .i = dim - 64 } },            .{ .name = "NB", .arg = .{ .i = 64 } },
-            .{ .name = "HALF", .arg = .{ .i = 32 } },                  .{ .name = "BH", .arg = .{ .i = 4 } },
-            .{ .name = "INV", .arg = .{ .b = false } },                .{ .name = "COPY", .arg = .{ .b = false } },
+            .{ .name = "NOPE", .arg = .{ .i = dim - 64 } },                         .{ .name = "NB", .arg = .{ .i = 64 } },
+            .{ .name = "HALF", .arg = .{ .i = 32 } },                               .{ .name = "BH", .arg = .{ .i = 4 } },
+            .{ .name = "INV", .arg = .{ .b = false } },                             .{ .name = "COPY", .arg = .{ .b = false } },
             .{ .name = "PDL", .arg = .{ .b = false } },
         });
     }
@@ -485,14 +484,14 @@ pub const Seg = struct {
         const e = s.e;
         const pg = try e.paging(ratio, true);
         try e.triton("_kv_store", .{ e.n, 1, 1 }, &.{
-            .{ .name = "LAT", .arg = lat },                          .{ .name = "l_stride", .arg = .{ .i = e.cfg.head_dim } },
-            .{ .name = "CS", .arg = try e.ropeTable() },             .{ .name = "cs_stride", .arg = .{ .i = 64 } },
-            .{ .name = "V", .arg = rows[0] },                        .{ .name = "S", .arg = rows[1] },
-            .{ .name = "v_stride", .arg = .{ .i = pg.vs } },         .{ .name = "s_stride", .arg = .{ .i = pg.ss } },
-            .{ .name = "POS", .arg = try pos(e) },                   .{ .name = "RATIO", .arg = .{ .i = ratio } },
+            .{ .name = "LAT", .arg = lat },                                      .{ .name = "l_stride", .arg = .{ .i = e.cfg.head_dim } },
+            .{ .name = "CS", .arg = try e.ropeTable() },                         .{ .name = "cs_stride", .arg = .{ .i = 64 } },
+            .{ .name = "V", .arg = rows[0] },                                    .{ .name = "S", .arg = rows[1] },
+            .{ .name = "v_stride", .arg = .{ .i = pg.vs } },                     .{ .name = "s_stride", .arg = .{ .i = pg.ss } },
+            .{ .name = "POS", .arg = try pos(e) },                               .{ .name = "RATIO", .arg = .{ .i = ratio } },
             .{ .name = "RING", .arg = .{ .i = if (ratio == 0) s.ring else 1 } }, .{ .name = "PT", .arg = pg.pt },
-            .{ .name = "PSH", .arg = .{ .i = pg.psh } },             .{ .name = "SL", .arg = .none },
-            .{ .name = "PTS", .arg = .{ .i = 0 } },                  .{ .name = "ROWS", .arg = .{ .b = false } },
+            .{ .name = "PSH", .arg = .{ .i = pg.psh } },                         .{ .name = "SL", .arg = .none },
+            .{ .name = "PTS", .arg = .{ .i = 0 } },                              .{ .name = "ROWS", .arg = .{ .b = false } },
             .{ .name = "PDL", .arg = .{ .b = false } },
         });
     }
@@ -567,18 +566,28 @@ pub const Seg = struct {
         try e.triton("_scores", .{ rows, cdiv(nk, 64), 1 }, &.{
             .{ .name = "QI", .arg = try e.view(.{ .buf = "L.qi" }, .bf16, &.{ rows, IH, ID }, &.{ IH * ID, ID, 1 }, (e.row0 + a) * IH * ID * 2) },
             .{ .name = "W", .arg = try e.view(.{ .buf = "L.ix_w" }, .f32, &.{ rows, IH }, &.{ IH, 1 }, (e.row0 + a) * IH * 4) },
-            .{ .name = "w_stride", .arg = .{ .i = IH } },               .{ .name = "IK", .arg = try indexKeys(e, keys_of) },
-            .{ .name = "OUT", .arg = out },                             .{ .name = "POS", .arg = p },
-            .{ .name = "KEYS", .arg = keys orelse out },                .{ .name = "k_stride", .arg = .{ .i = if (cbs > 0) keys.?.t.shape[1] else nk } },
-            .{ .name = "NK", .arg = .{ .i = nk } },                     .{ .name = "o_stride", .arg = .{ .i = nk } },
-            .{ .name = "RATIO", .arg = .{ .i = ratio } },               .{ .name = "H", .arg = .{ .i = IH } },
-            .{ .name = "D", .arg = .{ .i = ID } },                      .{ .name = "BP", .arg = .{ .i = 64 } },
+            .{ .name = "w_stride", .arg = .{ .i = IH } },
+            .{ .name = "IK", .arg = try indexKeys(e, keys_of) },
+            .{ .name = "OUT", .arg = out },
+            .{ .name = "POS", .arg = p },
+            .{ .name = "KEYS", .arg = keys orelse out },
+            .{ .name = "k_stride", .arg = .{ .i = if (cbs > 0) keys.?.t.shape[1] else nk } },
+            .{ .name = "NK", .arg = .{ .i = nk } },
+            .{ .name = "o_stride", .arg = .{ .i = nk } },
+            .{ .name = "RATIO", .arg = .{ .i = ratio } },
+            .{ .name = "H", .arg = .{ .i = IH } },
+            .{ .name = "D", .arg = .{ .i = ID } },
+            .{ .name = "BP", .arg = .{ .i = 64 } },
             .{ .name = "WS", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(IH))) } },
             .{ .name = "SCALE", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(ID))) } },
-            .{ .name = "GATHER", .arg = .{ .b = keys != null } },       .{ .name = "PT", .arg = spg.pt },
-            .{ .name = "PSH", .arg = .{ .i = spg.psh } },               .{ .name = "KFP8", .arg = .{ .b = true } },
-            .{ .name = "SL", .arg = .none },                            .{ .name = "PTS", .arg = .{ .i = 0 } },
-            .{ .name = "ROWS", .arg = .{ .b = false } },                .{ .name = "CBS", .arg = .{ .i = cbs } },
+            .{ .name = "GATHER", .arg = .{ .b = keys != null } },
+            .{ .name = "PT", .arg = spg.pt },
+            .{ .name = "PSH", .arg = .{ .i = spg.psh } },
+            .{ .name = "KFP8", .arg = .{ .b = true } },
+            .{ .name = "SL", .arg = .none },
+            .{ .name = "PTS", .arg = .{ .i = 0 } },
+            .{ .name = "ROWS", .arg = .{ .b = false } },
+            .{ .name = "CBS", .arg = .{ .i = cbs } },
         });
         return out;
     }
@@ -588,10 +597,10 @@ pub const Seg = struct {
         const e = s.e;
         const k = try e.buf("L.ix.keys", .{}, .i64, &.{ rows, nk });
         try e.triton("_keys", .{ rows, cdiv(nk, 1024), 1 }, &.{
-            .{ .name = "S", .arg = sc },                    .{ .name = "s_stride", .arg = .{ .i = nk } },
-            .{ .name = "K", .arg = k },                     .{ .name = "k_stride", .arg = .{ .i = nk } },
-            .{ .name = "POSN", .arg = posn orelse sc },     .{ .name = "p_stride", .arg = .{ .i = nk } },
-            .{ .name = "NK", .arg = .{ .i = nk } },         .{ .name = "BLOCK", .arg = .{ .i = 1024 } },
+            .{ .name = "S", .arg = sc },                          .{ .name = "s_stride", .arg = .{ .i = nk } },
+            .{ .name = "K", .arg = k },                           .{ .name = "k_stride", .arg = .{ .i = nk } },
+            .{ .name = "POSN", .arg = posn orelse sc },           .{ .name = "p_stride", .arg = .{ .i = nk } },
+            .{ .name = "NK", .arg = .{ .i = nk } },               .{ .name = "BLOCK", .arg = .{ .i = 1024 } },
             .{ .name = "GATHER", .arg = .{ .b = posn != null } },
         });
         return k;
@@ -729,16 +738,24 @@ pub const Seg = struct {
                 }, .{ cdiv(rows, rb), ns, 1 }, &.{
                     .{ .name = "QI", .arg = try e.view(.{ .buf = "L.qi" }, .bf16, &.{ rows, IH, ID }, &.{ IH * ID, ID, 1 }, (e.row0 + a) * IH * ID * 2) },
                     .{ .name = "W", .arg = try e.view(.{ .buf = "L.ix_w" }, .f32, &.{ rows, IH }, &.{ IH, 1 }, (e.row0 + a) * IH * 4) },
-                    .{ .name = "w_stride", .arg = .{ .i = IH } },           .{ .name = "IK", .arg = try indexKeys(e, src) },
-                    .{ .name = "POS", .arg = p },                           .{ .name = "R", .arg = .{ .i = rows } },
-                    .{ .name = "BUF", .arg = buf },                         .{ .name = "nsplit", .arg = .{ .i = ns } },
-                    .{ .name = "RATIO", .arg = .{ .i = ratio } },           .{ .name = "H", .arg = .{ .i = IH } },
-                    .{ .name = "D", .arg = .{ .i = ID } },                  .{ .name = "BP", .arg = .{ .i = 64 } },
+                    .{ .name = "w_stride", .arg = .{ .i = IH } },
+                    .{ .name = "IK", .arg = try indexKeys(e, src) },
+                    .{ .name = "POS", .arg = p },
+                    .{ .name = "R", .arg = .{ .i = rows } },
+                    .{ .name = "BUF", .arg = buf },
+                    .{ .name = "nsplit", .arg = .{ .i = ns } },
+                    .{ .name = "RATIO", .arg = .{ .i = ratio } },
+                    .{ .name = "H", .arg = .{ .i = IH } },
+                    .{ .name = "D", .arg = .{ .i = ID } },
+                    .{ .name = "BP", .arg = .{ .i = 64 } },
                     .{ .name = "WS", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(IH))) } },
                     .{ .name = "SCALE", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(ID))) } },
-                    .{ .name = "SPLIT", .arg = .{ .i = longpf.split_keys } }, .{ .name = "K", .arg = .{ .i = topk } },
-                    .{ .name = "CAP", .arg = .{ .i = 2 * topk } },          .{ .name = "PT", .arg = spg.pt },
-                    .{ .name = "PSH", .arg = .{ .i = spg.psh } },           .{ .name = "KFP8", .arg = .{ .b = true } },
+                    .{ .name = "SPLIT", .arg = .{ .i = longpf.split_keys } },
+                    .{ .name = "K", .arg = .{ .i = topk } },
+                    .{ .name = "CAP", .arg = .{ .i = 2 * topk } },
+                    .{ .name = "PT", .arg = spg.pt },
+                    .{ .name = "PSH", .arg = .{ .i = spg.psh } },
+                    .{ .name = "KFP8", .arg = .{ .b = true } },
                 });
                 try e.glue("stream_merge", &.{ buf, try rowsOf(e, out, .i32, a, rows, topk), .{ .i = topk }, try e.buf("L.ix.keys", .{}, .i64, &.{ rows, ns * topk }) });
                 continue;
@@ -746,19 +763,28 @@ pub const Seg = struct {
             try e.triton("_stream", .{ rows, ns, 1 }, &.{
                 .{ .name = "QI", .arg = try e.view(.{ .buf = "L.qi" }, .bf16, &.{ rows, IH, ID }, &.{ IH * ID, ID, 1 }, (e.row0 + a) * IH * ID * 2) },
                 .{ .name = "W", .arg = try e.view(.{ .buf = "L.ix_w" }, .f32, &.{ rows, IH }, &.{ IH, 1 }, (e.row0 + a) * IH * 4) },
-                .{ .name = "w_stride", .arg = .{ .i = IH } },           .{ .name = "IK", .arg = try indexKeys(e, src) },
-                .{ .name = "POS", .arg = p },                           .{ .name = "KEYS", .arg = buf },
-                .{ .name = "k_stride", .arg = .{ .i = 0 } },            .{ .name = "NK", .arg = .{ .i = nk } },
-                .{ .name = "BUF", .arg = buf },                         .{ .name = "nsplit", .arg = .{ .i = ns } },
-                .{ .name = "RATIO", .arg = .{ .i = ratio } },           .{ .name = "H", .arg = .{ .i = IH } },
-                .{ .name = "D", .arg = .{ .i = ID } },                  .{ .name = "BP", .arg = .{ .i = 64 } },
+                .{ .name = "w_stride", .arg = .{ .i = IH } },
+                .{ .name = "IK", .arg = try indexKeys(e, src) },
+                .{ .name = "POS", .arg = p },
+                .{ .name = "KEYS", .arg = buf },
+                .{ .name = "k_stride", .arg = .{ .i = 0 } },
+                .{ .name = "NK", .arg = .{ .i = nk } },
+                .{ .name = "BUF", .arg = buf },
+                .{ .name = "nsplit", .arg = .{ .i = ns } },
+                .{ .name = "RATIO", .arg = .{ .i = ratio } },
+                .{ .name = "H", .arg = .{ .i = IH } },
+                .{ .name = "D", .arg = .{ .i = ID } },
+                .{ .name = "BP", .arg = .{ .i = 64 } },
                 .{ .name = "WS", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(IH))) } },
                 .{ .name = "SCALE", .arg = .{ .f = 1.0 / @sqrt(@as(f64, @floatFromInt(ID))) } },
-                .{ .name = "MODE", .arg = .{ .i = 0 } },                .{ .name = "SPLIT", .arg = .{ .i = longpf.split_keys } },
-                .{ .name = "K", .arg = .{ .i = topk } },                .{ .name = "CAP", .arg = .{ .i = 2 * topk } },
+                .{ .name = "MODE", .arg = .{ .i = 0 } },
+                .{ .name = "SPLIT", .arg = .{ .i = longpf.split_keys } },
+                .{ .name = "K", .arg = .{ .i = topk } },
+                .{ .name = "CAP", .arg = .{ .i = 2 * topk } },
                 .{ .name = "BS", .arg = .{ .i = 8 } }, // index.BLOCK
                 .{ .name = "PT", .arg = spg.pt },
-                .{ .name = "PSH", .arg = .{ .i = spg.psh } },           .{ .name = "KFP8", .arg = .{ .b = true } },
+                .{ .name = "PSH", .arg = .{ .i = spg.psh } },
+                .{ .name = "KFP8", .arg = .{ .b = true } },
             });
             // the merge's gathered keys [rows, ns x topk] share the materialised path's sort keys' storage
             try e.glue("stream_merge", &.{ buf, try rowsOf(e, out, .i32, a, rows, topk), .{ .i = topk }, try e.buf("L.ix.keys", .{}, .i64, &.{ rows, ns * topk }) });
@@ -838,15 +864,15 @@ pub const Seg = struct {
         const qn = try e.buf("L.qn", .{}, .bf16, &.{ n, e.cfg.q_lora });
         const kv = try e.buf("L.kv", .{}, .bf16, &.{ n, hd });
         try e.triton("_rms2", .{ n, 2, 1 }, &.{
-            .{ .name = "XA", .arg = qa },                                                      .{ .name = "xa_rs", .arg = .{ .i = e.cfg.q_lora } },
+            .{ .name = "XA", .arg = qa },                                                             .{ .name = "xa_rs", .arg = .{ .i = e.cfg.q_lora } },
             .{ .name = "WA", .arg = try e.weight("L{d}.attn.q_norm", .{L}, .f32, &.{e.cfg.q_lora}) }, .{ .name = "OA", .arg = qn },
-            .{ .name = "oa_rs", .arg = .{ .i = e.cfg.q_lora } },                              .{ .name = "KA", .arg = .{ .i = e.cfg.q_lora } },
-            .{ .name = "inv_ka", .arg = .{ .f = 1.0 / @as(f64, @floatFromInt(e.cfg.q_lora)) } }, .{ .name = "XB", .arg = kva },
-            .{ .name = "xb_rs", .arg = .{ .i = hd } },                                        .{ .name = "WB", .arg = try e.weight("L{d}.attn.kv_norm", .{L}, .f32, &.{hd}) },
-            .{ .name = "OB", .arg = kv },                                                     .{ .name = "ob_rs", .arg = .{ .i = hd } },
-            .{ .name = "KB", .arg = .{ .i = hd } },                                           .{ .name = "inv_kb", .arg = .{ .f = 1.0 / @as(f64, @floatFromInt(hd)) } },
-            .{ .name = "eps", .arg = .{ .f = E.dec(e.cfg.eps) } },                            .{ .name = "BK", .arg = .{ .i = 512 } },
-            .{ .name = "NARROW", .arg = .{ .b = true } },                                     .{ .name = "PDL", .arg = .{ .b = false } },
+            .{ .name = "oa_rs", .arg = .{ .i = e.cfg.q_lora } },                                      .{ .name = "KA", .arg = .{ .i = e.cfg.q_lora } },
+            .{ .name = "inv_ka", .arg = .{ .f = 1.0 / @as(f64, @floatFromInt(e.cfg.q_lora)) } },      .{ .name = "XB", .arg = kva },
+            .{ .name = "xb_rs", .arg = .{ .i = hd } },                                                .{ .name = "WB", .arg = try e.weight("L{d}.attn.kv_norm", .{L}, .f32, &.{hd}) },
+            .{ .name = "OB", .arg = kv },                                                             .{ .name = "ob_rs", .arg = .{ .i = hd } },
+            .{ .name = "KB", .arg = .{ .i = hd } },                                                   .{ .name = "inv_kb", .arg = .{ .f = 1.0 / @as(f64, @floatFromInt(hd)) } },
+            .{ .name = "eps", .arg = .{ .f = E.dec(e.cfg.eps) } },                                    .{ .name = "BK", .arg = .{ .i = 512 } },
+            .{ .name = "NARROW", .arg = .{ .b = true } },                                             .{ .name = "PDL", .arg = .{ .b = false } },
         });
         const q = try e.buf("L.q", .{}, .bf16, &.{ n, H * hd });
         try s.proj(try e.fmt("L{d}.attn.wq_b", .{L}), .lanes, qn, e.cfg.q_lora, H * hd, q);
@@ -860,11 +886,11 @@ pub const Seg = struct {
             // the head weights: `_plain`'s fp64 sums, cast to bf16 then fp32 by torch
             const w64 = try e.buf("L.ix_w64", .{}, .f64, &.{ n, IH });
             try e.triton("_plain", .{ n, IH, 1 }, &.{
-                .{ .name = "X", .arg = x },                                                      .{ .name = "x_rs", .arg = .{ .i = D } },
+                .{ .name = "X", .arg = x },                                                        .{ .name = "x_rs", .arg = .{ .i = D } },
                 .{ .name = "W", .arg = try e.weight("L{d}.attn.ix_wp", .{L}, .f32, &.{ IH, D }) }, .{ .name = "w_rs", .arg = .{ .i = D } },
-                .{ .name = "OUT", .arg = w64 },                                                  .{ .name = "K", .arg = .{ .i = D } },
-                .{ .name = "N", .arg = .{ .i = IH } },                                           .{ .name = "BK", .arg = .{ .i = 256 } },
-                .{ .name = "PDL", .arg = .{ .b = false } },                                      .{ .name = "BF16", .arg = .{ .b = false } },
+                .{ .name = "OUT", .arg = w64 },                                                    .{ .name = "K", .arg = .{ .i = D } },
+                .{ .name = "N", .arg = .{ .i = IH } },                                             .{ .name = "BK", .arg = .{ .i = 256 } },
+                .{ .name = "PDL", .arg = .{ .b = false } },                                        .{ .name = "BF16", .arg = .{ .b = false } },
             });
             try e.glue("ix_w", &.{ w64, try e.buf("L.ix_w", .{}, .f32, &.{ n, IH }) });
         }
@@ -967,22 +993,35 @@ pub const Seg = struct {
         }
         try e.triton("_fused", .{ n, @divExact(H, attnBmq(H)), 1 }, &.{
             .{ .name = "Q", .arg = try e.view(q.t.role, .bf16, &.{ n, H, hd }, &.{ H * hd, hd, 1 }, e.row0 * H * hd * 2) },
-            .{ .name = "CV", .arg = cv },                         .{ .name = "CSC", .arg = cs },
-            .{ .name = "cvs", .arg = .{ .i = cv.t.stride[0] } },  .{ .name = "css", .arg = .{ .i = cs.t.stride[0] } },
-            .{ .name = "TOK", .arg = tok },                       .{ .name = "t_stride", .arg = .{ .i = t_stride } },
-            .{ .name = "CNT", .arg = cnt },                       .{ .name = "SV", .arg = rows[0] },
-            .{ .name = "SSC", .arg = rows[1] },                   .{ .name = "svs", .arg = .{ .i = 576 } },
-            .{ .name = "sss", .arg = .{ .i = 8 } },               .{ .name = "LO", .arg = lo },
-            .{ .name = "POS", .arg = try pos(e) },                .{ .name = "SINK", .arg = try e.weight("L{d}.attn.sink", .{L}, .f32, &.{H}) },
-            .{ .name = "CS", .arg = try e.ropeTable() },          .{ .name = "cs_stride", .arg = .{ .i = 64 } },
+            .{ .name = "CV", .arg = cv },
+            .{ .name = "CSC", .arg = cs },
+            .{ .name = "cvs", .arg = .{ .i = cv.t.stride[0] } },
+            .{ .name = "css", .arg = .{ .i = cs.t.stride[0] } },
+            .{ .name = "TOK", .arg = tok },
+            .{ .name = "t_stride", .arg = .{ .i = t_stride } },
+            .{ .name = "CNT", .arg = cnt },
+            .{ .name = "SV", .arg = rows[0] },
+            .{ .name = "SSC", .arg = rows[1] },
+            .{ .name = "svs", .arg = .{ .i = 576 } },
+            .{ .name = "sss", .arg = .{ .i = 8 } },
+            .{ .name = "LO", .arg = lo },
+            .{ .name = "POS", .arg = try pos(e) },
+            .{ .name = "SINK", .arg = try e.weight("L{d}.attn.sink", .{L}, .f32, &.{H}) },
+            .{ .name = "CS", .arg = try e.ropeTable() },
+            .{ .name = "cs_stride", .arg = .{ .i = 64 } },
             .{ .name = "OUT", .arg = try e.view(o.t.role, .bf16, &.{ groups, n, hg * hd }, &.{ total * hg * hd, hg * hd, 1 }, e.row0 * hg * hd * 2) },
             .{ .name = "H", .arg = .{ .i = H } },
-            .{ .name = "KT", .arg = .{ .i = kt } },               .{ .name = "BMQ", .arg = .{ .i = attnBmq(H) } },
+            .{ .name = "KT", .arg = .{ .i = kt } },
+            .{ .name = "BMQ", .arg = .{ .i = attnBmq(H) } },
             // Python's D ** -0.5 (libm pow, correctly rounded): sqrt of the exact 1 / 512 rounds the same way
-            .{ .name = "SCALE", .arg = .{ .f = @sqrt(1.0 / @as(f64, @floatFromInt(hd))) } }, .{ .name = "RING", .arg = .{ .i = s.ring } },
-            .{ .name = "WINDOW", .arg = .{ .i = W } },            .{ .name = "COMP", .arg = .{ .b = ratio > 0 } },
-            .{ .name = "PT", .arg = fpg.pt },                     .{ .name = "PSH", .arg = .{ .i = fpg.psh } },
-            .{ .name = "HG", .arg = .{ .i = hg } },               .{ .name = "OR", .arg = .{ .i = total } },
+            .{ .name = "SCALE", .arg = .{ .f = @sqrt(1.0 / @as(f64, @floatFromInt(hd))) } },
+            .{ .name = "RING", .arg = .{ .i = s.ring } },
+            .{ .name = "WINDOW", .arg = .{ .i = W } },
+            .{ .name = "COMP", .arg = .{ .b = ratio > 0 } },
+            .{ .name = "PT", .arg = fpg.pt },
+            .{ .name = "PSH", .arg = .{ .i = fpg.psh } },
+            .{ .name = "HG", .arg = .{ .i = hg } },
+            .{ .name = "OR", .arg = .{ .i = total } },
         });
         if (s.staged) try e.glue("stage_out", &.{ slot[0], slot[1], .{ .i = ring0 }, rows[0], rows[1], .{ .i = s.ring }, .{ .i = @max(0, e.end() - W) }, .{ .i = e.end() } });
     }
@@ -1019,7 +1058,6 @@ pub const Seg = struct {
         s.staged = e.n + W - 1 > 2 * W;
         s.ring = if (s.staged) stageRows(e) else 2 * W;
     }
-
 
     // -- the segment ---------------------------------------------------------------------------------------------
 
@@ -1078,16 +1116,16 @@ pub const Seg = struct {
             } else 16;
             const cfg: [2]i64 = if (n <= 16) .{ 2, 0 } else if (m > 16) .{ 8, 2 } else .{ 8, 1 };
             try e.ext("tf_dsv41_router_gemv_v2.route", &.{
-                if (whole) x else try rowsOf(e, x, .bf16, c0, m, D),                   try e.weight("L{d}.moe.gate", .{L}, .bf16, &.{ Et, D }),
-                try e.weight("L{d}.moe." ++ bias, .{L}, .f32, &.{Et}),                if (whole) pick else try rowsOf(e, pick, .i32, c0, m, slots),
-                if (whole) wts else try rowsOf(e, wts, .f32, c0, m, slots),            if (whole) logits else try rowsOf(e, logits, .f32, c0, m, Et),
-                try e.buf("s.router.cnt", .{}, .i32, &.{128}),                        .{ .i = topk },
-                .{ .i = slots },                                                       .{ .f = E.dec(e.cfg.routed_scale) },
-                .{ .i = tile },                                                        .{ .i = cfg[0] },
-                .{ .i = cfg[1] },                                                      .{ .b = true },
-                .{ .b = false },                                                       try e.empty(.i32),
-                try e.empty(.i32),                                                     try e.t(.empty, .i32, &.{ 0, 1 }),
-                .{ .i = 0 },                                                           .{ .b = false },
+                if (whole) x else try rowsOf(e, x, .bf16, c0, m, D),        try e.weight("L{d}.moe.gate", .{L}, .bf16, &.{ Et, D }),
+                try e.weight("L{d}.moe." ++ bias, .{L}, .f32, &.{Et}),      if (whole) pick else try rowsOf(e, pick, .i32, c0, m, slots),
+                if (whole) wts else try rowsOf(e, wts, .f32, c0, m, slots), if (whole) logits else try rowsOf(e, logits, .f32, c0, m, Et),
+                try e.buf("s.router.cnt", .{}, .i32, &.{128}),              .{ .i = topk },
+                .{ .i = slots },                                            .{ .f = E.dec(e.cfg.routed_scale) },
+                .{ .i = tile },                                             .{ .i = cfg[0] },
+                .{ .i = cfg[1] },                                           .{ .b = true },
+                .{ .b = false },                                            try e.empty(.i32),
+                try e.empty(.i32),                                          try e.t(.empty, .i32, &.{ 0, 1 }),
+                .{ .i = 0 },                                                .{ .b = false },
             });
             if (e.o.r1) {
                 // the R1 twin's route always takes the prune list (router_gemv.route: list(prune or [])); prefill's is
@@ -1126,8 +1164,9 @@ pub const Seg = struct {
         const xd = try e.view(.{ .buf = "s.ex.xg" }, .f16, &.{ P, I }, &.{ I, 1 }, 0);
         const y = try e.view(.{ .buf = "s.ex.z" }, .f32, &.{ P, D }, &.{ D, 1 }, 0);
         try e.ext("tf_dsv41_x3gm_v1.rot", &.{
-            x,  .{ .i = D }, pk, try e.weight("{s}.w1.suh", .{pre}, .f16, &.{ Et, D }), try e.weight("{s}.w3.suh", .{pre}, .f16, &.{ Et, D }),
-            xg, xu,          .{ .i = D }, .{ .i = topk }, .{ .i = P }, .{ .i = 2 },
+            x,           .{ .i = D }, pk,          try e.weight("{s}.w1.suh", .{pre}, .f16, &.{ Et, D }), try e.weight("{s}.w3.suh", .{pre}, .f16, &.{ Et, D }),
+            xg,          xu,          .{ .i = D }, .{ .i = topk },                                        .{ .i = P },
+            .{ .i = 2 },
         });
         const ticket = try e.buf("L.gm.ticket", .{}, .i32, &.{2 * gm_widths});
         try e.glue(if (again) "gm_ticket_again" else "gm_ticket", &.{ticket});
@@ -1152,25 +1191,24 @@ pub const Seg = struct {
                 const t = try e.view(ticket.t.role, .i32, &.{1}, &.{1}, (j + if (down == 1) @as(i64, gm_widths) else 0) * 4);
                 if (down == 0) {
                     try e.ext("tf_dsv41_x3gm_v1.gateup", &.{
-                        xg,                                                  xu,
-                        try e.buf("s.L{d}.gm.tg", .{L}, .i64, &.{Et}),      try e.buf("s.L{d}.gm.tu", .{L}, .i64, &.{Et}),
-                        plan[0],                                             plan[1],
-                        plan[2],                                             plan[3],
-                        plan[4],                                             t,
+                        xg,                                                    xu,
+                        try e.buf("s.L{d}.gm.tg", .{L}, .i64, &.{Et}),         try e.buf("s.L{d}.gm.tu", .{L}, .i64, &.{Et}),
+                        plan[0],                                               plan[1],
+                        plan[2],                                               plan[3],
+                        plan[4],                                               t,
                         try e.weight("{s}.w1.svh", .{pre}, .f16, &.{ Et, I }), try e.weight("{s}.w3.svh", .{pre}, .f16, &.{ Et, I }),
                         try e.weight("{s}.w2.suh", .{pre}, .f16, &.{ Et, I }), xd,
-                        .{ .i = D },                                         .{ .i = I },
-                        .{ .i = k2 },                                        .{ .b = false },
-                        .{ .i = 1 },                                         .{ .b = true },
-                        .{ .f = lim },                                       .{ .b = true },
+                        .{ .i = D },                                           .{ .i = I },
+                        .{ .i = k2 },                                          .{ .b = false },
+                        .{ .i = 1 },                                           .{ .b = true },
+                        .{ .f = lim },                                         .{ .b = true },
                     });
                 } else {
                     try e.ext("tf_dsv41_x3gm_v1.down", &.{
-                        xd,          try e.buf("s.L{d}.gm.td", .{L}, .i64, &.{Et}), plan[0],     plan[1],
-                        plan[2],     plan[3],                                       plan[4],     t,
-                        try e.weight("{s}.w2.svh", .{pre}, .f16, &.{ Et, D }),      y,           .{ .i = I },
-                        .{ .i = D }, .{ .i = k2 },                                  .{ .i = 0 }, .{ .b = true },
-                        .{ .b = true },
+                        xd,                                                    try e.buf("s.L{d}.gm.td", .{L}, .i64, &.{Et}), plan[0],        plan[1],
+                        plan[2],                                               plan[3],                                       plan[4],        t,
+                        try e.weight("{s}.w2.svh", .{pre}, .f16, &.{ Et, D }), y,                                             .{ .i = I },    .{ .i = D },
+                        .{ .i = k2 },                                          .{ .i = 0 },                                   .{ .b = true }, .{ .b = true },
                     });
                 }
                 j += 1;
@@ -1247,13 +1285,13 @@ pub const Seg = struct {
         const keep: ?Arg = if (e.o.image_keep) try e.buf("w.engram.keep", .{}, .f32, &.{n}) else null;
         if (keep) |k| try e.glue("image_keep", &.{k});
         try e.triton("_fuse_dec", .{ n, 1, 1 }, &.{
-            .{ .name = "X", .arg = try e.streams() },                               .{ .name = "x_stride", .arg = .{ .i = 4 * D } },
-            .{ .name = "KV", .arg = kv },                                           .{ .name = "kv_stride", .arg = .{ .i = N } },
-            .{ .name = "QK", .arg = qk },                                           .{ .name = "KEEP", .arg = keep orelse qk },
-            .{ .name = "GATE", .arg = qk },                                         .{ .name = "eps", .arg = .{ .f = E.dec(e.cfg.eps) } },
+            .{ .name = "X", .arg = try e.streams() },                              .{ .name = "x_stride", .arg = .{ .i = 4 * D } },
+            .{ .name = "KV", .arg = kv },                                          .{ .name = "kv_stride", .arg = .{ .i = N } },
+            .{ .name = "QK", .arg = qk },                                          .{ .name = "KEEP", .arg = keep orelse qk },
+            .{ .name = "GATE", .arg = qk },                                        .{ .name = "eps", .arg = .{ .f = E.dec(e.cfg.eps) } },
             .{ .name = "clamp", .arg = .{ .f = E.dec(e.cfg.engram_gate_clamp) } }, .{ .name = "sqrt_d", .arg = .{ .f = @sqrt(@as(f64, @floatFromInt(D))) } },
-            .{ .name = "D", .arg = .{ .i = D } },                                   .{ .name = "BK", .arg = .{ .i = 64 } },
-            .{ .name = "UB", .arg = .{ .i = 1024 } },                               .{ .name = "HAS_KEEP", .arg = .{ .b = keep != null } },
+            .{ .name = "D", .arg = .{ .i = D } },                                  .{ .name = "BK", .arg = .{ .i = 64 } },
+            .{ .name = "UB", .arg = .{ .i = 1024 } },                              .{ .name = "HAS_KEEP", .arg = .{ .b = keep != null } },
             .{ .name = "HAS_GATE", .arg = .{ .b = false } },
         });
     }
@@ -1406,7 +1444,6 @@ fn stageRows(e: *const E) i64 {
     const W: i64 = e.cfg.window;
     return @intCast(std.math.ceilPowerOfTwo(u64, @intCast(e.o.prefill_rows + W - 1)) catch unreachable);
 }
-
 
 /// A prefill program's part: a whole segment, or one of CED replay's passes (ced.zig).
 pub const Part = enum { whole, encoder, decoder };

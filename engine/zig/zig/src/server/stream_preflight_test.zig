@@ -347,9 +347,6 @@ fn expectToolStreamLikeWhole(route: Route, comptime fields: []const u8) !void {
 
 const tool_head = "\"model\":\"test-model\",\"max_tokens\":200,";
 
-
-
-
 /// HiEngine's replies from an engine that decodes greedily only.
 const GreedyEngine = struct {
     fn engine(e: *@This()) api.Engine {

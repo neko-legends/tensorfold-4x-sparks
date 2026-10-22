@@ -116,7 +116,8 @@ test {
     _ = @import("block_attention.zig");
     _ = @import("window_attention.zig");
     _ = @import("moe_glue.zig");
-    _ = @import("dense_rows.zig");}
+    _ = @import("dense_rows.zig");
+}
 
 pub const moe = @import("moe.zig");
 test {
