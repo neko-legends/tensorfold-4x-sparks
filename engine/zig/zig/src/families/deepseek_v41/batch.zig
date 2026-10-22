@@ -103,6 +103,7 @@ pub const Batch = struct {
         b.* = .{ .gpa = gpa, .f = f, .ss = ss, .cap = cap, .settings = s, .tab = tab, .pend = pend, .rg = try round_graph.current() };
         assembled = true;
         if (std.c.getenv("TF_DSV41_TXN_STACK")) |v| b.txn_stack = !std.mem.eql(u8, std.mem.span(v), "0");
+        if (std.c.getenv("TF_DSV41_TXN_KEEP_SKIP")) |v| txn_mod.skip_ring_restore = std.mem.eql(u8, std.mem.span(v), "1");
         if (WinProf.fromEnv()) b.prof = try gpa.create(WinProf);
         if (b.prof) |p| p.* = .{};
         @memset(b.pend, null);
@@ -218,6 +219,7 @@ pub const Batch = struct {
     fn runRows(b: *Batch, mix: []const rowtab.Seg, ids: []const u32, more: bool) !void {
         const f = b.f;
         var tp = ph.nowNs();
+        defer if (b.prof) |p| if (p.windows != 0 and p.windows % 8192 == 0) p.log(if (b.ss.leads()) 0 else 1);
         var pt = WinProf.start(b.prof);
         defer pt.end();
         try rowtab.check(mix, b.ss.n, @intCast(f.opts.limit));
@@ -525,6 +527,7 @@ const outcomeLog = batch_graph.outcomeLog;
 const Graphs = batch_graph.Graphs;
 pub const warmLookback = batch_engram.warmLookback;
 pub const WinProf = batch_prof.WinProf;
+const txn_mod = @import("cuda_transaction.zig");
 
 test {
     _ = @import("batch_prof.zig");

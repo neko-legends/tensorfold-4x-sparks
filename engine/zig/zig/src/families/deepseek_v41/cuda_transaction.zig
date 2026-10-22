@@ -3,6 +3,11 @@ const std = @import("std");
 const cuda = @import("cuda");
 const logical = @import("kv_state.zig");
 const Forward = @import("forward.zig").Forward;
+/// TF_DSV41_TXN_KEEP_SKIP=1 (default off): a partial keep (count > 0) does not copy the rejected ring rows back from the
+/// backup. The SWA rings hold 2 x window rows and a window is at most `window` rows, so a rejected row only overwrote a
+/// position already out of every later attention window and is rewritten before it is read; the restore matters for
+/// bit-exact ring bytes only. Saves ~67 driver calls a slot-round (the 1.1.1 keep). Full rollback (count 0) is unchanged.
+pub var skip_ring_restore: bool = false;
 pub const Transaction = struct {
     state: logical.State = .{},
     regions: std.ArrayList(logical.Region) = .empty,
@@ -47,6 +52,13 @@ pub const Transaction = struct {
         return .{ .ctx = t, .run = copy };
     }
     pub fn keep(t: *Transaction, n: u32) !void {
+        if (skip_ring_restore and n > 0) {
+            const pend = t.state.pending orelse return error.NoCacheTransaction;
+            if (n > pend) return error.BadWindow;
+            t.state.position += n;
+            t.state.pending = null;
+            return;
+        }
         try t.state.keep(t.regions.items, t.copier(), n);
     }
     pub fn rollback(t: *Transaction) !void {
