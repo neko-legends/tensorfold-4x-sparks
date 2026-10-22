@@ -579,7 +579,10 @@ pub const Sessions = struct {
         const j = try s.store.beginRestore(id, s.kx.slot);
         var restored = (try s.store.settle(j)) orelse return error.BadBlob;
         defer restored.deinit(s.gpa);
-        if (restored.ids.len != ids_out.len) return error.BadBlob;
+        if (restored.ids.len != ids_out.len) {
+            if (!quiet) std.log.scoped(.dsv41).warn("sessions: BadBlob: the file's {d} ids do not match the index's {d}", .{ restored.ids.len, ids_out.len });
+            return error.BadBlob;
+        }
         @memcpy(ids_out, restored.ids);
         try s.uploadBlobs(restored.blobs);
     }
