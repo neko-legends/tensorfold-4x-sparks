@@ -311,7 +311,11 @@ pub const Sessions = struct {
         const p = try s.gpa.create(Snap);
         errdefer s.gpa.destroy(p);
         const sl = &s.f.slot;
-        const ds = if (s.measure.ds_blocks > 0) kv.sess.dsRows(sl.pos, s.ds_valid[s.cur()], s.measure.window) else 0;
+        // The drafter's rows ride in the entry only when its rings are among the pieces (`ds_rings`). Replay mode
+        // plans no drafter rings (the decoder replay rebuilds them) while `ds_blocks` is still non-zero, so keying
+        // the rows off `ds_blocks` wrote 128 rows that no blob carries — and session_codec.validate, which accepts a
+        // non-zero `ds` only from a ring-carrying engine, rejected every NVMe entry written that way.
+        const ds = if (s.ds_rings) kv.sess.dsRows(sl.pos, s.ds_valid[s.cur()], s.measure.window) else 0;
         p.* = .{ .owner = s, .bytes = try s.gpa.alloc(u8, s.bounded_bytes), .pos = sl.pos, .tail = sl.tail, .tail_len = sl.tail_len, .stash = if (s.measure.replay) sl.ced else .{}, .ds_rows = ds, .measure = s.measureNow() };
         errdefer s.gpa.free(p.bytes);
         var at: usize = 0;
@@ -326,7 +330,8 @@ pub const Sessions = struct {
     /// The bounded-state measure a save of the slot right now carries: snapshot's arithmetic, before its device copies.
     fn measureNow(s: *Sessions) u64 {
         const sl = &s.f.slot;
-        const ds = if (s.measure.ds_blocks > 0) kv.sess.dsRows(sl.pos, s.ds_valid[s.cur()], s.measure.window) else 0;
+        // snapshot's gate, not `ds_blocks`: an entry prices the drafter's rows only when it carries them
+        const ds = if (s.ds_rings) kv.sess.dsRows(sl.pos, s.ds_valid[s.cur()], s.measure.window) else 0;
         const stash = if (s.measure.replay) kv.sess.stashRows(sl.pos, sl.ced.from) else 0;
         return s.measure.bytes(sl.pos, stash, ds);
     }
