@@ -95,6 +95,12 @@ client (an exact token-id prompt of a repeated filler document, 8K-256K). Raw fi
 
 ## 4. Zig engine rebases on four Sparks: 1.1.0 -> 1.1.1 -> 1.1.2
 
+> **These numbers belong to our build, not to upstream TensorFold.** Every row is our own rebase of the named upstream
+> tag plus this repo's TP-4 delta, run on our four Sparks with our 2.9 bpw pack. Upstream TensorFold 1.1.2 on its own
+> does not run DeepSeek-V4.1 at four ranks: it refuses the uneven expert shard at boot and plans no prefill segment at
+> world 4. We have not tested other versions or other packs. A different TensorFold build may produce different
+> numbers, or fail to boot, so read the engine column as part of the measurement.
+
 The DeepSeek V4.1 Flash 1017 lane on the Zig engine at TP=4 (four GB10s), measured 2026-10-22 on clean boots with the
 same cells for every version. 8-busy / 4-busy = steady aggregate tok/s with 8 / 4 streams on identical prompts; boot =
 seconds from start to `ready after` (wall time in brackets where it was recorded). The 1.1.2 rebase is branch

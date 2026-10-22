@@ -4,6 +4,11 @@ Two large models served across **four** NVIDIA DGX Sparks with [TensorFold](http
 Zig engine: tensor-parallel (TP-4) over a switched CX7 RoCE fabric, one OpenAI-compatible endpoint, image input,
 speculative decoding from each model's own draft head.
 
+> **The engine is ours, not the upstream release.** The DeepSeek lane runs our rebase of TensorFold 1.1.2 plus this
+> repo's TP-4 delta, on our four Sparks and our 2.9 bpw pack (see [BENCHMARKS §4](docs/BENCHMARKS.md)). Upstream 1.1.2
+> alone does not run DeepSeek-V4.1 at four ranks. Other TensorFold versions and other packs are untested here, so the
+> figures below belong to this engine, not to TensorFold in general.
+
 | | **DeepSeek V4.1 Flash 1017** (live) | Nemotron 3.5 Super VL 120B-A12B | DeepSeek V4.1 Flash |
 | --- | --- | --- | --- |
 | weights | the official 1017 weights, third-party 2.9 bpw EXL3 quant | NVIDIA's NVFP4 checkpoint, 70 GB | 2.9 bpw EXL3 pack |
