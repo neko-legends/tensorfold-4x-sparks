@@ -136,6 +136,11 @@ pub const Cache = struct {
 var boot_digest: ?[32]u8 = null;
 var boot_dir: [std.fs.max_path_bytes]u8 = undefined;
 var boot_dir_len: usize = 0;
+/// The pack's own directory is part of the identity too: two packs with the same cache dir and shard count (a
+/// test fixture, a second world booted in the same process) would otherwise share the memo and get a digest
+/// computed over a different set of bytes.
+var boot_pack_dir: [std.fs.max_path_bytes]u8 = undefined;
+var boot_pack_dir_len: usize = 0;
 var boot_files: usize = 0;
 
 pub fn packDigestForBoot(io: Io, p: *const pack_mod.Pack) ![32]u8 {
@@ -146,7 +151,9 @@ pub fn packDigestForBoot(io: Io, p: *const pack_mod.Pack) ![32]u8 {
 /// `packDigestForBoot` for a caller that already knows the prepared dir.
 pub fn packDigestShared(io: Io, p: *const pack_mod.Pack, cache_dir: []const u8) ![32]u8 {
     if (boot_digest) |d| if (boot_files == p.files.items.len and boot_dir_len == cache_dir.len and
-        std.mem.eql(u8, boot_dir[0..boot_dir_len], cache_dir)) return d;
+        boot_pack_dir_len == p.dir.len and
+        std.mem.eql(u8, boot_dir[0..boot_dir_len], cache_dir) and
+        std.mem.eql(u8, boot_pack_dir[0..boot_pack_dir_len], p.dir)) return d;
     const digest = packDigestRemembered(io, p, cache_dir) catch |e| blk: {
         if (e == error.OutOfMemory) return e;
         if (!quiet) std.log.warn("dsv41 prepared: the pack digest record beside the prepared cache is unusable ({t}); hashing the pack", .{e});
@@ -156,6 +163,8 @@ pub fn packDigestShared(io: Io, p: *const pack_mod.Pack, cache_dir: []const u8) 
     boot_files = p.files.items.len;
     boot_dir_len = @min(cache_dir.len, boot_dir.len);
     @memcpy(boot_dir[0..boot_dir_len], cache_dir[0..boot_dir_len]);
+    boot_pack_dir_len = @min(p.dir.len, boot_pack_dir.len);
+    @memcpy(boot_pack_dir[0..boot_pack_dir_len], p.dir[0..boot_pack_dir_len]);
     return digest;
 }
 
