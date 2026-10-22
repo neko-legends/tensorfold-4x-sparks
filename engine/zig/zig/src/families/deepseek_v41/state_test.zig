@@ -8,6 +8,8 @@ test {
     _ = @import("mhc_pfdec_test.zig");
     _ = @import("kv_glue_emit_test.zig");
     _ = @import("pf4k_test.zig");
+    // the emitter at TP=4 (the 2026-10-10 world-4 boot failure)
+    _ = @import("prefill_tp4_test.zig");
     _ = @import("pftbo_test.zig");
     _ = @import("pfovl_test.zig");
     _ = @import("streamrb_test.zig");
