@@ -114,6 +114,17 @@ TensorFold 1.1.2 `4ff78441` plus this repo's TP-4 delta).
 | 1.1.1 after fixes (boot 9) | 310.58 / 313.27 | 209-212 | 162-167 (ready 161) | 86.5 GB read at boot (`rchar`) |
 | **1.1.2 rebase (serving)** | **313.48** | 209.43 / 211.61 | **161** (wall 166) | 86.55 GB read; digest record accepted (0 built, 44 read) |
 
+### Real workload, one hour on the 1.1.2 engine (2026-10-22)
+
+One hour of our own agent's chat traffic on the same engine and pack: 291 requests, serial (max concurrency 1), zero
+errors. Sustained decode **120.65 tok/s** over the wall hour; per-request median 133.8, p90 162.3, max 230.0 tok/s;
+prompt cache hit **93.9 %** (4.59 M of 4.89 M prompt tokens); prefill median 53.9, p90 1,367, max 4,000 tok/s;
+inter-request gap median 1.8 s, p90 5.6 s.
+
+It is a single-stream measurement (concurrency never exceeded 1), so it complements the 8-busy cell rather than
+replacing it. Aggregates come from the engine request log on the serving node, which records token counts, hashes and
+timings rather than prompt or reply text; only the aggregates leave the host.
+
 1.1.2 against 1.1.1 (fixed), same boot protocol: prefill 32K -0.6%, 8K -0.6%; all 15 determinism hashes identical;
 JSON request 200 and parsed; the picture check answered "Blue and red"; 0 panics on all four ranks; 0 `BadBlob`.
 
