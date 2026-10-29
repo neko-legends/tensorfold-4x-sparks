@@ -92,3 +92,40 @@ see the README).
 The kit's cells come from the GLM recipe's HTTP clients against the kit's server: `bench/glmbench.py` (suites tf,
 tweet, kit, edit), `bench/multiturn.py concurrent --streams 1,2,4`, `bench/quality.py` (MMLU-200) and a long-prefill
 client (an exact token-id prompt of a repeated filler document, 8K-256K). Raw files: `results/kit-baseline/`.
+
+## 4. Zig engine rebases on four Sparks: 1.1.0 -> 1.1.1 -> 1.1.2
+
+> **These numbers belong to our build, not to upstream TensorFold.** Every row is our own rebase of the named upstream
+> tag plus this repo's TP-4 delta, run on our four Sparks with our 2.9 bpw pack. Upstream TensorFold 1.1.2 on its own
+> does not run DeepSeek-V4.1 at four ranks: it refuses the uneven expert shard at boot and plans no prefill segment at
+> world 4. We have not tested other versions or other packs. A different TensorFold build may produce different
+> numbers, or fail to boot, so read the engine column as part of the measurement.
+
+The DeepSeek V4.1 Flash 1017 lane on the Zig engine at TP=4 (four GB10s), measured 2026-10-22 on clean boots with the
+same cells for every version. 8-busy / 4-busy = steady aggregate tok/s with 8 / 4 streams on identical prompts; boot =
+seconds from start to `ready after` (wall time in brackets where it was recorded). The 1.1.2 rebase is branch
+[`tf112-rebase-20261022`](https://github.com/neko-legends/tensorfold-4x-sparks/tree/tf112-rebase-20261022) (upstream
+TensorFold 1.1.2 `4ff78441` plus this repo's TP-4 delta).
+
+| engine | 8-busy (tok/s) | 4-busy (tok/s) | boot (s) | notes |
+| --- | --- | --- | --- | --- |
+| 1.1.0 (the previous live engine) | 315.9 / 316.1 / 317.0 | | 166-174 | the control |
+| 1.1.1 rebase, as first booted | 277.8 | | 713-721 | -12%; the pack digest hashed three times at boot |
+| 1.1.1 after fixes (boot 9) | 310.58 / 313.27 | 209-212 | 162-167 (ready 161) | 86.5 GB read at boot (`rchar`) |
+| **1.1.2 rebase (serving)** | **313.48** | 209.43 / 211.61 | **161** (wall 166) | 86.55 GB read; digest record accepted (0 built, 44 read) |
+
+### Real workload, one hour on the 1.1.2 engine (2026-10-22)
+
+One hour of our own agent's chat traffic on the same engine and pack: 291 requests, serial (max concurrency 1), zero
+errors. Sustained decode **120.65 tok/s** over the wall hour; per-request median 133.8, p90 162.3, max 230.0 tok/s;
+prompt cache hit **93.9 %** (4.59 M of 4.89 M prompt tokens); prefill median 53.9, p90 1,367, max 4,000 tok/s;
+inter-request gap median 1.8 s, p90 5.6 s.
+
+It is a single-stream measurement (concurrency never exceeded 1), so it complements the 8-busy cell rather than
+replacing it. Aggregates come from the engine request log on the serving node, which records token counts, hashes and
+timings rather than prompt or reply text; only the aggregates leave the host.
+
+1.1.2 against 1.1.1 (fixed), same boot protocol: prefill 32K -0.6%, 8K -0.6%; all 15 determinism hashes identical;
+JSON request 200 and parsed; the picture check answered "Blue and red"; 0 panics on all four ranks; 0 `BadBlob`.
+
+![TensorFold 1.1.0 -> 1.1.1 -> 1.1.2 on four Sparks: 8-stream throughput and boot time](img/tf-versions-112-20261022.png)

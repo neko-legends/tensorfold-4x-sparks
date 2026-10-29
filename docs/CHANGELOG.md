@@ -77,3 +77,35 @@ The dense-prefill tile table (G17's sweep on GB10, 10 shapes): best 68-78 TFLOP/
 [`config/pfdense-table.json`](../config/pfdense-table.json) and `results/campaign/G17-20261004/sweep.txt`.
 
 **Still open:** the items under [What is not solved](KNOWN-ISSUES.md).
+
+## 2026-10-22: the Zig engine rebased onto TensorFold 1.1.2
+
+Branch [`tf112-rebase-20261022`](https://github.com/neko-legends/tensorfold-4x-sparks/tree/tf112-rebase-20261022)
+(`2aa5c0a9`) carries upstream TensorFold 1.1.2 (`4ff78441`) with this repo's TP-4 delta re-applied, and serves the
+DeepSeek V4.1 Flash 1017 lane. Numbers: [BENCHMARKS.md section 4](BENCHMARKS.md#4-zig-engine-rebases-on-four-sparks-110---111---112).
+
+- **Imported:** the upstream engine tree whole (424 new files, upstream's deletions taken), with the four-Spark surface
+  merged where upstream also edited the file: `/health` bookkeeping and the request log on the submit error path
+  (gains upstream's `InvalidRequest` arm), the greedy warning and ops slot line (gains `--thinking-reserve`), the
+  server config's family / wire / spark fields (gains `max_connections`). The prefill, TP, RoCE and cache-transaction
+  delta merged without conflict: upstream has not touched those files since 1.1.1.
+- **Nothing changes for DeepSeek:** 1.1.2 changes no file under `zig/src/families/deepseek_v41` relative to 1.1.1
+  (`git rev-list --count d1018b31..4ff78441 -- zig/src/families/deepseek_v41` = 0, of 201 upstream commits). It does
+  not fix four-rank prefill; our world-4 fixes (the fused head-tile clamp and the whole-block MoE rule past two ranks)
+  are still needed.
+- **One regression fixed:** upstream 1.1.2 changed `model_text.Text.render` to return `Rendered` (text plus the
+  template's provenance spans); the fork's generic DeepSeek render still returned the bare encoding, so
+  `test-server-cpu` did not compile. It now returns `Rendered` with empty spans; behaviour is unchanged.
+- **Prefill test wiring:** `prefill_tp4_test.zig` (a 2,048-row segment emits on every rank of a TP=4 boot at the real
+  640 / 512 expert widths) was imported by nothing, so the two world-4 fixes it guards were ungated. The forward suite
+  now imports it: `test-dsv41-forward` 102 pass / 1 fail -> 106 pass / 1 fail (the same inherited
+  `review_session_test` case).
+- **Measured** against 1.1.1 on clean boots: 8-busy 313.48 tok/s, boot 161 s to ready, prefill 32K / 8K -0.6%, all 15
+  determinism hashes identical, 0 panics.
+
+Open findings (not fixed):
+
+- `TF_DSV41_TXN_KEEP_SKIP=1` changes the restored continuation at deep restore (hash `7891662f` vs `bcf55924` at
+  `=0`). The flag is ours, not the rebase's; the serving config ships `=0`.
+- Cross-restart NVMe session restore never runs: nothing calls `Store.reconcile` / `disk.scan` at boot, so the disk
+  tier does nothing in production unless `SESSION_RAM_MIB` / `SESSION_RESIDENT` are set. Inherited, not a regression.
