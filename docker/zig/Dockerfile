@@ -43,9 +43,17 @@ ARG ZIG_COMMIT=unknown
 RUN apt-get update && apt-get install -y --no-install-recommends libnccl2 libibverbs1 ibverbs-providers rdma-core \
         libcublas-13-0 curl ca-certificates \
     && rm -rf /var/lib/apt/lists/*
+# video input (TF_DSV41_IMAGES=native, data-URL video_url parts): the server runs a one-shot `python3 -I` child with PyAV
+# (frame decode) and Pillow (PNG) in this venv (TF_VIDEO_PYTHON); the build fails here if the imports do not work
+RUN apt-get update && apt-get install -y --no-install-recommends python3 python3-venv \
+    && rm -rf /var/lib/apt/lists/* \
+    && python3 -m venv /opt/tensorfold/pyvideo \
+    && /opt/tensorfold/pyvideo/bin/pip install --no-cache-dir "av>=14,<16" "pillow>=10,<12" \
+    && /opt/tensorfold/pyvideo/bin/python3 -I -c "import av, PIL.Image; print('video decoder: PyAV', av.__version__, 'Pillow', PIL.__version__)"
 # tf-tp-test: the transport's own gate on the nodes (scripts/zig-tp4-roce-check.sh), no model needed
 COPY --from=build /out/bin/tensorfold-dsv41 /out/bin/tf-dsv41-m1 /out/bin/tf-tp-test /opt/tensorfold/bin/
 COPY --from=build /tp_mailbox.fatbin /opt/tensorfold/share/tp_mailbox.fatbin
 ENV PATH=/opt/tensorfold/bin:$PATH \
+    TF_VIDEO_PYTHON=/opt/tensorfold/pyvideo/bin/python3 \
     TF_TP_KERNEL_IMAGE=/opt/tensorfold/share/tp_mailbox.fatbin
 LABEL org.tensorfold.zig-commit="${ZIG_COMMIT}"

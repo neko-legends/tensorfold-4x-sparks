@@ -1,0 +1,259 @@
+{
+ "label": "smoke29",
+ "config": {
+  "model_requested": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+  "api": "http://localhost:8000/v1/completions",
+  "prompt_format": "raw /v1/completions, \"from typing import *\\n\" + problem[\"prompt\"]",
+  "stop": [
+   "\nclass",
+   "\n@pytest",
+   "\nif __name__",
+   "\nprint(",
+   "\ndef "
+  ],
+  "temperature": 0,
+  "max_tokens": 512,
+  "decoding": "greedy, no chat template, no thinking",
+  "output_processing": "truncate at first stop string, rstrip",
+  "program_assembly": "prompt+completion+\"\\n\"+test+\"\\ncheck(entry_point)\"",
+  "exec_timeout_s": 20.0,
+  "cpu_rlimit_s": 20,
+  "sandbox": "temp cwd; clean env; -s -B; RLIMIT_CPU20/AS2G/NPROC64/FSIZE2M/NOFILE256; socket blocked via sitecustomize guard (no unprivileged netns: unshare -n -> EPERM)",
+  "dataset": {
+   "path": "/home/jun/neko-code-bench/humaneval.jsonl",
+   "sha256": "1d49078ba3e2b196b9344535bef34a43021f038fad9561d6ee7c53450609a6a2",
+   "n": 6
+  },
+  "wall_s": 3.5
+ },
+ "engine_start": {
+  "http://localhost:8000/v1/models": {
+   "object": "list",
+   "data": [
+    {
+     "id": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    },
+    {
+     "id": "deepseek-v4.1-flash",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    }
+   ]
+  },
+  "http://localhost:8000/health": {
+   "ok": true,
+   "mode": "basic",
+   "uptime_s": 942.7,
+   "inflight": 0,
+   "oldest_s": 0.0,
+   "idle_s": 42.3,
+   "requests": 48,
+   "errors": 0,
+   "backend": "tensorfold",
+   "busy": false,
+   "requests_running": 0,
+   "requests_total": 48,
+   "prompt_tokens_total": 26729,
+   "completion_tokens_total": 118648,
+   "prefill_seconds_total": 21.623924,
+   "decode_seconds_total": 736.64255,
+   "cached_tokens_total": 13824,
+   "rounds_total": 13745,
+   "drafted_total": 112526,
+   "accepted_total": 104940,
+   "streams": {
+    "decoding": 0,
+    "prefilling": 0,
+    "max": 4
+   },
+   "context_length": 524288
+  }
+ },
+ "engine_end": {
+  "http://localhost:8000/v1/models": {
+   "object": "list",
+   "data": [
+    {
+     "id": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    },
+    {
+     "id": "deepseek-v4.1-flash",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    }
+   ]
+  },
+  "http://localhost:8000/health": {
+   "ok": true,
+   "mode": "basic",
+   "uptime_s": 946.1,
+   "inflight": 0,
+   "oldest_s": 0.0,
+   "idle_s": 0.0,
+   "requests": 54,
+   "errors": 0,
+   "backend": "tensorfold",
+   "busy": false,
+   "requests_running": 0,
+   "requests_total": 54,
+   "prompt_tokens_total": 27384,
+   "completion_tokens_total": 118878,
+   "prefill_seconds_total": 23.157768,
+   "decode_seconds_total": 738.42503,
+   "cached_tokens_total": 13936,
+   "rounds_total": 13804,
+   "drafted_total": 112740,
+   "accepted_total": 105111,
+   "streams": {
+    "decoding": 0,
+    "prefilling": 0,
+    "max": 4
+   },
+   "context_length": 524288
+  }
+ },
+ "overall": {
+  "n": 6,
+  "passed": 5,
+  "pass_at_1": 83.33,
+  "breakdown": {
+   "passed": 5,
+   "failed-assert": 1
+  },
+  "completion_tokens_total": 230,
+  "api_wall_s_total": 3.3,
+  "completion_tok_per_s": 69.09,
+  "truncated_by_length": 0,
+  "request_errors": 0
+ },
+ "per_problem": [
+  {
+   "task_id": "HumanEval/0",
+   "entry_point": "has_close_elements",
+   "category": "passed",
+   "passed": true,
+   "returncode": 0,
+   "exec_wall_s": 0.017,
+   "finish_reason": "stop",
+   "completion_tokens": 43,
+   "prompt_tokens": 126,
+   "api_wall_s": 0.504,
+   "stop_cut_client_side": false,
+   "completion": "    for i in range(len(numbers)):\n        for j in range(i + 1, len(numbers)):\n            if abs(numbers[i] - numbers[j]) < threshold:\n                return True\n    return False\n",
+   "program_sha256": "b577e8df086fa789dda4657c68e7f2567f6ac159d28d193012e4a416cbb375bd",
+   "stdout_head": "",
+   "stderr_tail": "",
+   "request_error": null
+  },
+  {
+   "task_id": "HumanEval/1",
+   "entry_point": "separate_paren_groups",
+   "category": "failed-assert",
+   "passed": false,
+   "returncode": 1,
+   "exec_wall_s": 0.017,
+   "finish_reason": "stop",
+   "completion_tokens": 77,
+   "prompt_tokens": 119,
+   "api_wall_s": 0.954,
+   "stop_cut_client_side": false,
+   "completion": "    paren_string = paren_string.replace(' ', '')\n    result = []\n    stack = []\n    for c in paren_string:\n        if c == '(':\n            stack.append(c)\n        elif c == ')':\n            if len(stack) == 0:\n                result.append('')\n            else:\n                result.append(''.join(stack))\n                stack.pop()\n    return result\n",
+   "program_sha256": "35d11b05d66631588a745c2021925a57abcd3d47fae305fac95ad64cf96600f1",
+   "stdout_head": "",
+   "stderr_tail": "Traceback (most recent call last):\n  File \"/home/jun/neko-code-bench/run-tmp/he-02ft2fs8/main.py\", line 47, in <module>\n    check(separate_paren_groups)\n  File \"/home/jun/neko-code-bench/run-tmp/he-02ft2fs8/main.py\", line 36, in check\n    assert candidate('(()()) ((())) () ((())()())') == [\n           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nAssertionError\n",
+   "request_error": null
+  },
+  {
+   "task_id": "HumanEval/2",
+   "entry_point": "truncate_number",
+   "category": "passed",
+   "passed": true,
+   "returncode": 0,
+   "exec_wall_s": 0.034,
+   "finish_reason": "stop",
+   "completion_tokens": 8,
+   "prompt_tokens": 84,
+   "api_wall_s": 0.335,
+   "stop_cut_client_side": false,
+   "completion": "    return number % 1\n",
+   "program_sha256": "3850e13dee00203abff4633e8c428001f083ddb37342032a547805ce68e50571",
+   "stdout_head": "",
+   "stderr_tail": "",
+   "request_error": null
+  },
+  {
+   "task_id": "HumanEval/3",
+   "entry_point": "below_zero",
+   "category": "passed",
+   "passed": true,
+   "returncode": 0,
+   "exec_wall_s": 0.018,
+   "finish_reason": "stop",
+   "completion_tokens": 33,
+   "prompt_tokens": 117,
+   "api_wall_s": 0.528,
+   "stop_cut_client_side": false,
+   "completion": "    balance = 0\n    for op in operations:\n        balance += op\n        if balance < 0:\n            return True\n    return False\n",
+   "program_sha256": "280e208249efd0c30d710d220db02650bd20dc091297ec7f36f641a154c4c877",
+   "stdout_head": "",
+   "stderr_tail": "",
+   "request_error": null
+  },
+  {
+   "task_id": "HumanEval/4",
+   "entry_point": "mean_absolute_deviation",
+   "category": "passed",
+   "passed": true,
+   "returncode": 0,
+   "exec_wall_s": 0.018,
+   "finish_reason": "stop",
+   "completion_tokens": 28,
+   "prompt_tokens": 115,
+   "api_wall_s": 0.479,
+   "stop_cut_client_side": false,
+   "completion": "    mean = sum(numbers) / len(numbers)\n    return sum(abs(x - mean) for x in numbers) / len(numbers)\n",
+   "program_sha256": "6b609416eb05f12327537999ddd3450af31deb4eaef79a5fe8fffef5ce02da6f",
+   "stdout_head": "",
+   "stderr_tail": "",
+   "request_error": null
+  },
+  {
+   "task_id": "HumanEval/5",
+   "entry_point": "intersperse",
+   "category": "passed",
+   "passed": true,
+   "returncode": 0,
+   "exec_wall_s": 0.017,
+   "finish_reason": "stop",
+   "completion_tokens": 41,
+   "prompt_tokens": 94,
+   "api_wall_s": 0.529,
+   "stop_cut_client_side": false,
+   "completion": "    if not numbers:\n        return []\n    result = [numbers[0]]\n    for num in numbers[1:]:\n        result.append(delimeter)\n        result.append(num)\n    return result",
+   "program_sha256": "811491dfd1922e1d79db1f74ed56ef305289de7e891b0ce2210ebc9d53ecb9ae",
+   "stdout_head": "",
+   "stderr_tail": "",
+   "request_error": null
+  }
+ ]
+}

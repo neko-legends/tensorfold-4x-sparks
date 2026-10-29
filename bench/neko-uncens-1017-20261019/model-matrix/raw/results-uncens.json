@@ -1,0 +1,4400 @@
+{
+ "config": {
+  "api": "http://localhost:8000/v1/completions",
+  "model_served": "deepseek-v4.1-flash",
+  "seed": 20261019,
+  "concurrency": 4,
+  "endpoint": "/v1/completions (raw generate, no chat template)",
+  "max_tokens": 8,
+  "temperature": 0,
+  "category_totals": {
+   "stem": 171,
+   "humanities": 113,
+   "social": 103,
+   "other": 113
+  },
+  "alloc_per_subject": {
+   "abstract_algebra": 5,
+   "anatomy": 7,
+   "astronomy": 8,
+   "college_biology": 8,
+   "college_chemistry": 5,
+   "college_computer_science": 5,
+   "college_mathematics": 5,
+   "college_physics": 5,
+   "computer_security": 5,
+   "conceptual_physics": 12,
+   "electrical_engineering": 8,
+   "elementary_mathematics": 20,
+   "formal_logic": 7,
+   "high_school_biology": 16,
+   "high_school_chemistry": 11,
+   "high_school_computer_science": 5,
+   "high_school_mathematics": 14,
+   "high_school_physics": 8,
+   "high_school_statistics": 11,
+   "machine_learning": 6,
+   "high_school_european_history": 4,
+   "high_school_us_history": 5,
+   "high_school_world_history": 6,
+   "international_law": 3,
+   "jurisprudence": 3,
+   "logical_fallacies": 4,
+   "moral_disputes": 8,
+   "moral_scenarios": 22,
+   "philosophy": 8,
+   "prehistory": 8,
+   "professional_law": 38,
+   "world_religions": 4,
+   "econometrics": 4,
+   "high_school_geography": 7,
+   "high_school_government_and_politics": 6,
+   "high_school_macroeconomics": 13,
+   "high_school_microeconomics": 8,
+   "high_school_psychology": 18,
+   "human_sexuality": 4,
+   "professional_psychology": 21,
+   "public_relations": 4,
+   "security_studies": 8,
+   "sociology": 7,
+   "us_foreign_policy": 3,
+   "business_ethics": 4,
+   "clinical_knowledge": 10,
+   "college_medicine": 6,
+   "global_facts": 4,
+   "human_aging": 8,
+   "management": 4,
+   "marketing": 8,
+   "medical_genetics": 4,
+   "miscellaneous": 28,
+   "nutrition": 11,
+   "professional_accounting": 10,
+   "professional_medicine": 10,
+   "virology": 6
+  },
+  "question_set_sha256": "86c9462464c1bbf244b44b475555e43b02a1dc56396839c1d5b5f0499f0ae939",
+  "wall_seconds": 281.5
+ },
+ "overall": {
+  "n": 500,
+  "correct": 406,
+  "invalid": 0,
+  "errors": 0,
+  "accuracy_pct": 81.2
+ },
+ "categories": {
+  "stem": {
+   "n": 171,
+   "correct": 138,
+   "invalid": 0,
+   "accuracy_pct": 80.7
+  },
+  "other": {
+   "n": 113,
+   "correct": 95,
+   "invalid": 0,
+   "accuracy_pct": 84.07
+  },
+  "social": {
+   "n": 103,
+   "correct": 92,
+   "invalid": 0,
+   "accuracy_pct": 89.32
+  },
+  "humanities": {
+   "n": 113,
+   "correct": 81,
+   "invalid": 0,
+   "accuracy_pct": 71.68
+  }
+ },
+ "per_subject": {
+  "abstract_algebra": {
+   "n": 5,
+   "correct": 2,
+   "accuracy_pct": 40.0
+  },
+  "anatomy": {
+   "n": 7,
+   "correct": 5,
+   "accuracy_pct": 71.43
+  },
+  "astronomy": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "business_ethics": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "clinical_knowledge": {
+   "n": 10,
+   "correct": 7,
+   "accuracy_pct": 70.0
+  },
+  "college_biology": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "college_chemistry": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "college_computer_science": {
+   "n": 5,
+   "correct": 3,
+   "accuracy_pct": 60.0
+  },
+  "college_mathematics": {
+   "n": 5,
+   "correct": 3,
+   "accuracy_pct": 60.0
+  },
+  "college_medicine": {
+   "n": 6,
+   "correct": 5,
+   "accuracy_pct": 83.33
+  },
+  "college_physics": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "computer_security": {
+   "n": 5,
+   "correct": 2,
+   "accuracy_pct": 40.0
+  },
+  "conceptual_physics": {
+   "n": 12,
+   "correct": 12,
+   "accuracy_pct": 100.0
+  },
+  "econometrics": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "electrical_engineering": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "elementary_mathematics": {
+   "n": 20,
+   "correct": 17,
+   "accuracy_pct": 85.0
+  },
+  "formal_logic": {
+   "n": 7,
+   "correct": 5,
+   "accuracy_pct": 71.43
+  },
+  "global_facts": {
+   "n": 4,
+   "correct": 1,
+   "accuracy_pct": 25.0
+  },
+  "high_school_biology": {
+   "n": 16,
+   "correct": 15,
+   "accuracy_pct": 93.75
+  },
+  "high_school_chemistry": {
+   "n": 11,
+   "correct": 9,
+   "accuracy_pct": 81.82
+  },
+  "high_school_computer_science": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "high_school_european_history": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "high_school_geography": {
+   "n": 7,
+   "correct": 7,
+   "accuracy_pct": 100.0
+  },
+  "high_school_government_and_politics": {
+   "n": 6,
+   "correct": 6,
+   "accuracy_pct": 100.0
+  },
+  "high_school_macroeconomics": {
+   "n": 13,
+   "correct": 12,
+   "accuracy_pct": 92.31
+  },
+  "high_school_mathematics": {
+   "n": 14,
+   "correct": 9,
+   "accuracy_pct": 64.29
+  },
+  "high_school_microeconomics": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "high_school_physics": {
+   "n": 8,
+   "correct": 6,
+   "accuracy_pct": 75.0
+  },
+  "high_school_psychology": {
+   "n": 18,
+   "correct": 16,
+   "accuracy_pct": 88.89
+  },
+  "high_school_statistics": {
+   "n": 11,
+   "correct": 9,
+   "accuracy_pct": 81.82
+  },
+  "high_school_us_history": {
+   "n": 5,
+   "correct": 5,
+   "accuracy_pct": 100.0
+  },
+  "high_school_world_history": {
+   "n": 6,
+   "correct": 6,
+   "accuracy_pct": 100.0
+  },
+  "human_aging": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "human_sexuality": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "international_law": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "jurisprudence": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "logical_fallacies": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "machine_learning": {
+   "n": 6,
+   "correct": 5,
+   "accuracy_pct": 83.33
+  },
+  "management": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "marketing": {
+   "n": 8,
+   "correct": 6,
+   "accuracy_pct": 75.0
+  },
+  "medical_genetics": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "miscellaneous": {
+   "n": 28,
+   "correct": 26,
+   "accuracy_pct": 92.86
+  },
+  "moral_disputes": {
+   "n": 8,
+   "correct": 6,
+   "accuracy_pct": 75.0
+  },
+  "moral_scenarios": {
+   "n": 22,
+   "correct": 9,
+   "accuracy_pct": 40.91
+  },
+  "nutrition": {
+   "n": 11,
+   "correct": 11,
+   "accuracy_pct": 100.0
+  },
+  "philosophy": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "prehistory": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "professional_accounting": {
+   "n": 10,
+   "correct": 6,
+   "accuracy_pct": 60.0
+  },
+  "professional_law": {
+   "n": 38,
+   "correct": 27,
+   "accuracy_pct": 71.05
+  },
+  "professional_medicine": {
+   "n": 10,
+   "correct": 10,
+   "accuracy_pct": 100.0
+  },
+  "professional_psychology": {
+   "n": 21,
+   "correct": 17,
+   "accuracy_pct": 80.95
+  },
+  "public_relations": {
+   "n": 4,
+   "correct": 2,
+   "accuracy_pct": 50.0
+  },
+  "security_studies": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "sociology": {
+   "n": 7,
+   "correct": 6,
+   "accuracy_pct": 85.71
+  },
+  "us_foreign_policy": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "virology": {
+   "n": 6,
+   "correct": 4,
+   "accuracy_pct": 66.67
+  },
+  "world_religions": {
+   "n": 4,
+   "correct": 2,
+   "accuracy_pct": 50.0
+  }
+ },
+ "details": [
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nStatement 1 | Every group",
+   "error": null
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nStatement 1 | Every field",
+   "error": null
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nStatement 1 | The set",
+   "error": null
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nStatement 1 | Every group",
+   "error": null
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nStatement 1| Every function",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nThe nasal septum\nA.",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe right lung has\nA",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe most common type of calcium",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the difference between the",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe right side of the heart",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe geniculate ganglion is",
+   "error": null
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nThe cell bodies of the post",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhy does the Sun have a",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhy do we think that Mars",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the primary cause of",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the primary cause of",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the primary cause of",
+   "error": null
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the primary cause of",
+   "error": null
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe ________ of CSR is that",
+   "error": null
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe ________ model of corporate governance",
+   "error": null
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe ________ model of corporate governance",
+   "error": null
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe term \"consumer inclusion\"",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe following are true about the",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the difference between a",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the difference between a",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe action potential of a muscle",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe resting potential of a neur",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nThe fluid of the inner ear",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nWhat is the difference between a",
+   "error": null
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nWhat is the first investigation for",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe rate law for the reaction",
+   "error": null
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the pH of a",
+   "error": null
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nWhat is the concentration of the",
+   "error": null
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA certain processor has a two",
+   "error": null
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nA. 1\nB",
+   "error": null
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA certain processor has a two",
+   "error": null
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA particular disk unit uses a",
+   "error": null
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nA certain computer has a ",
+   "error": null
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nStatement 1 | Every field",
+   "error": null
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nLet V be the set of",
+   "error": null
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nLet f(x) = x",
+   "error": null
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nLet f(x) = x",
+   "error": null
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nLet f be a real-valued",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe enzyme pepsin is responsible",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA 22-year-old woman",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 2.0 kg",
+   "error": null
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA 5.0-meter",
+   "error": null
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 2,000-k",
+   "error": null
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 2.0-new",
+   "error": null
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nA 2.0 kg",
+   "error": null
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is /",
+   "error": null
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the difference between a",
+   "error": null
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is a \"white hat",
+   "error": null
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "A",
+   "raw": " A\n\nA ________ is a type of",
+   "error": null
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe energy of a photon is",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA very light bird is caught",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 10 kg brick and",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA very light bird is caught",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe energy of a photon is",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA wave with a smaller amplitude",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA motor and a generator are",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA wave with a long period",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe gas in a container is",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe source of the sun's",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA very light cart is moving",
+   "error": null
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA very light bird is caught",
+   "error": null
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe value of the Durb",
+   "error": null
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nA researcher is interested in the",
+   "error": null
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nIf a series, yt",
+   "error": null
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nIf the researcher uses the ",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe magnetic field energy in a",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe synchronous speed of a ",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA single phase full bridge inverter",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA fully controlled converter uses\n",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe point poles are placed at",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe power factor of a transformer",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe critical resistance of the D",
+   "error": null
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe power factor of a transformer",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the value of the",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe highest temperature ever recorded in",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich expression shows how to find",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhat is 1 over ",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the value of the",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe 5th grade class",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe value of the digit ",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA school has 30 classrooms",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich expression is equivalent to ",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe population of the city where",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich expression is equivalent to ",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA middle school has 6",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich expression is equivalent to ",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA school has 1,",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nWhich is the best estimate of",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nWhat is the value of the",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA bag contains 3 red",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe population of the city where",
+   "error": null
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe population of the city where",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nSelect the best translation into predicate",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nSelect the best translation into predicate",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following propositions is",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nSelect the best translation into predicate",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following propositions is",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nSelect the best translation into predicate",
+   "error": null
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nSelect the best translation into predicate",
+   "error": null
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nAs of 2019,",
+   "error": null
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "C",
+   "pred": "A",
+   "raw": " A\n\nAs of 2019,",
+   "error": null
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nAs of 2019,",
+   "error": null
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nAs of 2019,",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following describes the",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nIndividuals with an inherited type of",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is L",
+   "error": null
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\n#### High School Chemistry\n\nWhich",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\n#### High School Chemistry\n\nWhich",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 0.500 g",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\n#### High School Chemistry\n\nWhich",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA sorted list of numbers contains",
+   "error": null
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following best describes",
+   "error": null
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe following questions refer to the",
+   "error": null
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe following items are inserted in",
+   "error": null
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nThe following questions are about the",
+   "error": null
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is an",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe world's three major religions",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe most common map projection used",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe world's three major agricultural",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is an",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe area of a small city",
+   "error": null
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe world's three major agricultural",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe Constitution's \"necessary and",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe Constitution's writers carefully elaborated",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is an",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe role of a grand jury",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe Constitution's \"necessary and",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe opportunity cost of holding money",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe aggregate demand curve is\n",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nIf the reserve requirement is ",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nIf the exchange rate between the",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA federal budget deficit exists when",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nIf the economy is at full",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nA right triangle has legs $",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nA water tank is currently ",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nWhat is the sum of all",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nA car travels 120 miles",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA right triangle has legs measuring",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe following are multiple choice questions",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the value of $",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nFind the area of the region",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA right triangle has legs $",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA right triangle has legs $",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA right triangle has legs $",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhat is the sum of all",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the sum of all",
+   "error": null
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the value of $",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe cross-price elasticity of demand",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nIn a perfectly competitive market,",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nIn a perfectly competitive market,",
+   "error": null
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nIf a firm is producing a",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 2 kg mass is",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nA 2,000-k",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 1,000 kg",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 50-ohm resistor",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 10-gram wire",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA capacitor is fully charged by",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA 60 \u03a9 resistor is",
+   "error": null
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nA 2 kg object moves",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nMs. Simons is a new",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nAccording to the Stanford-Binet",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA teacher wants to improve student",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nAccording to the Stanford-Binet",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nDr. Grayson is interested",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA teacher asks a student,",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA student is interested in knowing",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA teacher asks her students to",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 9-year-old child",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "A",
+   "raw": " A\n\nA 15-year-old high",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA company's old decong",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA company wants to compare two",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA large company is interested in",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA company's old decong",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nA large company is interested in",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA company's old decong",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 95% confidence interval",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA company's old decong",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA hypothesis test is to be",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nA large company must choose between",
+   "error": null
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA company's old decal",
+   "error": null
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThis question refers to the following",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe most common disorder among women",
+   "error": null
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe correct order of the stages",
+   "error": null
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe most common disorder among women",
+   "error": null
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe most common disorder among women",
+   "error": null
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the main function of",
+   "error": null
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the main difference between",
+   "error": null
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the meaning of '",
+   "error": null
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe two components of a problem",
+   "error": null
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe ________ School of jurisprudence post",
+   "error": null
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe fallacy of  post hoc",
+   "error": null
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nThe fallacy of false dichotomy is",
+   "error": null
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is true",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is NOT",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nStatement 1| For a",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is false",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is NOT",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is NOT",
+   "error": null
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of these is not a",
+   "error": null
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich is not a key concept",
+   "error": null
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich is not a key concept",
+   "error": null
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the definition of the",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\n_____________ is a natural outcome",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is most",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nThe process of putting marketing strategies",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe marketing mix is a combination",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe process of putting one's",
+   "error": null
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe marketing manager's reason to",
+   "error": null
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe karyotype of a child",
+   "error": null
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the nickname of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of these is a suitable",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe sun was gone, but",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the nickname of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is a 10 in",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe song \"Mundian",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nIn the 1970s",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the nickname of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the name of the",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of these is a type",
+   "error": null
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nIn the short run, a",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nAccording to Hill, when a",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nAccording to the \"simple\"",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nAccording to Baron, what is",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe question of whether SCN",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nAccording to Hursthouse,",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nAccording to the Confucian model",
+   "error": null
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nAccording to Hill, what is",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nFor which of these two scenarios",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the most common micro",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following statements is",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following statements about",
+   "error": null
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nAccording to the text, the",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe following are multiple choice questions",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nThe English philosopher who wrote about",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nAccording to the text, the",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nAccording to Anscombe, a",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nAccording to the text, the",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe Minoans appear to",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe first hominid species",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe development of complex societies in",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe first recognizable Homo erectus",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nThe hominid species that",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe first clear evidence of human",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe earliest evidence for the domest",
+   "error": null
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe Chavin culture was located",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "A",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nA company has the following financial",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nAn auditor is planning an audit",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe following information pertains to the",
+   "error": null
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA company has the following accru",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA landowner, who owned",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "A",
+   "raw": " A\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA landowner, who owned",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nA landowner, who owned",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nA defendant was charged with murder",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 14-year-old boy",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state legislature enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nA landowner, who owned",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA state has enacted a statute",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA state enacted a statute requiring",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA landowner, who owned",
+   "error": null
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA state has recently enacted a",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA 3-year-old boy",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA 3-year-old boy",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 3-week-old infant",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 62-year-old woman",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 3-year-old boy",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 4-year-old boy",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 42-year-old man",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 25-year-old man",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA 32-year-old woman",
+   "error": null
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA 42-year-old man",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA counselor is using a behavioral",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe STATISTICS are a",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA counselor is using a behavioral",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA psychologist is planning to conduct",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe most common symptom associated with",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nIn a token economy, the",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "B",
+   "raw": " B\n\nA person who is highly achievement",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nA psychologist is asked to serve",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe most critical aspect of a",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "D",
+   "raw": " D\n\nA psychologist is asked to provide",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe 1978 \"Uniform",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe most common symptom of a",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "A",
+   "raw": " A\n\nA person with a multiple personality",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA person who is highly achievement",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nA psychologist is planning to use",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nA psychologist is asked to evaluate",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nDr. Jane I. M",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA person with a phobic",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nThe most critical aspect of a",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nA person who is both soci",
+   "error": null
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "B",
+   "raw": " B\n\nA person with a multiple personality",
+   "error": null
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "B",
+   "pred": "A",
+   "raw": " A\n\nWhich of these is a major",
+   "error": null
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "C",
+   "pred": "D",
+   "raw": " D\n\nWhich of these is a key",
+   "error": null
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of these is a major",
+   "error": null
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of these is an example",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the relationship between the",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the primary distinction between",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the primary distinction between",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is the",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nWhat is the relationship between the",
+   "error": null
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the relationship between the",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "B",
+   "pred": "C",
+   "raw": " C\n\nWhat is the difference between a",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhat is the difference between an",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is a 'moral panic",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhich of the following is not",
+   "error": null
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is NOT",
+   "error": null
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nWhich of the following is an",
+   "error": null
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": " C\n\nWhat is the main goal of",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe most common form of HIV",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nThe most common mutation(s)",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nThe key factor in the success",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": " B\n\nThe most effective method of HIV",
+   "error": null
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "C",
+   "pred": "A",
+   "raw": " A\n\nThe most common cause of sporadic",
+   "error": null
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": " A\n\nWhich of the following is one",
+   "error": null
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": " D\n\nThe \"Hymn to the",
+   "error": null
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "B",
+   "raw": " B\n\nWhich of the following is a",
+   "error": null
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "C",
+   "raw": " C\n\nWhat is the sign of the",
+   "error": null
+  }
+ ]
+}

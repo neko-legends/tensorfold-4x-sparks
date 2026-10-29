@@ -1,0 +1,27 @@
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.18, "completion_tokens": 485, "decode_tok_s": 66.26, "label": "roce_pollers2", "ts": "04:29:41"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.358, "completion_tokens": 512, "decode_tok_s": 121.1, "label": "roce_pollers2", "ts": "04:29:46"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.533, "completion_tokens": 512, "decode_tok_s": 61.03, "label": "roce_pollers2", "ts": "04:29:55"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.175, "completion_tokens": 485, "decode_tok_s": 68.84, "label": "roce_pollers2", "ts": "04:30:03"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.177, "completion_tokens": 512, "decode_tok_s": 127.17, "label": "roce_pollers2", "ts": "04:30:07"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.199, "completion_tokens": 512, "decode_tok_s": 63.58, "label": "roce_pollers2", "ts": "04:30:15"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.175, "completion_tokens": 485, "decode_tok_s": 69.31, "label": "roce_pollers2", "ts": "04:30:24"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.179, "completion_tokens": 512, "decode_tok_s": 127.64, "label": "roce_pollers2", "ts": "04:30:28"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.185, "completion_tokens": 512, "decode_tok_s": 63.8, "label": "roce_pollers2", "ts": "04:30:36"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.175, "completion_tokens": 428, "decode_tok_s": 68.31, "label": "roce_pollers2", "ts": "04:30:43"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.341, "completion_tokens": 512, "decode_tok_s": 87.75, "label": "roce_pollers2", "ts": "04:30:50"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.524, "completion_tokens": 512, "decode_tok_s": 59.4, "label": "roce_pollers2", "ts": "04:30:59"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.176, "completion_tokens": 428, "decode_tok_s": 72.11, "label": "roce_pollers2", "ts": "04:31:06"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.176, "completion_tokens": 512, "decode_tok_s": 90.73, "label": "roce_pollers2", "ts": "04:31:12"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.186, "completion_tokens": 512, "decode_tok_s": 62.96, "label": "roce_pollers2", "ts": "04:31:20"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.176, "completion_tokens": 428, "decode_tok_s": 72.47, "label": "roce_pollers2", "ts": "04:31:27"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.178, "completion_tokens": 512, "decode_tok_s": 90.93, "label": "roce_pollers2", "ts": "04:31:33"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.189, "completion_tokens": 512, "decode_tok_s": 63.05, "label": "roce_pollers2", "ts": "04:31:41"}
+{"kind": "decode", "case": "short_chat", "effort": "default", "temp": 0.6, "ttft_s": 0.173, "completion_tokens": 512, "decode_tok_s": 63.31, "label": "roce_pollers2", "ts": "04:31:50"}
+{"kind": "decode", "case": "code_2k", "effort": "default", "temp": 0.6, "ttft_s": 0.178, "completion_tokens": 512, "decode_tok_s": 85.59, "label": "roce_pollers2", "ts": "04:31:57"}
+{"kind": "decode", "case": "prose_8k", "effort": "default", "temp": 0.6, "ttft_s": 0.198, "completion_tokens": 512, "decode_tok_s": 57.38, "label": "roce_pollers2", "ts": "04:32:06"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.829, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2896.3, "label": "roce_pollers2", "ts": "04:32:08"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.831, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2891.8, "label": "roce_pollers2", "ts": "04:32:09"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.824, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2903.9, "label": "roce_pollers2", "ts": "04:32:11"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.191, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5024.2, "label": "roce_pollers2", "ts": "04:32:16"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.188, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5028.2, "label": "roce_pollers2", "ts": "04:32:21"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.205, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5008.1, "label": "roce_pollers2", "ts": "04:32:25"}

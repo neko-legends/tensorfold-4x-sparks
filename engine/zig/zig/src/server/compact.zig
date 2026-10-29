@@ -104,12 +104,21 @@ pub fn prepare(srv: *Server, cx: *Cx, input: chat.Input, gone: anytype) chat.Fai
         const prepared = try chat.prepare(srv, cx, input, gone);
         return .{ .prepared = prepared, .stamp = .{ .window = window, .used = prepared.prompt_len } };
     }
-    if (chat.prepare(srv, cx, input, gone)) |prepared| {
-        if (!over(prepared.prompt_len, wanted(srv, input), window, at))
+    // Video parts expand to frames once, here: the first prepare, the rebuilt tail and every retry share these messages.
+    var seen = input;
+    if (srv.family) |fam| seen.messages = try fam.normalize(cx, input.messages);
+    if (chat.prepare(srv, cx, seen, gone)) |prepared| {
+        if (!over(prepared.prompt_len, wanted(srv, seen), window, at))
             return .{ .prepared = prepared, .stamp = .{ .window = window, .used = prepared.prompt_len } };
-        chat.release(srv, prepared.preparing);
+        discard(srv, prepared);
     } else |e| if (!(e == error.Refused and cx.kind == .context_length)) return e;
-    return rebuild(srv, cx, input, gone, at, input.messages.array);
+    return rebuild(srv, cx, seen, gone, at, seen.messages.array);
+}
+
+/// A prepared request that will not be generated: its preparing count and its held images go back.
+fn discard(srv: *Server, prepared: chat.Prepared) void {
+    if (prepared.images) |im| im.release();
+    chat.release(srv, prepared.preparing);
 }
 
 pub fn stamp(cx: *Cx, reply: *chat.Reply, s: Stamp) chat.Failure!void {
@@ -265,7 +274,7 @@ fn oneNote(srv: *Server, cx: *Cx, gone: anytype, task: []const u8, prev: []const
         };
         const room = srv.info.context_window - @as(i64, @intCast(fitted.prompt_len));
         if (room < 1) {
-            chat.release(srv, fitted.preparing);
+            discard(srv, fitted);
             return .{ .text = prev, .tokens = 0 };
         }
         var out = fitted;

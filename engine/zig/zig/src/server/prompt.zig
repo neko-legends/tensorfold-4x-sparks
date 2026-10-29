@@ -56,7 +56,7 @@ pub fn prepare(srv: *Server, cx: *Cx, input: chat.Input, thinking: bool, effort:
         .ids => |ids| return .{ .ids = ids },
     };
     if (srv.family) |fam| {
-        const p: family_mod.Prompt = .{ .messages = input.messages, .tools = input.tools, .thinking = thinking, .effort = effort orelse fam.defaultEffort(), .body = input.body };
+        const p: family_mod.Prompt = .{ .messages = try fam.normalize(cx, input.messages), .tools = input.tools, .thinking = thinking, .effort = effort orelse fam.defaultEffort(), .body = input.body };
         const got = try fam.render(cx, p);
         var history = p;
         history.generation = false;

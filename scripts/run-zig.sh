@@ -26,7 +26,7 @@ args=(docker run --rm --init --name "$name-r$rank" --gpus all --ipc=host --netwo
 while IFS='=' read -r key value; do
     case "$key" in
         TF_TP_WORLD|TF_TP_RANK|TF_TP_DEVICE|TF_TP_MASTER|TF_TP_PORT|TF_COMM_BACKEND|TF_TP_KERNEL_IMAGE) ;;
-        TF_DSV41_*|GLM53_TF_*|NCCL_*|TF_TP_*|MALLOC_ARENA_MAX) args+=(-e "$key");;
+        TF_DSV41_*|TF_VIDEO_*|GLM53_TF_*|NCCL_*|TF_TP_*|MALLOC_ARENA_MAX) args+=(-e "$key");;
     esac
 done < <(env)
 args+=(-e "TF_TP_WORLD=$world" -e "TF_TP_RANK=$rank" -e TF_TP_DEVICE=0

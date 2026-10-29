@@ -41,9 +41,13 @@ fn tokenize(srv: *Server, cx: *Cx, body: Value) errors.Refused!Value {
         // rendered exactly as a chat request with the same body
         const fam = srv.family.?;
         const generation = try flag(cx, body, "add_generation_prompt", true);
-        const m = body.get("messages").?;
-        if (m != .array or m.array.len == 0) return cx.refuse("messages must be a non-empty list");
+        const given = body.get("messages").?;
+        if (given != .array or given.array.len == 0) return cx.refuse("messages must be a non-empty list");
         const t = try fam.thinking(cx, body);
+        const m = fam.normalize(cx, given) catch |e| switch (e) {
+            error.Refused => return cx.refuse(cx.message),
+            else => |x| return x,
+        };
         const rendered = fam.render(cx, .{ .messages = m, .tools = try fam.tools(cx, body), .thinking = t.enable orelse srv.config.enable_thinking, .effort = t.effort orelse srv.config.reasoning_effort orelse fam.defaultEffort(), .generation = generation, .body = body }) catch |e| switch (e) {
             error.Refused => return cx.refuse(cx.message),
             else => |x| return x,

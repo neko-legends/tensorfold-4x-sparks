@@ -103,6 +103,9 @@ pub const Family = struct {
         /// The tools the prompt offers: ``tool_choice`` none offers none; otherwise all of them.
         tools: *const fn (ctx: *anyopaque, cx: *Cx, body: Value) errors.Refused![]const Value,
         render: *const fn (ctx: *anyopaque, cx: *Cx, p: Prompt) errors.Refused!Rendered,
+        /// The request's messages as ``render`` should read them, run once a request before its renders (DeepSeek:
+        /// video parts decoded to frames, which must not cost a decoder run for each of the history and the full render).
+        normalize: ?*const fn (ctx: *anyopaque, cx: *Cx, messages: Value) errors.Refused!Value = null,
         reader: *const fn (ctx: *anyopaque, a: Allocator, thinking: bool, tools: []const Value, single: bool) Allocator.Error!Reader,
         /// A finished reply's reasoning, kept for a later request whose history comes back without it.
         remember: *const fn (ctx: *anyopaque, reasoning: []const u8, content: []const u8, calls: []const Value) void,
@@ -119,6 +122,10 @@ pub const Family = struct {
     }
     pub fn tools(f: Family, cx: *Cx, body: Value) errors.Refused![]const Value {
         return f.vt.tools(f.ctx, cx, body);
+    }
+    pub fn normalize(f: Family, cx: *Cx, messages: Value) errors.Refused!Value {
+        const n = f.vt.normalize orelse return messages;
+        return n(f.ctx, cx, messages);
     }
     pub fn render(f: Family, cx: *Cx, p: Prompt) errors.Refused!Rendered {
         return f.vt.render(f.ctx, cx, p);

@@ -1,0 +1,27 @@
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.189, "completion_tokens": 485, "decode_tok_s": 65.94, "label": "lin2_cluster1", "ts": "04:35:33"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.35, "completion_tokens": 512, "decode_tok_s": 120.32, "label": "lin2_cluster1", "ts": "04:35:37"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.54, "completion_tokens": 512, "decode_tok_s": 60.05, "label": "lin2_cluster1", "ts": "04:35:46"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.175, "completion_tokens": 485, "decode_tok_s": 68.99, "label": "lin2_cluster1", "ts": "04:35:55"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.177, "completion_tokens": 512, "decode_tok_s": 126.91, "label": "lin2_cluster1", "ts": "04:35:59"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.195, "completion_tokens": 512, "decode_tok_s": 63.43, "label": "lin2_cluster1", "ts": "04:36:07"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.174, "completion_tokens": 485, "decode_tok_s": 69.35, "label": "lin2_cluster1", "ts": "04:36:15"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.194, "completion_tokens": 512, "decode_tok_s": 126.86, "label": "lin2_cluster1", "ts": "04:36:19"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.184, "completion_tokens": 512, "decode_tok_s": 63.55, "label": "lin2_cluster1", "ts": "04:36:28"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.181, "completion_tokens": 428, "decode_tok_s": 67.93, "label": "lin2_cluster1", "ts": "04:36:35"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.355, "completion_tokens": 512, "decode_tok_s": 88.13, "label": "lin2_cluster1", "ts": "04:36:41"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.531, "completion_tokens": 512, "decode_tok_s": 59.02, "label": "lin2_cluster1", "ts": "04:36:51"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.177, "completion_tokens": 428, "decode_tok_s": 70.95, "label": "lin2_cluster1", "ts": "04:36:58"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.177, "completion_tokens": 512, "decode_tok_s": 89.95, "label": "lin2_cluster1", "ts": "04:37:04"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.188, "completion_tokens": 512, "decode_tok_s": 62.32, "label": "lin2_cluster1", "ts": "04:37:12"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.174, "completion_tokens": 428, "decode_tok_s": 71.3, "label": "lin2_cluster1", "ts": "04:37:19"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.189, "completion_tokens": 512, "decode_tok_s": 90.23, "label": "lin2_cluster1", "ts": "04:37:25"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.189, "completion_tokens": 512, "decode_tok_s": 62.15, "label": "lin2_cluster1", "ts": "04:37:33"}
+{"kind": "decode", "case": "short_chat", "effort": "default", "temp": 0.6, "ttft_s": 0.176, "completion_tokens": 512, "decode_tok_s": 62.67, "label": "lin2_cluster1", "ts": "04:37:43"}
+{"kind": "decode", "case": "code_2k", "effort": "default", "temp": 0.6, "ttft_s": 0.18, "completion_tokens": 512, "decode_tok_s": 85.17, "label": "lin2_cluster1", "ts": "04:37:49"}
+{"kind": "decode", "case": "prose_8k", "effort": "default", "temp": 0.6, "ttft_s": 0.188, "completion_tokens": 512, "decode_tok_s": 57.71, "label": "lin2_cluster1", "ts": "04:37:58"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.816, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2916.5, "label": "lin2_cluster1", "ts": "04:38:00"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.826, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2901.0, "label": "lin2_cluster1", "ts": "04:38:02"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 1.826, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2900.5, "label": "lin2_cluster1", "ts": "04:38:04"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.175, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5044.2, "label": "lin2_cluster1", "ts": "04:38:09"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.188, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5027.6, "label": "lin2_cluster1", "ts": "04:38:13"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 4.177, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 5042.0, "label": "lin2_cluster1", "ts": "04:38:17"}

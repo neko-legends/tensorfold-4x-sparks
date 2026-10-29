@@ -1,0 +1,153 @@
+{
+ "label": "29bpw-comp",
+ "config": {
+  "model_requested": "deepseek-v4.1-flash",
+  "api": "http://127.0.0.1:8000/v1/completions",
+  "prompt_format": "raw /v1/completions, \"from typing import *\\n\" + problem[\"prompt\"]",
+  "stop": [
+   "\nclass",
+   "\n@pytest",
+   "\nif __name__",
+   "\nprint(",
+   "\ndef "
+  ],
+  "temperature": 0,
+  "max_tokens": 512,
+  "decoding": "greedy, no chat template, no thinking",
+  "output_processing": "truncate at first stop string, rstrip",
+  "program_assembly": "prompt+completion+\"\\n\"+test+\"\\ncheck(entry_point)\"",
+  "exec_timeout_s": 20.0,
+  "cpu_rlimit_s": 20,
+  "sandbox": "temp cwd; clean env; -s -B; RLIMIT_CPU20/AS2G/NPROC64/FSIZE2M/NOFILE256; socket blocked via sitecustomize guard (no unprivileged netns: unshare -n -> EPERM)",
+  "dataset": {
+   "path": "/home/jun/neko-code-bench/humaneval.jsonl",
+   "sha256": "1d49078ba3e2b196b9344535bef34a43021f038fad9561d6ee7c53450609a6a2",
+   "n": 164
+  },
+  "wall_s": 130.9
+ },
+ "engine_start": {
+  "http://localhost:8000/v1/models": {
+   "object": "list",
+   "data": [
+    {
+     "id": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    },
+    {
+     "id": "deepseek-v4.1-flash",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    }
+   ]
+  },
+  "http://localhost:8000/health": {
+   "ok": true,
+   "mode": "basic",
+   "uptime_s": 2133.6,
+   "inflight": 0,
+   "oldest_s": 0.0,
+   "idle_s": 25.5,
+   "requests": 1255,
+   "errors": 0,
+   "backend": "tensorfold",
+   "busy": false,
+   "requests_running": 0,
+   "requests_total": 1255,
+   "prompt_tokens_total": 716877,
+   "completion_tokens_total": 137181,
+   "prefill_seconds_total": 1462.505977,
+   "decode_seconds_total": 1240.686727,
+   "cached_tokens_total": 13936,
+   "rounds_total": 20314,
+   "drafted_total": 131347,
+   "accepted_total": 117434,
+   "streams": {
+    "decoding": 0,
+    "prefilling": 0,
+    "max": 4
+   },
+   "context_length": 524288
+  }
+ },
+ "engine_end": {
+  "http://localhost:8000/v1/models": {
+   "object": "list",
+   "data": [
+    {
+     "id": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    },
+    {
+     "id": "deepseek-v4.1-flash",
+     "object": "model",
+     "owned_by": "tensorfold",
+     "created": 1792463305,
+     "root": "DeepSeek-V4.1-Flash-1017-UNCENSORED-TF",
+     "max_model_len": 524288,
+     "context_length": 524288
+    }
+   ]
+  },
+  "http://localhost:8000/health": {
+   "ok": true,
+   "mode": "basic",
+   "uptime_s": 2264.5,
+   "inflight": 0,
+   "oldest_s": 0.0,
+   "idle_s": 0.0,
+   "requests": 1439,
+   "errors": 0,
+   "backend": "tensorfold",
+   "busy": false,
+   "requests_running": 0,
+   "requests_total": 1439,
+   "prompt_tokens_total": 742287,
+   "completion_tokens_total": 147138,
+   "prefill_seconds_total": 1517.953069,
+   "decode_seconds_total": 1331.24433,
+   "cached_tokens_total": 13936,
+   "rounds_total": 22780,
+   "drafted_total": 141173,
+   "accepted_total": 124985,
+   "streams": {
+    "decoding": 0,
+    "prefilling": 0,
+    "max": 4
+   },
+   "context_length": 524288
+  }
+ },
+ "overall": {
+  "n": 164,
+  "passed": 126,
+  "pass_at_1": 76.83,
+  "breakdown": {
+   "passed": 126,
+   "failed-assert": 30,
+   "failed-indexerror": 2,
+   "failed-valueerror": 3,
+   "failed-nameerror": 2,
+   "failed-syntax": 1
+  },
+  "completion_tokens_total": 9007,
+  "api_wall_s_total": 126.9,
+  "completion_tok_per_s": 71.0,
+  "truncated_by_length": 1,
+  "request_errors": 0
+ }
+}

@@ -40,6 +40,7 @@ test {
     _ = @import("stream_preflight_test.zig");
     _ = @import("deepseek.zig");
     _ = @import("deepseek_test.zig");
+    _ = @import("deepseek_video.zig");
     _ = @import("drain_test.zig");
     _ = @import("keepalive_test.zig");
     _ = @import("spark.zig");

@@ -1,0 +1,3 @@
+{"case": "short_chat", "ttft_s": 0.201, "total_s": 8.52, "completion_tokens": 331, "decode_tok_s": 39.77}
+{"case": "code_2k", "ttft_s": 0.366, "total_s": 6.31, "completion_tokens": 221, "decode_tok_s": 37.19}
+{"case": "prose_8k", "ttft_s": 0.551, "total_s": 9.44, "completion_tokens": 367, "decode_tok_s": 41.31}

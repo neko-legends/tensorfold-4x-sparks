@@ -22,6 +22,7 @@ const family = @import("family.zig");
 const model_text = @import("model_text.zig");
 const ids_mod = @import("ids.zig");
 const log = @import("log.zig");
+const video = @import("deepseek_video.zig");
 const Value = json.Value;
 const Cx = errors.Cx;
 const Allocator = std.mem.Allocator;
@@ -44,6 +45,8 @@ pub const Options = struct {
     schema_prompt: bool = true,
     memory_entries: usize = 1024,
     eos: []const u32 = &.{1},
+    /// native: video parts become frames (TF_VIDEO_*, deepseek_video.zig)
+    video: video.Config = .{},
     /// native: the environment the vision limits (TF_DSV41_VISION_*) and TF_DSV41_BIAS_VL are read from at load
     env: ?*const std.process.Environ.Map = null,
 
@@ -51,6 +54,7 @@ pub const Options = struct {
     pub fn fromEnv(env: ?*const std.process.Environ.Map, problem: *[]const u8) error{Invalid}!Options {
         var o: Options = .{};
         const m = env orelse return o;
+        o.video = try video.Config.fromEnv(m, problem);
         if (m.get("TF_DSV41_IMAGES")) |v| {
             const t = std.mem.trim(u8, v, " ");
             o.images = std.meta.stringToEnum(Images, if (t.len == 0) "placeholder" else t) orelse {
@@ -209,6 +213,8 @@ pub const DeepSeek = struct {
     /// TF_DSV41_IMAGES=native: the image front end (rank 0's prepared-image cache, virtual ids)
     vision: ?*vision.host.Host = null,
     io: ?std.Io = null,
+    /// What decodes a video part into frames (native only; tests plug a stub)
+    video_decoder: video.Decoder = video.python,
 
     pub fn load(gpa: Allocator, io: std.Io, dir: []const u8, options: Options, problem: *[]const u8) !*DeepSeek {
         const d = try gpa.create(DeepSeek);
@@ -332,6 +338,7 @@ pub const DeepSeek = struct {
                     .default_effort = defaultEffortFn,
                     .tools = toolsFn,
                     .render = renderFn,
+                    .normalize = normalizeFn,
                     .reader = readerFn,
                     .remember = rememberFn,
                     .reasoning_fields = f,
@@ -397,6 +404,15 @@ pub const DeepSeek = struct {
             .err => return null,
         };
         return schema;
+    }
+
+    /// TF_DSV41_IMAGES=native: video parts decoded to frames (one decoder run a part, before the renders); otherwise
+    /// the messages as they are, and the encoding refuses a video part.
+    fn normalizeFn(ctx: *anyopaque, cx: *Cx, messages: Value) errors.Refused!Value {
+        const d = self(ctx);
+        const vh = d.vision orelse return messages;
+        const io = d.io orelse return messages;
+        return video.expand(cx, io, d.video_decoder, d.options.video, vh.s.max_images, messages);
     }
 
     fn renderFn(ctx: *anyopaque, cx: *Cx, p: family.Prompt) errors.Refused!family.Rendered {
@@ -680,4 +696,68 @@ test "TF_DSV41_IMAGES=native: an image part becomes its span of virtual ids, hel
     try std.testing.expectEqualSlices(u32, img.vids[0..img.n_vids], got.ids[at.? .. at.? + span]);
     try std.testing.expect(std.mem.indexOfScalar(u32, got.ids, 1003) == null); // the typed placeholder stayed text
     try std.testing.expectEqual(@as(u32, 12), img.llm_h); // 8 x 6 scaled up to 544^2: 630 x 476 -> 45 x 34 patches
+}
+
+test "TF_DSV41_IMAGES=native: a video part is decoded once for the history and the full render; frames keep their order and spans" {
+    const gpa = std.testing.allocator;
+    var arena = std.heap.ArenaAllocator.init(gpa);
+    defer arena.deinit();
+    var cx: Cx = .{ .a = arena.allocator() };
+    const tok = try serve.tokenizer.Tokenizer.parse(gpa, serve.fixtures.mini_tokenizer);
+    defer tok.deinit();
+    const d = try DeepSeek.init(gpa, tok, .{ .images = .native });
+    defer d.deinit(false);
+    const vh = try gpa.create(vision.host.Host);
+    vh.* = vision.host.Host.init(gpa, std.testing.io, .{ .image_token = 1003 });
+    d.vision = vh;
+    d.io = std.testing.io;
+    const png = try test_frame_png(cx.a);
+    const frames = [_]video.Frame{ .{ .t = 0, .png = png }, .{ .t = 0.5, .png = png }, .{ .t = 2.5, .png = png } };
+    var stub: video.Stub = .{ .frames = &frames };
+    d.video_decoder = stub.decoder();
+    const body = "[{\"role\":\"user\",\"content\":[{\"type\":\"text\",\"text\":\"before\"},{\"type\":\"video_url\",\"video_url\":{\"url\":\"data:video/mp4;base64,AAAAIGZ0eXBpc29t\"}},{\"type\":\"text\",\"text\":\"after\"}]}]";
+    const fam = d.family_();
+    const messages = try fam.normalize(&cx, (try json.parseText(cx.a, body)).ok);
+    const p: family.Prompt = .{ .messages = messages, .tools = &.{}, .thinking = false, .effort = "high" };
+    const got = try fam.render(&cx, p);
+    defer got.images.?.release();
+    var history = p;
+    history.generation = false;
+    const before = try fam.render(&cx, history);
+    defer before.images.?.release();
+    try std.testing.expectEqual(@as(usize, 1), stub.calls); // two renders, one decode
+    const h: *const vision.held.Held = @ptrCast(@alignCast(got.images.?.held));
+    try std.testing.expectEqual(@as(u64, 3), h.n);
+    // the prompt reads: before, then for each frame its time and its whole span of virtual ids, then after
+    var at: usize = 0;
+    var text_at: usize = 0;
+    const wants = [_][]const u8{ "Video frame at 0.0 s:", "Video frame at 0.5 s:", "Video frame at 2.5 s:" };
+    for (h.slice(), wants) |img, want| {
+        while (at < got.ids.len and !vision.vids.isVid(got.ids[at])) at += 1;
+        const head = try d.tok.decodeAlloc(cx.a, got.ids[text_at..at]);
+        try std.testing.expect(std.mem.indexOf(u8, head, want) != null);
+        try std.testing.expectEqualSlices(u32, img.vids[0..img.n_vids], got.ids[at .. at + img.n_vids]);
+        at += img.n_vids;
+        text_at = at;
+    }
+    const tail = try d.tok.decodeAlloc(cx.a, got.ids[text_at..]);
+    try std.testing.expect(std.mem.indexOf(u8, tail, "after") != null);
+    // native off: the messages are untouched and the encoding refuses the part, with no decoder run
+    const off = try DeepSeek.init(gpa, tok, .{ .images = .placeholder });
+    defer off.deinit(false);
+    off.video_decoder = stub.decoder();
+    const ofam = off.family_();
+    const same = try ofam.normalize(&cx, (try json.parseText(cx.a, body)).ok);
+    try std.testing.expectError(error.Refused, ofam.render(&cx, .{ .messages = same, .tools = &.{}, .thinking = false, .effort = "high" }));
+    try std.testing.expect(std.mem.indexOf(u8, cx.message, "video_url") != null);
+    try std.testing.expectEqual(@as(usize, 1), stub.calls);
+}
+
+/// The 8 x 6 PNG the image test above uses, decoded.
+pub fn test_frame_png(a: Allocator) ![]const u8 {
+    const b64 = "iVBORw0KGgoAAAANSUhEUgAAAAgAAAAGCAIAAABxZ0isAAAAoUlEQVR4nAGWAGn/AAAAAB4eHjw8PFpaWnh4eJaWlrS0tNLS0gAHBwclJSVDQ0NhYWF/f3+dnZ27u7vZ2dkADg4OLCwsSkpKaGhohoaGpKSkwsLC4ODgABUVFTMzM1FRUW9vb42Njaurq8nJyefn5wAcHBw6OjpYWFh2dnaUlJSysrLQ0NDu7u4AIyMjQUFBX19ffX19m5ububm519fX9fX1CLhE6bQqUiMAAAAASUVORK5CYII=";
+    const dec = std.base64.standard.Decoder;
+    const out = try a.alloc(u8, try dec.calcSizeForSlice(b64));
+    try dec.decode(out, b64);
+    return out;
 }

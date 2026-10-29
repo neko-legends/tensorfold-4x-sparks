@@ -1,0 +1,27 @@
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.273, "completion_tokens": 512, "decode_tok_s": 27.43, "label": "35bpw", "ts": "18:56:24"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.509, "completion_tokens": 512, "decode_tok_s": 55.5, "label": "35bpw", "ts": "18:56:34"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.74, "completion_tokens": 512, "decode_tok_s": 27.14, "label": "35bpw", "ts": "18:56:53"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.239, "completion_tokens": 512, "decode_tok_s": 31.22, "label": "35bpw", "ts": "18:57:11"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.221, "completion_tokens": 512, "decode_tok_s": 71.7, "label": "35bpw", "ts": "18:57:18"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.231, "completion_tokens": 512, "decode_tok_s": 36.36, "label": "35bpw", "ts": "18:57:33"}
+{"kind": "decode", "case": "short_chat", "effort": "low", "temp": 0.0, "ttft_s": 0.242, "completion_tokens": 512, "decode_tok_s": 34.84, "label": "35bpw", "ts": "18:57:49"}
+{"kind": "decode", "case": "code_2k", "effort": "low", "temp": 0.0, "ttft_s": 0.211, "completion_tokens": 512, "decode_tok_s": 72.95, "label": "35bpw", "ts": "18:57:56"}
+{"kind": "decode", "case": "prose_8k", "effort": "low", "temp": 0.0, "ttft_s": 0.256, "completion_tokens": 512, "decode_tok_s": 34.73, "label": "35bpw", "ts": "18:58:11"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.231, "completion_tokens": 512, "decode_tok_s": 38.29, "label": "35bpw", "ts": "18:58:25"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.425, "completion_tokens": 512, "decode_tok_s": 71.2, "label": "35bpw", "ts": "18:58:33"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.666, "completion_tokens": 512, "decode_tok_s": 36.6, "label": "35bpw", "ts": "18:58:48"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.226, "completion_tokens": 512, "decode_tok_s": 38.93, "label": "35bpw", "ts": "18:59:02"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.265, "completion_tokens": 512, "decode_tok_s": 68.99, "label": "35bpw", "ts": "18:59:10"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.253, "completion_tokens": 512, "decode_tok_s": 33.29, "label": "35bpw", "ts": "18:59:25"}
+{"kind": "decode", "case": "short_chat", "effort": "high", "temp": 0.0, "ttft_s": 0.218, "completion_tokens": 512, "decode_tok_s": 21.51, "label": "35bpw", "ts": "18:59:50"}
+{"kind": "decode", "case": "code_2k", "effort": "high", "temp": 0.0, "ttft_s": 0.243, "completion_tokens": 512, "decode_tok_s": 38.9, "label": "35bpw", "ts": "19:00:04"}
+{"kind": "decode", "case": "prose_8k", "effort": "high", "temp": 0.0, "ttft_s": 0.321, "completion_tokens": 512, "decode_tok_s": 18.66, "label": "35bpw", "ts": "19:00:32"}
+{"kind": "decode", "case": "short_chat", "effort": "default", "temp": 0.6, "ttft_s": 0.251, "completion_tokens": 512, "decode_tok_s": 19.49, "label": "35bpw", "ts": "19:00:59"}
+{"kind": "decode", "case": "code_2k", "effort": "default", "temp": 0.6, "ttft_s": 0.263, "completion_tokens": 512, "decode_tok_s": 38.93, "label": "35bpw", "ts": "19:01:12"}
+{"kind": "decode", "case": "prose_8k", "effort": "default", "temp": 0.6, "ttft_s": 0.26, "completion_tokens": 512, "decode_tok_s": 18.92, "label": "35bpw", "ts": "19:01:40"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 2.406, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2201.2, "label": "35bpw", "ts": "19:01:42"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 2.376, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2228.6, "label": "35bpw", "ts": "19:01:45"}
+{"kind": "prefill", "case": "prefill_8k", "ttft_s": 2.426, "prompt_tokens": 5296, "cached_tokens": 0, "prefill_tok_s": 2182.8, "label": "35bpw", "ts": "19:01:47"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 8.232, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 2558.0, "label": "35bpw", "ts": "19:01:56"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 8.196, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 2569.2, "label": "35bpw", "ts": "19:02:04"}
+{"kind": "prefill", "case": "prefill_32k", "ttft_s": 8.368, "prompt_tokens": 21058, "cached_tokens": 0, "prefill_tok_s": 2516.4, "label": "35bpw", "ts": "19:02:13"}

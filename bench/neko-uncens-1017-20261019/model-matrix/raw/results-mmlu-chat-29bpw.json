@@ -1,0 +1,8905 @@
+{
+ "config": {
+  "api": "http://127.0.0.1:8000/v1/chat/completions",
+  "model_requested": "deepseek-v4.1-flash",
+  "engine": "local",
+  "label": "29bpw-chat",
+  "seed": 20261019,
+  "concurrency": 4,
+  "endpoint": "/v1/chat/completions (chat harness; fixed system prompt + one user message)",
+  "system_prompt": "Answer the multiple choice question with a single letter: A, B, C, or D.",
+  "reasoning_effort": "none",
+  "temperature": 0,
+  "max_tokens": 8,
+  "venice_parameters": null,
+  "category_totals": {
+   "stem": 171,
+   "humanities": 113,
+   "social": 103,
+   "other": 113
+  },
+  "alloc_per_subject": {
+   "abstract_algebra": 5,
+   "anatomy": 7,
+   "astronomy": 8,
+   "college_biology": 8,
+   "college_chemistry": 5,
+   "college_computer_science": 5,
+   "college_mathematics": 5,
+   "college_physics": 5,
+   "computer_security": 5,
+   "conceptual_physics": 12,
+   "electrical_engineering": 8,
+   "elementary_mathematics": 20,
+   "formal_logic": 7,
+   "high_school_biology": 16,
+   "high_school_chemistry": 11,
+   "high_school_computer_science": 5,
+   "high_school_mathematics": 14,
+   "high_school_physics": 8,
+   "high_school_statistics": 11,
+   "machine_learning": 6,
+   "high_school_european_history": 4,
+   "high_school_us_history": 5,
+   "high_school_world_history": 6,
+   "international_law": 3,
+   "jurisprudence": 3,
+   "logical_fallacies": 4,
+   "moral_disputes": 8,
+   "moral_scenarios": 22,
+   "philosophy": 8,
+   "prehistory": 8,
+   "professional_law": 38,
+   "world_religions": 4,
+   "econometrics": 4,
+   "high_school_geography": 7,
+   "high_school_government_and_politics": 6,
+   "high_school_macroeconomics": 13,
+   "high_school_microeconomics": 8,
+   "high_school_psychology": 18,
+   "human_sexuality": 4,
+   "professional_psychology": 21,
+   "public_relations": 4,
+   "security_studies": 8,
+   "sociology": 7,
+   "us_foreign_policy": 3,
+   "business_ethics": 4,
+   "clinical_knowledge": 10,
+   "college_medicine": 6,
+   "global_facts": 4,
+   "human_aging": 8,
+   "management": 4,
+   "marketing": 8,
+   "medical_genetics": 4,
+   "miscellaneous": 28,
+   "nutrition": 11,
+   "professional_accounting": 10,
+   "professional_medicine": 10,
+   "virology": 6
+  },
+  "question_set_sha256": "86c9462464c1bbf244b44b475555e43b02a1dc56396839c1d5b5f0499f0ae939",
+  "wall_seconds": 263.2
+ },
+ "overall": {
+  "n": 500,
+  "correct": 398,
+  "invalid": 30,
+  "errors": 0,
+  "accuracy_pct": 79.6
+ },
+ "categories": {
+  "stem": {
+   "n": 171,
+   "correct": 132,
+   "invalid": 23,
+   "accuracy_pct": 77.19
+  },
+  "other": {
+   "n": 113,
+   "correct": 99,
+   "invalid": 3,
+   "accuracy_pct": 87.61
+  },
+  "social": {
+   "n": 103,
+   "correct": 90,
+   "invalid": 3,
+   "accuracy_pct": 87.38
+  },
+  "humanities": {
+   "n": 113,
+   "correct": 77,
+   "invalid": 1,
+   "accuracy_pct": 68.14
+  }
+ },
+ "per_subject": {
+  "abstract_algebra": {
+   "n": 5,
+   "correct": 2,
+   "accuracy_pct": 40.0
+  },
+  "anatomy": {
+   "n": 7,
+   "correct": 6,
+   "accuracy_pct": 85.71
+  },
+  "astronomy": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "business_ethics": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "clinical_knowledge": {
+   "n": 10,
+   "correct": 7,
+   "accuracy_pct": 70.0
+  },
+  "college_biology": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "college_chemistry": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "college_computer_science": {
+   "n": 5,
+   "correct": 3,
+   "accuracy_pct": 60.0
+  },
+  "college_mathematics": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "college_medicine": {
+   "n": 6,
+   "correct": 6,
+   "accuracy_pct": 100.0
+  },
+  "college_physics": {
+   "n": 5,
+   "correct": 4,
+   "accuracy_pct": 80.0
+  },
+  "computer_security": {
+   "n": 5,
+   "correct": 3,
+   "accuracy_pct": 60.0
+  },
+  "conceptual_physics": {
+   "n": 12,
+   "correct": 12,
+   "accuracy_pct": 100.0
+  },
+  "econometrics": {
+   "n": 4,
+   "correct": 2,
+   "accuracy_pct": 50.0
+  },
+  "electrical_engineering": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "elementary_mathematics": {
+   "n": 20,
+   "correct": 15,
+   "accuracy_pct": 75.0
+  },
+  "formal_logic": {
+   "n": 7,
+   "correct": 5,
+   "accuracy_pct": 71.43
+  },
+  "global_facts": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "high_school_biology": {
+   "n": 16,
+   "correct": 14,
+   "accuracy_pct": 87.5
+  },
+  "high_school_chemistry": {
+   "n": 11,
+   "correct": 8,
+   "accuracy_pct": 72.73
+  },
+  "high_school_computer_science": {
+   "n": 5,
+   "correct": 3,
+   "accuracy_pct": 60.0
+  },
+  "high_school_european_history": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "high_school_geography": {
+   "n": 7,
+   "correct": 7,
+   "accuracy_pct": 100.0
+  },
+  "high_school_government_and_politics": {
+   "n": 6,
+   "correct": 6,
+   "accuracy_pct": 100.0
+  },
+  "high_school_macroeconomics": {
+   "n": 13,
+   "correct": 11,
+   "accuracy_pct": 84.62
+  },
+  "high_school_mathematics": {
+   "n": 14,
+   "correct": 6,
+   "accuracy_pct": 42.86
+  },
+  "high_school_microeconomics": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "high_school_physics": {
+   "n": 8,
+   "correct": 6,
+   "accuracy_pct": 75.0
+  },
+  "high_school_psychology": {
+   "n": 18,
+   "correct": 16,
+   "accuracy_pct": 88.89
+  },
+  "high_school_statistics": {
+   "n": 11,
+   "correct": 8,
+   "accuracy_pct": 72.73
+  },
+  "high_school_us_history": {
+   "n": 5,
+   "correct": 5,
+   "accuracy_pct": 100.0
+  },
+  "high_school_world_history": {
+   "n": 6,
+   "correct": 5,
+   "accuracy_pct": 83.33
+  },
+  "human_aging": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "human_sexuality": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "international_law": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "jurisprudence": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "logical_fallacies": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "machine_learning": {
+   "n": 6,
+   "correct": 6,
+   "accuracy_pct": 100.0
+  },
+  "management": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "marketing": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "medical_genetics": {
+   "n": 4,
+   "correct": 4,
+   "accuracy_pct": 100.0
+  },
+  "miscellaneous": {
+   "n": 28,
+   "correct": 26,
+   "accuracy_pct": 92.86
+  },
+  "moral_disputes": {
+   "n": 8,
+   "correct": 4,
+   "accuracy_pct": 50.0
+  },
+  "moral_scenarios": {
+   "n": 22,
+   "correct": 5,
+   "accuracy_pct": 22.73
+  },
+  "nutrition": {
+   "n": 11,
+   "correct": 10,
+   "accuracy_pct": 90.91
+  },
+  "philosophy": {
+   "n": 8,
+   "correct": 7,
+   "accuracy_pct": 87.5
+  },
+  "prehistory": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "professional_accounting": {
+   "n": 10,
+   "correct": 7,
+   "accuracy_pct": 70.0
+  },
+  "professional_law": {
+   "n": 38,
+   "correct": 28,
+   "accuracy_pct": 73.68
+  },
+  "professional_medicine": {
+   "n": 10,
+   "correct": 10,
+   "accuracy_pct": 100.0
+  },
+  "professional_psychology": {
+   "n": 21,
+   "correct": 17,
+   "accuracy_pct": 80.95
+  },
+  "public_relations": {
+   "n": 4,
+   "correct": 3,
+   "accuracy_pct": 75.0
+  },
+  "security_studies": {
+   "n": 8,
+   "correct": 8,
+   "accuracy_pct": 100.0
+  },
+  "sociology": {
+   "n": 7,
+   "correct": 5,
+   "accuracy_pct": 71.43
+  },
+  "us_foreign_policy": {
+   "n": 3,
+   "correct": 3,
+   "accuracy_pct": 100.0
+  },
+  "virology": {
+   "n": 6,
+   "correct": 4,
+   "accuracy_pct": 66.67
+  },
+  "world_religions": {
+   "n": 4,
+   "correct": 2,
+   "accuracy_pct": 50.0
+  }
+ },
+ "details": [
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 375,
+    "completion_tokens": 2,
+    "total_tokens": 377,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 396,
+    "completion_tokens": 2,
+    "total_tokens": 398,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through each statement.\n\n**",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 379,
+    "completion_tokens": 8,
+    "total_tokens": 387,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's go through each statement.\n\n**",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 8,
+    "total_tokens": 402,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "abstract_algebra",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 351,
+    "completion_tokens": 2,
+    "total_tokens": 353,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 341,
+    "completion_tokens": 2,
+    "total_tokens": 343,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 322,
+    "completion_tokens": 2,
+    "total_tokens": 324,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 327,
+    "completion_tokens": 2,
+    "total_tokens": 329,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 346,
+    "completion_tokens": 2,
+    "total_tokens": 348,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 347,
+    "completion_tokens": 2,
+    "total_tokens": 349,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 321,
+    "completion_tokens": 2,
+    "total_tokens": 323,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "anatomy",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 361,
+    "completion_tokens": 2,
+    "total_tokens": 363,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 596,
+    "completion_tokens": 2,
+    "total_tokens": 598,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 573,
+    "completion_tokens": 2,
+    "total_tokens": 575,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 583,
+    "completion_tokens": 2,
+    "total_tokens": 585,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 626,
+    "completion_tokens": 2,
+    "total_tokens": 628,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 546,
+    "completion_tokens": 2,
+    "total_tokens": 548,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 555,
+    "completion_tokens": 2,
+    "total_tokens": 557,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 545,
+    "completion_tokens": 2,
+    "total_tokens": 547,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "astronomy",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 550,
+    "completion_tokens": 2,
+    "total_tokens": 552,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 533,
+    "completion_tokens": 2,
+    "total_tokens": 535,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 559,
+    "completion_tokens": 2,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 558,
+    "completion_tokens": 2,
+    "total_tokens": 560,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "business_ethics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 527,
+    "completion_tokens": 2,
+    "total_tokens": 529,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 389,
+    "completion_tokens": 2,
+    "total_tokens": 391,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 375,
+    "completion_tokens": 2,
+    "total_tokens": 377,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 391,
+    "completion_tokens": 2,
+    "total_tokens": 393,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 379,
+    "completion_tokens": 2,
+    "total_tokens": 381,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 388,
+    "completion_tokens": 2,
+    "total_tokens": 390,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 401,
+    "completion_tokens": 2,
+    "total_tokens": 403,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "A",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 2,
+    "total_tokens": 402,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 373,
+    "completion_tokens": 2,
+    "total_tokens": 375,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 2,
+    "total_tokens": 396,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "clinical_knowledge",
+   "category": "other",
+   "gold": "D",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 376,
+    "completion_tokens": 2,
+    "total_tokens": 378,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 448,
+    "completion_tokens": 2,
+    "total_tokens": 450,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 434,
+    "completion_tokens": 2,
+    "total_tokens": 436,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 432,
+    "completion_tokens": 2,
+    "total_tokens": 434,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 442,
+    "completion_tokens": 2,
+    "total_tokens": 444,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 462,
+    "completion_tokens": 2,
+    "total_tokens": 464,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 457,
+    "completion_tokens": 2,
+    "total_tokens": 459,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 430,
+    "completion_tokens": 2,
+    "total_tokens": 432,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 475,
+    "completion_tokens": 2,
+    "total_tokens": 477,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 523,
+    "completion_tokens": 2,
+    "total_tokens": 525,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 581,
+    "completion_tokens": 2,
+    "total_tokens": 583,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 554,
+    "completion_tokens": 2,
+    "total_tokens": 556,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 566,
+    "completion_tokens": 2,
+    "total_tokens": 568,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's work through the problem.\n\nWe",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 633,
+    "completion_tokens": 8,
+    "total_tokens": 641,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 809,
+    "completion_tokens": 2,
+    "total_tokens": 811,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's go through the problem carefully.\n\n",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 836,
+    "completion_tokens": 8,
+    "total_tokens": 844,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 838,
+    "completion_tokens": 2,
+    "total_tokens": 840,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 831,
+    "completion_tokens": 2,
+    "total_tokens": 833,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's go through the last question carefully",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 809,
+    "completion_tokens": 8,
+    "total_tokens": 817,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 615,
+    "completion_tokens": 2,
+    "total_tokens": 617,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 638,
+    "completion_tokens": 2,
+    "total_tokens": 640,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 591,
+    "completion_tokens": 2,
+    "total_tokens": 593,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 576,
+    "completion_tokens": 2,
+    "total_tokens": 578,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 580,
+    "completion_tokens": 2,
+    "total_tokens": 582,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 439,
+    "completion_tokens": 2,
+    "total_tokens": 441,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 465,
+    "completion_tokens": 2,
+    "total_tokens": 467,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1368,
+    "completion_tokens": 2,
+    "total_tokens": 1370,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 437,
+    "completion_tokens": 2,
+    "total_tokens": 439,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 497,
+    "completion_tokens": 2,
+    "total_tokens": 499,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 453,
+    "completion_tokens": 2,
+    "total_tokens": 455,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 499,
+    "completion_tokens": 2,
+    "total_tokens": 501,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 511,
+    "completion_tokens": 2,
+    "total_tokens": 513,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 498,
+    "completion_tokens": 2,
+    "total_tokens": 500,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's work through the question.\n\nWe",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 511,
+    "completion_tokens": 8,
+    "total_tokens": 519,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "college_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 507,
+    "completion_tokens": 2,
+    "total_tokens": 509,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 532,
+    "completion_tokens": 2,
+    "total_tokens": 534,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 460,
+    "completion_tokens": 2,
+    "total_tokens": 462,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 404,
+    "completion_tokens": 2,
+    "total_tokens": 406,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "C",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 466,
+    "completion_tokens": 2,
+    "total_tokens": 468,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "computer_security",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 385,
+    "completion_tokens": 2,
+    "total_tokens": 387,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 296,
+    "completion_tokens": 2,
+    "total_tokens": 298,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 296,
+    "completion_tokens": 2,
+    "total_tokens": 298,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 327,
+    "completion_tokens": 2,
+    "total_tokens": 329,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 328,
+    "completion_tokens": 2,
+    "total_tokens": 330,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 291,
+    "completion_tokens": 2,
+    "total_tokens": 293,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 305,
+    "completion_tokens": 2,
+    "total_tokens": 307,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 299,
+    "completion_tokens": 2,
+    "total_tokens": 301,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 294,
+    "completion_tokens": 2,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 301,
+    "completion_tokens": 2,
+    "total_tokens": 303,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 286,
+    "completion_tokens": 2,
+    "total_tokens": 288,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 315,
+    "completion_tokens": 2,
+    "total_tokens": 317,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "conceptual_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 297,
+    "completion_tokens": 2,
+    "total_tokens": 299,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 611,
+    "completion_tokens": 2,
+    "total_tokens": 613,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "B",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 673,
+    "completion_tokens": 2,
+    "total_tokens": 675,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 595,
+    "completion_tokens": 2,
+    "total_tokens": 597,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "econometrics",
+   "category": "social",
+   "gold": "B",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 611,
+    "completion_tokens": 2,
+    "total_tokens": 613,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through the solenoid energy problem",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 467,
+    "completion_tokens": 8,
+    "total_tokens": 475,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 429,
+    "completion_tokens": 2,
+    "total_tokens": 431,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 452,
+    "completion_tokens": 2,
+    "total_tokens": 454,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 429,
+    "completion_tokens": 2,
+    "total_tokens": 431,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 423,
+    "completion_tokens": 2,
+    "total_tokens": 425,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 443,
+    "completion_tokens": 2,
+    "total_tokens": 445,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 425,
+    "completion_tokens": 2,
+    "total_tokens": 427,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "electrical_engineering",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 436,
+    "completion_tokens": 2,
+    "total_tokens": 438,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 519,
+    "completion_tokens": 2,
+    "total_tokens": 521,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's solve the expression step by step",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 536,
+    "completion_tokens": 8,
+    "total_tokens": 544,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 519,
+    "completion_tokens": 2,
+    "total_tokens": 521,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 524,
+    "completion_tokens": 2,
+    "total_tokens": 526,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 595,
+    "completion_tokens": 2,
+    "total_tokens": 597,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 528,
+    "completion_tokens": 2,
+    "total_tokens": 530,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 533,
+    "completion_tokens": 2,
+    "total_tokens": 535,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 543,
+    "completion_tokens": 2,
+    "total_tokens": 545,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 559,
+    "completion_tokens": 2,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 547,
+    "completion_tokens": 2,
+    "total_tokens": 549,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 557,
+    "completion_tokens": 2,
+    "total_tokens": 559,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 520,
+    "completion_tokens": 2,
+    "total_tokens": 522,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 531,
+    "completion_tokens": 2,
+    "total_tokens": 533,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's work through the problem.\n\n-",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 599,
+    "completion_tokens": 8,
+    "total_tokens": 607,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 533,
+    "completion_tokens": 2,
+    "total_tokens": 535,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 527,
+    "completion_tokens": 2,
+    "total_tokens": 529,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "elementary_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 510,
+    "completion_tokens": 2,
+    "total_tokens": 512,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's work through the last question.\n\n",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 588,
+    "completion_tokens": 8,
+    "total_tokens": 596,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 645,
+    "completion_tokens": 2,
+    "total_tokens": 647,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 575,
+    "completion_tokens": 2,
+    "total_tokens": 577,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 572,
+    "completion_tokens": 2,
+    "total_tokens": 574,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 572,
+    "completion_tokens": 2,
+    "total_tokens": 574,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 559,
+    "completion_tokens": 2,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "formal_logic",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 617,
+    "completion_tokens": 2,
+    "total_tokens": 619,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "D",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 406,
+    "completion_tokens": 2,
+    "total_tokens": 408,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 406,
+    "completion_tokens": 2,
+    "total_tokens": 408,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 387,
+    "completion_tokens": 2,
+    "total_tokens": 389,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "global_facts",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 386,
+    "completion_tokens": 2,
+    "total_tokens": 388,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 527,
+    "completion_tokens": 2,
+    "total_tokens": 529,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 497,
+    "completion_tokens": 2,
+    "total_tokens": 499,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 508,
+    "completion_tokens": 2,
+    "total_tokens": 510,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 478,
+    "completion_tokens": 2,
+    "total_tokens": 480,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 487,
+    "completion_tokens": 2,
+    "total_tokens": 489,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 473,
+    "completion_tokens": 2,
+    "total_tokens": 475,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 512,
+    "completion_tokens": 2,
+    "total_tokens": 514,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through the question.\n\nO",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 531,
+    "completion_tokens": 8,
+    "total_tokens": 539,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 536,
+    "completion_tokens": 2,
+    "total_tokens": 538,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 498,
+    "completion_tokens": 2,
+    "total_tokens": 500,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 507,
+    "completion_tokens": 2,
+    "total_tokens": 509,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 539,
+    "completion_tokens": 2,
+    "total_tokens": 541,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 550,
+    "completion_tokens": 2,
+    "total_tokens": 552,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 519,
+    "completion_tokens": 2,
+    "total_tokens": 521,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_biology",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 474,
+    "completion_tokens": 2,
+    "total_tokens": 476,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 450,
+    "completion_tokens": 2,
+    "total_tokens": 452,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 467,
+    "completion_tokens": 2,
+    "total_tokens": 469,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 460,
+    "completion_tokens": 2,
+    "total_tokens": 462,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 493,
+    "completion_tokens": 2,
+    "total_tokens": 495,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 483,
+    "completion_tokens": 2,
+    "total_tokens": 485,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 578,
+    "completion_tokens": 2,
+    "total_tokens": 580,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 482,
+    "completion_tokens": 2,
+    "total_tokens": 484,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 479,
+    "completion_tokens": 2,
+    "total_tokens": 481,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 463,
+    "completion_tokens": 2,
+    "total_tokens": 465,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 456,
+    "completion_tokens": 2,
+    "total_tokens": 458,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_chemistry",
+   "category": "stem",
+   "gold": "D",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 519,
+    "completion_tokens": 2,
+    "total_tokens": 521,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 990,
+    "completion_tokens": 2,
+    "total_tokens": 992,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 852,
+    "completion_tokens": 2,
+    "total_tokens": 854,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 980,
+    "completion_tokens": 2,
+    "total_tokens": 982,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's convert each to decimal:\n\n-",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 865,
+    "completion_tokens": 8,
+    "total_tokens": 873,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_computer_science",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1002,
+    "completion_tokens": 2,
+    "total_tokens": 1004,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2894,
+    "completion_tokens": 2,
+    "total_tokens": 2896,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2888,
+    "completion_tokens": 2,
+    "total_tokens": 2890,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2828,
+    "completion_tokens": 2,
+    "total_tokens": 2830,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_european_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2762,
+    "completion_tokens": 2,
+    "total_tokens": 2764,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 374,
+    "completion_tokens": 2,
+    "total_tokens": 376,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 357,
+    "completion_tokens": 2,
+    "total_tokens": 359,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 388,
+    "completion_tokens": 2,
+    "total_tokens": 390,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 376,
+    "completion_tokens": 2,
+    "total_tokens": 378,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 377,
+    "completion_tokens": 2,
+    "total_tokens": 379,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 399,
+    "completion_tokens": 2,
+    "total_tokens": 401,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_geography",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 392,
+    "completion_tokens": 2,
+    "total_tokens": 394,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 446,
+    "completion_tokens": 2,
+    "total_tokens": 448,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 489,
+    "completion_tokens": 2,
+    "total_tokens": 491,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 456,
+    "completion_tokens": 2,
+    "total_tokens": 458,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 477,
+    "completion_tokens": 2,
+    "total_tokens": 479,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 447,
+    "completion_tokens": 2,
+    "total_tokens": 449,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_government_and_politics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 482,
+    "completion_tokens": 2,
+    "total_tokens": 484,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 361,
+    "completion_tokens": 2,
+    "total_tokens": 363,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 366,
+    "completion_tokens": 2,
+    "total_tokens": 368,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 2,
+    "total_tokens": 402,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 405,
+    "completion_tokens": 2,
+    "total_tokens": 407,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 393,
+    "completion_tokens": 2,
+    "total_tokens": 395,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 404,
+    "completion_tokens": 2,
+    "total_tokens": 406,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 385,
+    "completion_tokens": 2,
+    "total_tokens": 387,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 427,
+    "completion_tokens": 2,
+    "total_tokens": 429,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the problem step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 409,
+    "completion_tokens": 8,
+    "total_tokens": 417,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's go through the question.\n\nIf",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 392,
+    "completion_tokens": 8,
+    "total_tokens": 400,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 363,
+    "completion_tokens": 2,
+    "total_tokens": 365,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 419,
+    "completion_tokens": 2,
+    "total_tokens": 421,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_macroeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 381,
+    "completion_tokens": 2,
+    "total_tokens": 383,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 615,
+    "completion_tokens": 2,
+    "total_tokens": 617,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 549,
+    "completion_tokens": 2,
+    "total_tokens": 551,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the last problem carefully",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 535,
+    "completion_tokens": 8,
+    "total_tokens": 543,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's check each option using the triangle",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 515,
+    "completion_tokens": 8,
+    "total_tokens": 523,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 491,
+    "completion_tokens": 2,
+    "total_tokens": 493,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's compute the slope:\n\nPoints:",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 509,
+    "completion_tokens": 8,
+    "total_tokens": 517,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 510,
+    "completion_tokens": 2,
+    "total_tokens": 512,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's go through the problem step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 512,
+    "completion_tokens": 8,
+    "total_tokens": 520,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 543,
+    "completion_tokens": 2,
+    "total_tokens": 545,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's go through the problem step-by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 526,
+    "completion_tokens": 8,
+    "total_tokens": 534,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through the problem step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 543,
+    "completion_tokens": 8,
+    "total_tokens": 551,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 576,
+    "completion_tokens": 2,
+    "total_tokens": 578,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through the problem step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 517,
+    "completion_tokens": 8,
+    "total_tokens": 525,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_mathematics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 506,
+    "completion_tokens": 2,
+    "total_tokens": 508,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 402,
+    "completion_tokens": 2,
+    "total_tokens": 404,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 413,
+    "completion_tokens": 2,
+    "total_tokens": 415,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 456,
+    "completion_tokens": 2,
+    "total_tokens": 458,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 414,
+    "completion_tokens": 2,
+    "total_tokens": 416,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 2,
+    "total_tokens": 396,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 401,
+    "completion_tokens": 2,
+    "total_tokens": 403,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 380,
+    "completion_tokens": 2,
+    "total_tokens": 382,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_microeconomics",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 377,
+    "completion_tokens": 2,
+    "total_tokens": 379,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 566,
+    "completion_tokens": 2,
+    "total_tokens": 568,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the problem step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 546,
+    "completion_tokens": 8,
+    "total_tokens": 554,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 610,
+    "completion_tokens": 2,
+    "total_tokens": 612,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the lens problem step",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 564,
+    "completion_tokens": 8,
+    "total_tokens": 572,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 545,
+    "completion_tokens": 2,
+    "total_tokens": 547,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 567,
+    "completion_tokens": 2,
+    "total_tokens": 569,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 525,
+    "completion_tokens": 2,
+    "total_tokens": 527,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_physics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 583,
+    "completion_tokens": 2,
+    "total_tokens": 585,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 673,
+    "completion_tokens": 2,
+    "total_tokens": 675,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 465,
+    "completion_tokens": 2,
+    "total_tokens": 467,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 480,
+    "completion_tokens": 2,
+    "total_tokens": 482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 463,
+    "completion_tokens": 2,
+    "total_tokens": 465,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 477,
+    "completion_tokens": 2,
+    "total_tokens": 479,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 535,
+    "completion_tokens": 2,
+    "total_tokens": 537,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 511,
+    "completion_tokens": 2,
+    "total_tokens": 513,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 462,
+    "completion_tokens": 2,
+    "total_tokens": 464,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 505,
+    "completion_tokens": 2,
+    "total_tokens": 507,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 455,
+    "completion_tokens": 2,
+    "total_tokens": 457,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 474,
+    "completion_tokens": 2,
+    "total_tokens": 476,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 493,
+    "completion_tokens": 2,
+    "total_tokens": 495,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 553,
+    "completion_tokens": 2,
+    "total_tokens": 555,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 468,
+    "completion_tokens": 2,
+    "total_tokens": 470,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 482,
+    "completion_tokens": 2,
+    "total_tokens": 484,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 526,
+    "completion_tokens": 2,
+    "total_tokens": 528,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": null,
+   "raw": "Let's reason this through.  \n\nMaria",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 498,
+    "completion_tokens": 8,
+    "total_tokens": 506,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 782,
+    "completion_tokens": 2,
+    "total_tokens": 784,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 751,
+    "completion_tokens": 2,
+    "total_tokens": 753,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 805,
+    "completion_tokens": 2,
+    "total_tokens": 807,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "B",
+   "pred": null,
+   "raw": "Let's go through the last question carefully",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 800,
+    "completion_tokens": 8,
+    "total_tokens": 808,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's go through each question and check",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 834,
+    "completion_tokens": 8,
+    "total_tokens": 842,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 885,
+    "completion_tokens": 2,
+    "total_tokens": 887,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 766,
+    "completion_tokens": 2,
+    "total_tokens": 768,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 831,
+    "completion_tokens": 2,
+    "total_tokens": 833,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 744,
+    "completion_tokens": 2,
+    "total_tokens": 746,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "D",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 810,
+    "completion_tokens": 2,
+    "total_tokens": 812,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_statistics",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 746,
+    "completion_tokens": 2,
+    "total_tokens": 748,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2118,
+    "completion_tokens": 2,
+    "total_tokens": 2120,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2203,
+    "completion_tokens": 2,
+    "total_tokens": 2205,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2109,
+    "completion_tokens": 2,
+    "total_tokens": 2111,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2072,
+    "completion_tokens": 2,
+    "total_tokens": 2074,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_us_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 2139,
+    "completion_tokens": 2,
+    "total_tokens": 2141,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1504,
+    "completion_tokens": 2,
+    "total_tokens": 1506,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1278,
+    "completion_tokens": 2,
+    "total_tokens": 1280,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1291,
+    "completion_tokens": 2,
+    "total_tokens": 1293,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1238,
+    "completion_tokens": 2,
+    "total_tokens": 1240,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1225,
+    "completion_tokens": 2,
+    "total_tokens": 1227,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "high_school_world_history",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1407,
+    "completion_tokens": 2,
+    "total_tokens": 1409,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 307,
+    "completion_tokens": 2,
+    "total_tokens": 309,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 313,
+    "completion_tokens": 2,
+    "total_tokens": 315,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 305,
+    "completion_tokens": 2,
+    "total_tokens": 307,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 335,
+    "completion_tokens": 2,
+    "total_tokens": 337,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 313,
+    "completion_tokens": 2,
+    "total_tokens": 315,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 308,
+    "completion_tokens": 2,
+    "total_tokens": 310,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 307,
+    "completion_tokens": 2,
+    "total_tokens": 309,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_aging",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 333,
+    "completion_tokens": 2,
+    "total_tokens": 335,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 362,
+    "completion_tokens": 2,
+    "total_tokens": 364,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 333,
+    "completion_tokens": 2,
+    "total_tokens": 335,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 480,
+    "completion_tokens": 2,
+    "total_tokens": 482,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "human_sexuality",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 340,
+    "completion_tokens": 2,
+    "total_tokens": 342,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 632,
+    "completion_tokens": 2,
+    "total_tokens": 634,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 644,
+    "completion_tokens": 2,
+    "total_tokens": 646,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "international_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 669,
+    "completion_tokens": 2,
+    "total_tokens": 671,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 396,
+    "completion_tokens": 2,
+    "total_tokens": 398,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 375,
+    "completion_tokens": 2,
+    "total_tokens": 377,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "jurisprudence",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 390,
+    "completion_tokens": 2,
+    "total_tokens": 392,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 447,
+    "completion_tokens": 2,
+    "total_tokens": 449,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 458,
+    "completion_tokens": 2,
+    "total_tokens": 460,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 434,
+    "completion_tokens": 2,
+    "total_tokens": 436,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "logical_fallacies",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 433,
+    "completion_tokens": 2,
+    "total_tokens": 435,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 656,
+    "completion_tokens": 2,
+    "total_tokens": 658,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 669,
+    "completion_tokens": 2,
+    "total_tokens": 671,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 679,
+    "completion_tokens": 2,
+    "total_tokens": 681,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 660,
+    "completion_tokens": 2,
+    "total_tokens": 662,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 751,
+    "completion_tokens": 2,
+    "total_tokens": 753,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "machine_learning",
+   "category": "stem",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 651,
+    "completion_tokens": 2,
+    "total_tokens": 653,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 283,
+    "completion_tokens": 2,
+    "total_tokens": 285,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 275,
+    "completion_tokens": 2,
+    "total_tokens": 277,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 286,
+    "completion_tokens": 2,
+    "total_tokens": 288,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "management",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 277,
+    "completion_tokens": 2,
+    "total_tokens": 279,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 389,
+    "completion_tokens": 2,
+    "total_tokens": 391,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 2,
+    "total_tokens": 396,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 452,
+    "completion_tokens": 2,
+    "total_tokens": 454,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 395,
+    "completion_tokens": 2,
+    "total_tokens": 397,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 400,
+    "completion_tokens": 2,
+    "total_tokens": 402,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 416,
+    "completion_tokens": 2,
+    "total_tokens": 418,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 379,
+    "completion_tokens": 2,
+    "total_tokens": 381,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "marketing",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 385,
+    "completion_tokens": 2,
+    "total_tokens": 387,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 325,
+    "completion_tokens": 2,
+    "total_tokens": 327,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 322,
+    "completion_tokens": 2,
+    "total_tokens": 324,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 356,
+    "completion_tokens": 2,
+    "total_tokens": 358,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "medical_genetics",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 332,
+    "completion_tokens": 2,
+    "total_tokens": 334,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 293,
+    "completion_tokens": 2,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 300,
+    "completion_tokens": 2,
+    "total_tokens": 302,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 295,
+    "completion_tokens": 2,
+    "total_tokens": 297,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 316,
+    "completion_tokens": 2,
+    "total_tokens": 318,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 291,
+    "completion_tokens": 2,
+    "total_tokens": 293,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 293,
+    "completion_tokens": 2,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 437,
+    "completion_tokens": 2,
+    "total_tokens": 439,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 293,
+    "completion_tokens": 2,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 294,
+    "completion_tokens": 2,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 287,
+    "completion_tokens": 2,
+    "total_tokens": 289,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 300,
+    "completion_tokens": 2,
+    "total_tokens": 302,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 284,
+    "completion_tokens": 2,
+    "total_tokens": 286,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 294,
+    "completion_tokens": 2,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 334,
+    "completion_tokens": 2,
+    "total_tokens": 336,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 306,
+    "completion_tokens": 2,
+    "total_tokens": 308,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 292,
+    "completion_tokens": 2,
+    "total_tokens": 294,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 2,
+    "total_tokens": 396,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 282,
+    "completion_tokens": 2,
+    "total_tokens": 284,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 298,
+    "completion_tokens": 2,
+    "total_tokens": 300,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 293,
+    "completion_tokens": 2,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 348,
+    "completion_tokens": 2,
+    "total_tokens": 350,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 324,
+    "completion_tokens": 2,
+    "total_tokens": 326,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 302,
+    "completion_tokens": 2,
+    "total_tokens": 304,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 293,
+    "completion_tokens": 2,
+    "total_tokens": 295,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 294,
+    "completion_tokens": 2,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 294,
+    "completion_tokens": 2,
+    "total_tokens": 296,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 303,
+    "completion_tokens": 2,
+    "total_tokens": 305,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "miscellaneous",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 359,
+    "completion_tokens": 2,
+    "total_tokens": 361,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 502,
+    "completion_tokens": 2,
+    "total_tokens": 504,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 512,
+    "completion_tokens": 2,
+    "total_tokens": 514,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 479,
+    "completion_tokens": 2,
+    "total_tokens": 481,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 490,
+    "completion_tokens": 2,
+    "total_tokens": 492,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 470,
+    "completion_tokens": 2,
+    "total_tokens": 472,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 504,
+    "completion_tokens": 2,
+    "total_tokens": 506,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 479,
+    "completion_tokens": 2,
+    "total_tokens": 481,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_disputes",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 465,
+    "completion_tokens": 2,
+    "total_tokens": 467,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 665,
+    "completion_tokens": 2,
+    "total_tokens": 667,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 685,
+    "completion_tokens": 2,
+    "total_tokens": 687,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 664,
+    "completion_tokens": 2,
+    "total_tokens": 666,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 671,
+    "completion_tokens": 2,
+    "total_tokens": 673,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 685,
+    "completion_tokens": 2,
+    "total_tokens": 687,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 670,
+    "completion_tokens": 2,
+    "total_tokens": 672,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 674,
+    "completion_tokens": 2,
+    "total_tokens": 676,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 668,
+    "completion_tokens": 2,
+    "total_tokens": 670,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 673,
+    "completion_tokens": 2,
+    "total_tokens": 675,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 655,
+    "completion_tokens": 2,
+    "total_tokens": 657,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 661,
+    "completion_tokens": 2,
+    "total_tokens": 663,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 667,
+    "completion_tokens": 2,
+    "total_tokens": 669,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 677,
+    "completion_tokens": 2,
+    "total_tokens": 679,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 663,
+    "completion_tokens": 2,
+    "total_tokens": 665,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 662,
+    "completion_tokens": 2,
+    "total_tokens": 664,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 664,
+    "completion_tokens": 2,
+    "total_tokens": 666,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 666,
+    "completion_tokens": 2,
+    "total_tokens": 668,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 665,
+    "completion_tokens": 2,
+    "total_tokens": 667,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 680,
+    "completion_tokens": 2,
+    "total_tokens": 682,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 668,
+    "completion_tokens": 2,
+    "total_tokens": 670,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 657,
+    "completion_tokens": 2,
+    "total_tokens": 659,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "moral_scenarios",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 670,
+    "completion_tokens": 2,
+    "total_tokens": 672,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 584,
+    "completion_tokens": 2,
+    "total_tokens": 586,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 598,
+    "completion_tokens": 2,
+    "total_tokens": 600,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 546,
+    "completion_tokens": 2,
+    "total_tokens": 548,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 556,
+    "completion_tokens": 2,
+    "total_tokens": 558,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 543,
+    "completion_tokens": 2,
+    "total_tokens": 545,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 567,
+    "completion_tokens": 2,
+    "total_tokens": 569,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 559,
+    "completion_tokens": 2,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 544,
+    "completion_tokens": 2,
+    "total_tokens": 546,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 587,
+    "completion_tokens": 2,
+    "total_tokens": 589,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 592,
+    "completion_tokens": 2,
+    "total_tokens": 594,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "nutrition",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 559,
+    "completion_tokens": 2,
+    "total_tokens": 561,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 358,
+    "completion_tokens": 2,
+    "total_tokens": 360,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 344,
+    "completion_tokens": 2,
+    "total_tokens": 346,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 443,
+    "completion_tokens": 2,
+    "total_tokens": 445,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 345,
+    "completion_tokens": 2,
+    "total_tokens": 347,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 347,
+    "completion_tokens": 2,
+    "total_tokens": 349,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 309,
+    "completion_tokens": 2,
+    "total_tokens": 311,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 334,
+    "completion_tokens": 2,
+    "total_tokens": 336,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "philosophy",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 307,
+    "completion_tokens": 2,
+    "total_tokens": 309,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 493,
+    "completion_tokens": 2,
+    "total_tokens": 495,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 503,
+    "completion_tokens": 2,
+    "total_tokens": 505,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 489,
+    "completion_tokens": 2,
+    "total_tokens": 491,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 505,
+    "completion_tokens": 2,
+    "total_tokens": 507,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 560,
+    "completion_tokens": 2,
+    "total_tokens": 562,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 538,
+    "completion_tokens": 2,
+    "total_tokens": 540,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 505,
+    "completion_tokens": 2,
+    "total_tokens": 507,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "prehistory",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 490,
+    "completion_tokens": 2,
+    "total_tokens": 492,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's work through the last question.\n\n",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 669,
+    "completion_tokens": 8,
+    "total_tokens": 677,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 652,
+    "completion_tokens": 2,
+    "total_tokens": 654,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 621,
+    "completion_tokens": 2,
+    "total_tokens": 623,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the question step by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 714,
+    "completion_tokens": 8,
+    "total_tokens": 722,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": null,
+   "raw": "Let's go through the problem step-by",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 697,
+    "completion_tokens": 8,
+    "total_tokens": 705,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 710,
+    "completion_tokens": 2,
+    "total_tokens": 712,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 650,
+    "completion_tokens": 2,
+    "total_tokens": 652,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 664,
+    "completion_tokens": 2,
+    "total_tokens": 666,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 638,
+    "completion_tokens": 2,
+    "total_tokens": 640,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_accounting",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 623,
+    "completion_tokens": 2,
+    "total_tokens": 625,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1470,
+    "completion_tokens": 2,
+    "total_tokens": 1472,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1516,
+    "completion_tokens": 2,
+    "total_tokens": 1518,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1621,
+    "completion_tokens": 2,
+    "total_tokens": 1623,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1605,
+    "completion_tokens": 2,
+    "total_tokens": 1607,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1576,
+    "completion_tokens": 2,
+    "total_tokens": 1578,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1533,
+    "completion_tokens": 2,
+    "total_tokens": 1535,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1869,
+    "completion_tokens": 2,
+    "total_tokens": 1871,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1926,
+    "completion_tokens": 2,
+    "total_tokens": 1928,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1766,
+    "completion_tokens": 2,
+    "total_tokens": 1768,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1586,
+    "completion_tokens": 2,
+    "total_tokens": 1588,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1582,
+    "completion_tokens": 2,
+    "total_tokens": 1584,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1563,
+    "completion_tokens": 2,
+    "total_tokens": 1565,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1594,
+    "completion_tokens": 2,
+    "total_tokens": 1596,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1821,
+    "completion_tokens": 2,
+    "total_tokens": 1823,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1648,
+    "completion_tokens": 2,
+    "total_tokens": 1650,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1690,
+    "completion_tokens": 2,
+    "total_tokens": 1692,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1818,
+    "completion_tokens": 2,
+    "total_tokens": 1820,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1538,
+    "completion_tokens": 2,
+    "total_tokens": 1540,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1761,
+    "completion_tokens": 2,
+    "total_tokens": 1763,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1781,
+    "completion_tokens": 2,
+    "total_tokens": 1783,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1519,
+    "completion_tokens": 2,
+    "total_tokens": 1521,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1588,
+    "completion_tokens": 2,
+    "total_tokens": 1590,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1604,
+    "completion_tokens": 2,
+    "total_tokens": 1606,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1598,
+    "completion_tokens": 2,
+    "total_tokens": 1600,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1721,
+    "completion_tokens": 2,
+    "total_tokens": 1723,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1759,
+    "completion_tokens": 2,
+    "total_tokens": 1761,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1645,
+    "completion_tokens": 2,
+    "total_tokens": 1647,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1555,
+    "completion_tokens": 2,
+    "total_tokens": 1557,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1627,
+    "completion_tokens": 2,
+    "total_tokens": 1629,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1687,
+    "completion_tokens": 2,
+    "total_tokens": 1689,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1661,
+    "completion_tokens": 2,
+    "total_tokens": 1663,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1632,
+    "completion_tokens": 2,
+    "total_tokens": 1634,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1893,
+    "completion_tokens": 2,
+    "total_tokens": 1895,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1592,
+    "completion_tokens": 2,
+    "total_tokens": 1594,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1708,
+    "completion_tokens": 2,
+    "total_tokens": 1710,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1676,
+    "completion_tokens": 2,
+    "total_tokens": 1678,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1584,
+    "completion_tokens": 2,
+    "total_tokens": 1586,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_law",
+   "category": "humanities",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1576,
+    "completion_tokens": 2,
+    "total_tokens": 1578,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1142,
+    "completion_tokens": 2,
+    "total_tokens": 1144,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1073,
+    "completion_tokens": 2,
+    "total_tokens": 1075,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1132,
+    "completion_tokens": 2,
+    "total_tokens": 1134,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1012,
+    "completion_tokens": 2,
+    "total_tokens": 1014,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1180,
+    "completion_tokens": 2,
+    "total_tokens": 1182,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 979,
+    "completion_tokens": 2,
+    "total_tokens": 981,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1077,
+    "completion_tokens": 2,
+    "total_tokens": 1079,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 993,
+    "completion_tokens": 2,
+    "total_tokens": 995,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 993,
+    "completion_tokens": 2,
+    "total_tokens": 995,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_medicine",
+   "category": "other",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1109,
+    "completion_tokens": 2,
+    "total_tokens": 1111,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 570,
+    "completion_tokens": 2,
+    "total_tokens": 572,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 607,
+    "completion_tokens": 2,
+    "total_tokens": 609,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 579,
+    "completion_tokens": 2,
+    "total_tokens": 581,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 569,
+    "completion_tokens": 2,
+    "total_tokens": 571,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 537,
+    "completion_tokens": 2,
+    "total_tokens": 539,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 581,
+    "completion_tokens": 2,
+    "total_tokens": 583,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 573,
+    "completion_tokens": 2,
+    "total_tokens": 575,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 550,
+    "completion_tokens": 2,
+    "total_tokens": 552,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 542,
+    "completion_tokens": 2,
+    "total_tokens": 544,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 592,
+    "completion_tokens": 2,
+    "total_tokens": 594,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 633,
+    "completion_tokens": 2,
+    "total_tokens": 635,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 548,
+    "completion_tokens": 2,
+    "total_tokens": 550,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 629,
+    "completion_tokens": 2,
+    "total_tokens": 631,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 570,
+    "completion_tokens": 2,
+    "total_tokens": 572,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "B",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 626,
+    "completion_tokens": 2,
+    "total_tokens": 628,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 626,
+    "completion_tokens": 2,
+    "total_tokens": 628,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 658,
+    "completion_tokens": 2,
+    "total_tokens": 660,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 546,
+    "completion_tokens": 2,
+    "total_tokens": 548,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 585,
+    "completion_tokens": 2,
+    "total_tokens": 587,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 563,
+    "completion_tokens": 2,
+    "total_tokens": 565,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "professional_psychology",
+   "category": "social",
+   "gold": "C",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 691,
+    "completion_tokens": 2,
+    "total_tokens": 693,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 394,
+    "completion_tokens": 2,
+    "total_tokens": 396,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "C",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 397,
+    "completion_tokens": 2,
+    "total_tokens": 399,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 416,
+    "completion_tokens": 2,
+    "total_tokens": 418,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "public_relations",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 389,
+    "completion_tokens": 2,
+    "total_tokens": 391,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1252,
+    "completion_tokens": 2,
+    "total_tokens": 1254,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1070,
+    "completion_tokens": 2,
+    "total_tokens": 1072,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1121,
+    "completion_tokens": 2,
+    "total_tokens": 1123,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1058,
+    "completion_tokens": 2,
+    "total_tokens": 1060,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1133,
+    "completion_tokens": 2,
+    "total_tokens": 1135,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1131,
+    "completion_tokens": 2,
+    "total_tokens": 1133,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1194,
+    "completion_tokens": 2,
+    "total_tokens": 1196,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "security_studies",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 1256,
+    "completion_tokens": 2,
+    "total_tokens": 1258,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "B",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 447,
+    "completion_tokens": 2,
+    "total_tokens": 449,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "D",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 442,
+    "completion_tokens": 2,
+    "total_tokens": 444,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 472,
+    "completion_tokens": 2,
+    "total_tokens": 474,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 415,
+    "completion_tokens": 2,
+    "total_tokens": 417,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 446,
+    "completion_tokens": 2,
+    "total_tokens": 448,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 453,
+    "completion_tokens": 2,
+    "total_tokens": 455,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "sociology",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 464,
+    "completion_tokens": 2,
+    "total_tokens": 466,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 411,
+    "completion_tokens": 2,
+    "total_tokens": 413,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 415,
+    "completion_tokens": 2,
+    "total_tokens": 417,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "us_foreign_policy",
+   "category": "social",
+   "gold": "C",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 447,
+    "completion_tokens": 2,
+    "total_tokens": 449,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 339,
+    "completion_tokens": 2,
+    "total_tokens": 341,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 335,
+    "completion_tokens": 2,
+    "total_tokens": 337,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "C",
+   "raw": "C",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 323,
+    "completion_tokens": 2,
+    "total_tokens": 325,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 324,
+    "completion_tokens": 2,
+    "total_tokens": 326,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "B",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 330,
+    "completion_tokens": 2,
+    "total_tokens": 332,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "virology",
+   "category": "other",
+   "gold": "C",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 325,
+    "completion_tokens": 2,
+    "total_tokens": 327,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "A",
+   "raw": "A",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 270,
+    "completion_tokens": 2,
+    "total_tokens": 272,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "D",
+   "pred": "D",
+   "raw": "D",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 266,
+    "completion_tokens": 2,
+    "total_tokens": 268,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": "B",
+   "raw": "B",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 297,
+    "completion_tokens": 2,
+    "total_tokens": 299,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  },
+  {
+   "subject": "world_religions",
+   "category": "humanities",
+   "gold": "A",
+   "pred": null,
+   "raw": "Let's go through the last question carefully",
+   "reasoning_len": 0,
+   "error": null,
+   "usage": {
+    "prompt_tokens": 277,
+    "completion_tokens": 8,
+    "total_tokens": 285,
+    "prompt_tokens_details": {
+     "cached_tokens": 0
+    }
+   }
+  }
+ ]
+}
